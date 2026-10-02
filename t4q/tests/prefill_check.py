@@ -212,6 +212,7 @@ def main():
                 nn = k.split("_")[0]
                 best[nn] = max(best.get(nn, 0), v["tok_s"])
         R["best_pp"] = best
+        R["pf_gdnc_check"] = eng.stats().get("pf_gdnc_check")
         R["gate"] = bool(best.get("pp2048", 0) >= 1400 and best.get("pp512", 0) >= 1200 and R.get("correct_pass", False))
         log("best", best, "gate", R["gate"])
     save()

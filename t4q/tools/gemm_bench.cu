@@ -70,7 +70,7 @@ static int g_dev = 0;
 
 static const char* VNAME[] = {"i8", "i8_epi1", "i8_epi0", "f16", "i4split", "w4a4_timing", "g8_256", "g8_128", "g8m1", "g8m2", "g8m3", "g8m7", "g8m15", "g8m8", "g8b_256", "g8b_128", "g9_256_32", "g9_256_64", "g9_128_32", "g9_128_64",
                                "g9_256_tok", "g9a_noconv", "g9a_noffma", "g9a_hotld", "g9a_nold", "g9a_nold_nosts", "g9a_tok_nold_nosts",
-                               "g9_256_64_il", "g10_64", "g10_128", "g11_256x128", "g11_128x256", "g12_s2", "g12_s3", "g9_64_zero_x", "g9_64_zero_w", "g9_64_const_x", "g9_64_sparse_x"};
+                               "g9_256_64_il", "g10_64", "g10_128", "g11_256x128", "g11_128x256", "g12_s2", "g12_s3", "g9_64_zero_x", "g9_64_zero_w", "g9_64_const_x", "g9_64_sparse_x", "g13_tok", "g14_64"};
 static float* g_invs = nullptr;
 static float* g_dx = nullptr;
 static const Layout* g_L = nullptr;
@@ -96,6 +96,14 @@ static cudaError_t launch_var(int var, int fmt, int rpl, const gemm::GemmArgs& a
             case 14: return gemm8::launch_t<FAST_P4, 4, 256, 16>(a8, st);
             case 15: return gemm8::launch_t<FAST_P4, 4, 128, 16>(a8, st);
         }
+    }
+    if (var == 39) {
+        gemm8::Args a8 = gemm8::make_args(*g_L, g_w, g_invs, a.xq, g_dx, a.y, a.ldy, a.T, a.Tp);
+        return gemm8::launch14(fmt, rpl, a8, st);
+    }
+    if (var == 38) {
+        gemm8::Args a8 = gemm8::make_args(*g_L, g_w, g_invs, a.xq, g_dx, a.y, a.ldy, a.T, a.Tp);
+        return (fmt == FAST_P4 && rpl == 4) ? gemm8::launch13_t<FAST_P4, 4>(a8, st) : cudaErrorInvalidValue;
     }
     if (var >= 34 && var <= 37) {  // data-toggle probes: gemm9 GA64 BN256 on modified inputs (set up in the sustain loop)
         gemm8::Args a8 = gemm8::make_args(*g_L, g_w, g_invs, a.xq, g_dx, a.y, a.ldy, a.T, a.Tp);
@@ -372,7 +380,7 @@ int main(int argc, char** argv) {
                 gemm8::Args a8 = gemm8::make_args(L, D.w, g_invs, D.xq, g_dx, D.y, N, T, Tp);
                 CK(gemm8::row_invs(fmt, sh.rpl, a8, g_invs, st));
                 struct G8c { int kern, bn, ga; };  // kern 8 = gemm8_kernel, 9 = gemm9_kernel
-                for (G8c cf : {G8c{9, 256, 64}, G8c{9, 256, 32}, G8c{14, 128, 32}, G8c{15, 128, 32}}) {
+                for (G8c cf : {G8c{9, 256, 64}, G8c{16, 256, 64}}) {
                     if (cf.kern == 11 && !(fmt == FAST_P4 && sh.rpl == 4)) continue;
                     const int bn = cf.bn, ga = cf.ga;
                     if (Tp % bn) continue;
@@ -385,6 +393,7 @@ int main(int argc, char** argv) {
                         if (cf.kern == 11) return gemm8::launch9_t<FAST_P4, 4, 256, 64, 32>(a8, st);
                         if (cf.kern == 12) return gemm8::launch11(fmt, sh.rpl, 256, a8, st);
                         if (cf.kern == 14) return gemm8::launch12(fmt, sh.rpl, 2, a8, st);
+                        if (cf.kern == 16) return gemm8::launch14(fmt, sh.rpl, a8, st);
                         if (cf.kern == 15) return gemm8::launch12(fmt, sh.rpl, 3, a8, st);
                         if (cf.kern == 13) return gemm8::launch11(fmt, sh.rpl, 128, a8, st);
                         return gemm8::launch9(fmt, sh.rpl, bn, ga, a8, st);
@@ -454,7 +463,7 @@ int main(int argc, char** argv) {
                            smp3.sm ? tops3 * 1e12 / (smp3.sm * 1e6) / 40.0 : 0.0);
                     fflush(stdout);
                     if (cf.kern == 9 && ga == 64) tot8_time[ti][0] += us3 * sh.per_layer_count;
-                    if (cf.kern == 15) tot8_time[ti][1] += us3 * sh.per_layer_count;
+                    if (cf.kern == 16) tot8_time[ti][1] += us3 * sh.per_layer_count;
                 }
                 CK(cudaFree(g_invs)); CK(cudaFree(g_dx)); g_invs = nullptr; g_dx = nullptr;
                 gemm::quant_rows(D.x, K, T, Tp, K, D.xq, D.xs, D.xsum, st);  // restore the gemm.cuh activations
@@ -536,7 +545,7 @@ int main(int argc, char** argv) {
             const double s = tot_time[ti] * 1e-6;
             const double s8a = tot8_time[ti][0] * 1e-6, s8b = tot8_time[ti][1] * 1e-6;
             printf(",\"T%d\":{\"linear_ms_per_gpu\":%.1f,\"TOPS\":%.2f,\"linear_only_tok_s\":%.0f,\"g9_256_64_ms\":%.1f,"
-                   "\"g9_256_64_TOPS\":%.2f,\"g12_s3_ms\":%.1f,\"g12_s3_TOPS\":%.2f}", Ts[ti], s * 1e3,
+                   "\"g9_256_64_TOPS\":%.2f,\"g14_ms\":%.1f,\"g14_TOPS\":%.2f}", Ts[ti], s * 1e3,
                    tot_ops[ti] / s / 1e12, Ts[ti] / s, s8a * 1e3, s8a > 0 ? tot_ops[ti] / s8a / 1e12 : 0.0, s8b * 1e3,
                    s8b > 0 ? tot_ops[ti] / s8b / 1e12 : 0.0);
         }
@@ -569,7 +578,7 @@ int main(int argc, char** argv) {
         }
         for (int var : svars) {
         if (var >= 6) gemm8::quant8(D.x, K, T, Tp, K, D.xq, g_dx, st,
-                                    var >= 34 ? 64 : var >= 32 ? 32 : var == 29 ? 128 : var >= 30 ? 64 : (var == 20 || var == 26) ? 0 : var >= 21 ? 64 : (var >= 16 && (var & 1)) ? 64 : 32);
+                                    var == 39 ? 64 : var == 38 ? 0 : var >= 34 ? 64 : var >= 32 ? 32 : var == 29 ? 128 : var >= 30 ? 64 : (var == 20 || var == 26) ? 0 : var >= 21 ? 64 : (var >= 16 && (var & 1)) ? 64 : 32);
         else if (var >= 4) gemm::quant_rows_i4_kernel<<<(Tp * (K / 32) + 127) / 128, 128, 0, st>>>(D.x, K, T, Tp, K, D.xq, D.xs, D.xsum);
         else gemm::quant_rows(D.x, K, T, Tp, K, D.xq, D.xs, D.xsum, st);
         // data-toggle probes

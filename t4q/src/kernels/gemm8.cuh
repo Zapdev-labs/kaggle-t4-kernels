@@ -1296,6 +1296,255 @@ static inline cudaError_t launch12(int fmt, int rpl, int nstg, const Args& a, cu
     return cudaErrorInvalidValue;
 }
 
+// ================================================================================================ gemm13 (probe)
+// Speed probe: CUTLASS-style pipeline (fragment double buffering, smem store + barrier before the last k16 step) on
+// the 128 x 256 tile with per-token activation scales (GA 0: int32 accumulation straight in the mma C operand, no
+// FFMA, no temps). Answers whether our data path can reach CUTLASS's ~50 TOPS when the per-group epilogue is gone.
+template <int FMT, int RPL>
+__global__ void __launch_bounds__(NT, 1) gemm13_kernel(const Args a) {
+    constexpr int BN = 256;
+    using C = Cfg<BN>;
+    extern __shared__ __align__(16) unsigned char smem[];
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const int wm = warp & 1, wn = warp >> 1;
+    const int tok0 = blockIdx.x * BN, row0 = blockIdx.y * BM;
+    const int nst = a.K >> 6;
+    const int t4 = lane & 3;
+    const float invs_st = a.invs[row0 + (tid >> 1)];
+    const WPtr<FMT, RPL> P(a, row0 + (tid >> 1), tid & 1);
+    const int8_t* xb = a.xq + (size_t)(tok0 + (tid >> 2)) * a.K + (tid & 3) * 16;
+    const long long xstep = (long long)(NT / 4) * a.K;
+    int acc[8][8][2];
+#pragma unroll
+    for (int i = 0; i < 8; ++i)
+#pragma unroll
+        for (int g = 0; g < 8; ++g) acc[i][g][0] = acc[i][g][1] = 0;
+    Stage<BN> S;
+    S.dx0 = S.dx1 = make_float2(0.f, 0.f);
+    float2 bkeep = make_float2(0.f, 0.f);
+    auto load = [&](int st) { stage_load9<FMT, RPL, BN, 0, 0>(S, P, xb, xstep, a.dx, 0, st * 2, tid); };
+    auto store = [&](int b) { stage_store<FMT, BN, 0>(S, smem + b * C::BYTES, invs_st, bkeep, 0, tid); };
+    int arow[2], brow[2];
+#pragma unroll
+    for (int q = 0; q < 2; ++q) {
+        arow[q] = wm * 64 + (q * 4 + (lane >> 3)) * 8 + (lane & 7);
+        brow[q] = wn * 64 + (q * 4 + (lane >> 3)) * 8 + (lane & 7);
+    }
+    uint32_t fa[2][8], fb[2][8];
+    auto frag = [&](int slot, int b, int u) {
+        const unsigned char* Bp = smem + b * C::BYTES;
+#pragma unroll
+        for (int q = 0; q < 2; ++q) {
+            ldsm_x4(fa[slot][q * 4], fa[slot][q * 4 + 1], fa[slot][q * 4 + 2], fa[slot][q * 4 + 3],
+                    Bp + C::O_W + arow[q] * 64 + swz(arow[q], u) * 16);
+            ldsm_x4(fb[slot][q * 4], fb[slot][q * 4 + 1], fb[slot][q * 4 + 2], fb[slot][q * 4 + 3],
+                    Bp + C::O_X + brow[q] * 64 + swz(brow[q], u) * 16);
+        }
+    };
+    load(0);
+    store(0);
+    __syncthreads();
+    if (nst > 1) load(1);
+    frag(0, 0, 0);
+    int buf = 0;
+    for (int s = 0; s < nst; ++s) {
+#pragma unroll
+        for (int u = 0; u < 4; ++u) {
+            if (u == 3) {
+                if (s + 1 < nst) store(buf ^ 1);
+                __syncthreads();
+                buf ^= 1;
+                if (s + 2 < nst) load(s + 2);
+            }
+            if (!(u == 3 && s + 1 == nst)) frag((u + 1) & 1, buf, (u + 1) & 3);
+#pragma unroll
+            for (int g = 0; g < 8; ++g)
+#pragma unroll
+                for (int i = 0; i < 8; ++i)
+                    mma_s8p(acc[i][g][0], acc[i][g][1], fa[u & 1][i], fb[u & 1][g], acc[i][g][0], acc[i][g][1]);
+        }
+    }
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const int row = row0 + wm * 64 + i * 8 + (lane >> 2);
+        const float sr = __frcp_rn(a.invs[row]);
+#pragma unroll
+        for (int g = 0; g < 8; ++g)
+#pragma unroll
+            for (int e = 0; e < 2; ++e) {
+                const int tok = tok0 + wn * 64 + 8 * g + 2 * t4 + e;
+                if (tok < a.T) a.y[(size_t)tok * a.ldy + row] = (float)acc[i][g][e] * (a.dx[tok] * sr);
+            }
+    }
+}
+
+template <int FMT, int RPL>
+static cudaError_t launch13_t(const Args& a, cudaStream_t s) {
+    auto k = gemm13_kernel<FMT, RPL>;
+    const int smem = 2 * Cfg<256>::BYTES;
+    static int attr_dev_mask = 0;
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (!(attr_dev_mask & (1 << dev))) {
+        cudaError_t e = cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        if (e != cudaSuccess) return e;
+        attr_dev_mask |= 1 << dev;
+    }
+    if (a.N % BM || a.K % 256 || a.Tp % 256) return cudaErrorInvalidValue;
+    dim3 grid(a.Tp / 256, a.N / BM);
+    k<<<grid, NT, smem, s>>>(a);
+    return cudaGetLastError();
+}
+
+// ================================================================================================ gemm14
+// GA 64 (accurate) on gemm13's CUTLASS-style pipeline, 128 x 256 tile, 8 warps of 64 x 64. To fit the per-group int32
+// chains next to the 128 fp32 accumulators, each stage runs the warp tile as two halves of 4 token groups: per half,
+// 4 k16 steps of 32 mmas into 64 int temps, then 64 FFMAs. Fragments are double buffered across the 8 steps of a stage
+// (A is reloaded for the second half); the next stage's smem stores and the barrier sit before the last step's mmas.
+template <int FMT, int RPL>
+__global__ void __launch_bounds__(NT, 1) gemm14_kernel(const Args a) {
+    constexpr int BN = 256;
+    using C = Cfg<BN>;
+    extern __shared__ __align__(16) unsigned char smem[];
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const int wm = warp & 1, wn = warp >> 1;
+    const int tok0 = blockIdx.x * BN, row0 = blockIdx.y * BM;
+    const int nst = a.K >> 6;
+    const int t4 = lane & 3;
+    const float invs_st = a.invs[row0 + (tid >> 1)];
+    const WPtr<FMT, RPL> P(a, row0 + (tid >> 1), tid & 1);
+    const int8_t* xb = a.xq + (size_t)(tok0 + (tid >> 2)) * a.K + (tid & 3) * 16;
+    const long long xstep = (long long)(NT / 4) * a.K;
+    const float* dxb = a.dx + tok0 + 2 * (tid & (BN / 2 - 1));
+    const long long tps = a.Tp;
+    float acc[8][8][2];
+#pragma unroll
+    for (int i = 0; i < 8; ++i)
+#pragma unroll
+        for (int g = 0; g < 8; ++g) acc[i][g][0] = acc[i][g][1] = 0.f;
+    Stage<BN> S;
+    S.dx0 = S.dx1 = make_float2(0.f, 0.f);
+    float2 bkeep = make_float2(0.f, 0.f);
+    auto load = [&](int st) {
+        stage_load9<FMT, RPL, BN, 0, 0>(S, P, xb, xstep, dxb, tps, st * 2, tid);
+        if (tid < BN / 2) { S.dx0 = __ldg((const float2*)(dxb + (long long)st * tps)); S.dx1 = make_float2(0.f, 0.f); }
+    };
+    auto store = [&](int st, int b) {
+        const int sp = st & 3;
+        stage_store<FMT, BN, 0>(S, smem + b * C::BYTES, invs_st, bkeep, sp == 0 ? 0 : sp == 3 ? 2 : 1, tid);
+    };
+    int arow[2];
+#pragma unroll
+    for (int q = 0; q < 2; ++q) arow[q] = wm * 64 + (q * 4 + (lane >> 3)) * 8 + (lane & 7);
+    const int brow0 = wn * 64 + (lane >> 3) * 8 + (lane & 7);  // + 32 * half
+    uint32_t fa[2][8], fb[2][4];
+    auto frag = [&](int slot, int b, int step) {  // step = half * 4 + u
+        const int u = step & 3, half = step >> 2;
+        const unsigned char* Bp = smem + b * C::BYTES;
+#pragma unroll
+        for (int q = 0; q < 2; ++q)
+            ldsm_x4(fa[slot][q * 4], fa[slot][q * 4 + 1], fa[slot][q * 4 + 2], fa[slot][q * 4 + 3],
+                    Bp + C::O_W + arow[q] * 64 + swz(arow[q], u) * 16);
+        const int br = brow0 + 32 * half;
+        ldsm_x4(fb[slot][0], fb[slot][1], fb[slot][2], fb[slot][3], Bp + C::O_X + br * 64 + swz(br, u) * 16);
+    };
+    load(0);
+    store(0, 0);
+    __syncthreads();
+    if (nst > 1) load(1);
+    frag(0, 0, 0);
+    int buf = 0;
+    float2 dxr[8], bvr[8];
+    int tq[8][4][2];
+    for (int s = 0; s < nst; ++s) {
+        {
+            const unsigned char* Bp = smem + buf * C::BYTES;
+#pragma unroll
+            for (int g = 0; g < 8; ++g) dxr[g] = *(const float2*)(Bp + C::O_DX + (wn * 64 + 8 * g + 2 * t4) * 4);
+            if ((s & 3) == 3) {
+#pragma unroll
+                for (int g = 0; g < 8; ++g) bvr[g] = *(const float2*)(Bp + C::O_BI + (wn * 64 + 8 * g + 2 * t4) * 4);
+            }
+        }
+#pragma unroll
+        for (int step = 0; step < 8; ++step) {
+            const int u = step & 3, half = step >> 2;
+            if (step == 7) {
+                if (s + 1 < nst) store(s + 1, buf ^ 1);
+                __syncthreads();
+                buf ^= 1;
+                if (s + 2 < nst) load(s + 2);
+            }
+            if (!(step == 7 && s + 1 == nst)) frag((step + 1) & 1, buf, (step + 1) & 7);
+#pragma unroll
+            for (int gg = 0; gg < 4; ++gg)
+#pragma unroll
+                for (int i = 0; i < 8; ++i)
+                    mma_s8p(tq[i][gg][0], tq[i][gg][1], fa[step & 1][i], fb[step & 1][gg], u ? tq[i][gg][0] : MAGIC_I,
+                            u ? tq[i][gg][1] : MAGIC_I);
+            if (u == 3) {
+#pragma unroll
+                for (int gg = 0; gg < 4; ++gg)
+#pragma unroll
+                    for (int i = 0; i < 8; ++i) {
+                        const int g = half * 4 + gg;
+                        acc[i][g][0] = fmaf(__int_as_float(tq[i][gg][0]), dxr[g].x, acc[i][g][0]);
+                        acc[i][g][1] = fmaf(__int_as_float(tq[i][gg][1]), dxr[g].y, acc[i][g][1]);
+                    }
+            }
+        }
+        if ((s & 3) == 3) {
+#pragma unroll
+            for (int g = 0; g < 8; ++g)
+#pragma unroll
+                for (int i = 0; i < 8; ++i) { acc[i][g][0] -= bvr[g].x; acc[i][g][1] -= bvr[g].y; }
+        }
+    }
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const int row = row0 + wm * 64 + i * 8 + (lane >> 2);
+        const float sr = __frcp_rn(a.invs[row]);
+#pragma unroll
+        for (int g = 0; g < 8; ++g)
+#pragma unroll
+            for (int e = 0; e < 2; ++e) {
+                const int tok = tok0 + wn * 64 + 8 * g + 2 * t4 + e;
+                if (tok < a.T) {
+                    float* p = a.y + (size_t)tok * a.ldy + row;
+                    const float v = acc[i][g][e] * sr;
+                    *p = a.accumulate ? *p + v : v;
+                }
+            }
+    }
+}
+
+template <int FMT, int RPL>
+static cudaError_t launch14_t(const Args& a, cudaStream_t s) {
+    auto k = gemm14_kernel<FMT, RPL>;
+    const int smem = 2 * Cfg<256>::BYTES;
+    static int attr_dev_mask = 0;
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (!(attr_dev_mask & (1 << dev))) {
+        cudaError_t e = cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        if (e != cudaSuccess) return e;
+        attr_dev_mask |= 1 << dev;
+    }
+    if (a.N % BM || a.K % 256 || a.Tp % 256) return cudaErrorInvalidValue;
+    dim3 grid(a.Tp / 256, a.N / BM);
+    k<<<grid, NT, smem, s>>>(a);
+    return cudaGetLastError();
+}
+
+static inline cudaError_t launch14(int fmt, int rpl, const Args& a, cudaStream_t s) {
+#define T4Q_G14(F, R) if (fmt == F && rpl == R) return launch14_t<F, R>(a, s);
+    T4Q_G14(gemv::FAST_P4, 4) T4Q_G14(gemv::FAST_P4, 2)
+    T4Q_G14(gemv::FAST_P4M, 4) T4Q_G14(gemv::FAST_P4M, 2)
+    T4Q_G14(gemv::FAST_K5, 4) T4Q_G14(gemv::FAST_K5, 2)
+#undef T4Q_G14
+    return cudaErrorInvalidValue;
+}
+
 // per-token quantizer (GA 0): one 256-thread block per token, q = round(x / d), d = amax(x[t]) / 127; dx is [Tp]
 __global__ void __launch_bounds__(256) quant8_tok_kernel(const float* __restrict__ x, int ldx, int T, int K,
                                                          int8_t* __restrict__ xq, float* __restrict__ dx) {

@@ -34,7 +34,7 @@ ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "p"
 SECTIONS = ["engine"]
-PF_CONFIGS = "pf_g8=1,pf_ga=64,pf_fuse=1,pf_gdn2=0,pf_silu=1;pf_g8=1,pf_ga=64,pf_fuse=1,pf_gdn2=0,pf_silu=0"
+PF_CONFIGS = "pf_g8=1,pf_ga=64,pf_fuse=1,pf_silu=1,pf_gdnc=1,pf_gdnc_chk=0;pf_g8=1,pf_ga=64,pf_fuse=1,pf_silu=1,pf_gdnc=0,pf_gdnc_chk=0;pf_gdnc=1,pf_gdnc_chk=1"
 RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
