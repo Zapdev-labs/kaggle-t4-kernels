@@ -1,0 +1,121 @@
+// TP=2 fast decode engine (M2-M4): fast SoA GEMVs (gemv.cuh), fused small kernels, P2P mailbox all-reduce,
+// device-side StepState (graph-replayable), optional CUDA graphs. Both GPUs hold every layer's shard and an identical
+// fp32 residual stream. See DESIGN.md sections 4-6.
+#pragma once
+#include <cuda_runtime.h>
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "kernels/gemv.cuh"
+
+namespace tp {
+
+constexpr int NAR = 256;     // epoch stride per step (2 ARs per layer = 128 used)
+constexpr int NSPLIT = 32;   // attention split-K blocks per kv head
+constexpr int RING = 4096;   // host-mapped token ring
+
+// device step state (one per GPU, identical contents on both)
+struct StepState {
+    int pos;        // position of the token being processed
+    int token;      // token to embed at this step (written by the previous step's argmax, or from the prompt)
+    uint32_t step;  // monotonic step counter (never reset: AR epochs derive from it)
+    int err;        // watchdog / error code
+    int n_prompt;   // positions < n_prompt take their token from the prompt buffer
+    int last_tok;   // argmax of this step
+    float last_val;
+    int pad;
+};
+
+struct FW {  // fast packed weight on one GPU
+    t4q::gemv::Layout L;
+    uint8_t* base = nullptr;
+    bool ok() const { return base != nullptr; }
+};
+
+struct ArArgs {
+    float* y_peer = nullptr;        // peer's rx[slot]
+    unsigned* cnt = nullptr;        // local block counter
+    unsigned* peer_flag = nullptr;  // peer's flag[slot]
+    const StepState* st = nullptr;
+    int idx = 0;                    // AR index within the step
+};
+
+struct SegArgs {  // extra fp32 rows (K = 5120) appended to a GEMV launch: y[i] = w[i] . x
+    const float* w = nullptr;
+    const float* x = nullptr;
+    float* y = nullptr;
+    int nrows = 0;
+};
+
+struct Layer {
+    bool attn = false;
+    float *attn_norm = nullptr, *post_norm = nullptr;
+    // DeltaNet: qkvz rows = q (8 k-heads x 128) | k (1024) | v (24 v-heads x 128) | z (3072)
+    FW qkvz, ssm_out;
+    float* ab = nullptr;      // F32 [48][5120]: alpha rows of the 24 local heads, then beta rows
+    float* conv_w = nullptr;  // [5120][4]
+    float *ssm_a = nullptr, *ssm_dt = nullptr, *ssm_norm = nullptr;
+    float* conv_ring = nullptr;  // [4][5120] raw conv inputs, slot = pos & 3
+    float* S = nullptr;          // [24][128 v col][128 k]
+    // attention: qkv_a rows = q|gate of 12 local heads (6144) | k (2 heads, 512) | v (512)
+    FW qkv_a, wo;
+    float *q_norm = nullptr, *k_norm = nullptr;
+    uint16_t *kc = nullptr, *vc = nullptr;  // [2][max_ctx][256] fp16
+    // FFN: gateup rows = gate shard (8704) | up shard (8704)
+    FW gateup, down;
+};
+
+struct Gpu {
+    int g = 0;
+    cudaStream_t s = nullptr;
+    Layer L[64];
+    float* output_norm = nullptr;
+    FW lm;
+    uint8_t* embd = nullptr;  // raw Q4_0 token_embd rows
+    // activations
+    float *h, *xn, *y, *yab, *o, *qa, *attn_ws, *logits;
+    int8_t* xq;
+    int2* xm;
+    float* part;     // [2][5120] own AR partials
+    float* rx;       // [2][5120] peer writes its partials here
+    unsigned* flag;  // [2] peer-written AR flags, [2..3] argmax flags
+    unsigned* cnt;   // [4] block counters
+    float* amb;      // [2 slots][2] argmax mailbox (val, idx bits), peer-written
+    float* apart;    // argmax partials [2][NB]
+    StepState* st;
+    int* prompt;     // [max_ctx]
+    // peer pointers
+    float* peer_rx = nullptr;
+    unsigned* peer_flag = nullptr;
+    float* peer_amb = nullptr;
+    // graphs
+    cudaGraph_t graph = nullptr;
+    cudaGraphExec_t gexec = nullptr;
+    // profiling
+    std::vector<cudaEvent_t> ev;
+    std::vector<const char*> ev_name;
+};
+
+struct ShardSpec {  // how a FW was gathered from GGUF tensors (kept for the self-test)
+    std::string what;
+    std::vector<std::pair<const void*, std::pair<int64_t, int64_t>>> rows;  // (GgufTensor*, (row0, nrows))
+    std::vector<std::pair<int64_t, int64_t>> cols;                        // (col0, ncols) in elements
+};
+
+struct State {
+    Gpu G[2];
+    int max_ctx = 4096;
+    bool graphs = false;
+    bool profile = false;
+    int* h_ring = nullptr;  // host-mapped [RING] (written by GPU0 argmax_final)
+    int* d_ring = nullptr;  // device view of h_ring
+    std::vector<std::pair<int, ShardSpec>> specs;  // (gpu, spec) of weights to self-test
+    std::vector<const FW*> spec_fw;
+    std::string selftest_json;
+    std::string prof_json;
+    double ms_graph_capture = 0;
+};
+
+}  // namespace tp

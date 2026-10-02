@@ -31,13 +31,23 @@
 namespace t4q {
 namespace gemv {
 
-enum FastFmt { FAST_P4 = 0, FAST_Q8 = 1, FAST_K6 = 2 };
+// FAST_P4M (GGUF Q4_1) and FAST_K5 (GGUF Q5_K) added in M2:
+//   P4M: P4 codes/d planes + fp16 m plane (stored at off_sc, same shape as d). w = d*q + m, q in 0..15.
+//   K5 : 16 B low nibbles per 32 w (Q4_0 order) + 4 B high bits per 32 w ([tc][r][lane][4 B]; element 4t+jj of
+//        the low half at bit 8jj+t, of the high half at bit 8jj+4+t) + 2 B {sc, m} (decoded 6-bit) per 32 w at
+//        off_sc (same addressing as K6 sc) + {d, dmin} fp16 pair per 256 w (u32, addressing as K6 d).
+//        w = d*sc*q - dmin*m, q in 0..31. 180 B / 256 w (GGUF 176).
+enum FastFmt { FAST_P4 = 0, FAST_Q8 = 1, FAST_K6 = 2, FAST_P4M = 3, FAST_K5 = 4 };
 
-static inline const char* fmt_name(int f) { return f == FAST_P4 ? "P4" : f == FAST_Q8 ? "Q8" : "K6"; }
+static inline const char* fmt_name(int f) {
+    return f == FAST_P4 ? "P4" : f == FAST_Q8 ? "Q8" : f == FAST_K6 ? "K6" : f == FAST_P4M ? "P4M" : "K5";
+}
 
 // GGUF block geometry of the source type for each packed format
-static inline int src_block_elems(int f) { return f == FAST_K6 ? 256 : 32; }
-static inline int src_block_bytes(int f) { return f == FAST_P4 ? 18 : f == FAST_Q8 ? 34 : 210; }
+static inline int src_block_elems(int f) { return (f == FAST_K6 || f == FAST_K5) ? 256 : 32; }
+static inline int src_block_bytes(int f) {
+    return f == FAST_P4 ? 18 : f == FAST_Q8 ? 34 : f == FAST_K6 ? 210 : f == FAST_P4M ? 20 : 176;
+}
 static inline size_t src_row_bytes(int f, int K) { return (size_t)(K / src_block_elems(f)) * src_block_bytes(f); }
 
 // ------------------------------------------------------------------------------------------------ layout
@@ -58,6 +68,8 @@ static inline Layout make_layout(int fmt, int N, int K, int rpl) {
     size_t codes = 0, qh = 0, sc = 0, d = 0;
     if (fmt == FAST_P4) { codes = tc * rpl * 512; d = tc * 32 * rpl * 2; }
     else if (fmt == FAST_Q8) { codes = tc * rpl * 1024; d = tc * 32 * rpl * 2; }
+    else if (fmt == FAST_P4M) { codes = tc * rpl * 512; sc = tc * 32 * rpl * 2; d = tc * 32 * rpl * 2; }
+    else if (fmt == FAST_K5) { codes = tc * rpl * 512; qh = tc * rpl * 128; sc = tc * 32 * rpl * 2; d = tc * 4 * rpl * 4; }
     else { codes = tc * rpl * 512; qh = tc * rpl * 256; sc = tc * 32 * rpl * 2; d = tc * 4 * rpl * 2; }
     L.off_codes = 0;
     L.off_qh = align256(codes);
@@ -102,6 +114,32 @@ static inline void q6k_codes(const uint8_t* blk, uint8_t q[256]) {
         }
 }
 
+// Q5_K: natural 5-bit code q in 0..31 and decoded 6-bit sub-scales / mins (w = d*sc[e/32]*q - dmin*m[e/32])
+static inline void q5k_scale_min(int j, const uint8_t* q, int& d, int& m) {
+    if (j < 4) { d = q[j] & 63; m = q[j + 4] & 63; }
+    else { d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4); m = (q[j + 4] >> 4) | ((q[j] >> 6) << 4); }
+}
+static inline void q5k_codes(const uint8_t* blk, uint8_t q[256], int sc[8], int mn[8]) {
+    const uint8_t* scales = blk + 4; const uint8_t* qh = blk + 16; const uint8_t* qs = blk + 48;
+    for (int s = 0; s < 8; ++s) {
+        q5k_scale_min(s, scales, sc[s], mn[s]);
+        for (int l = 0; l < 32; ++l) {
+            const int lo = (s & 1) ? (qs[32 * (s >> 1) + l] >> 4) : (qs[32 * (s >> 1) + l] & 15);
+            q[32 * s + l] = (uint8_t)(lo | (((qh[l] >> s) & 1) << 4));
+        }
+    }
+}
+// K5 high-bit word for one 32-weight group g[0..31] (5-bit codes)
+static inline uint32_t k5_hbits(const uint8_t* g) {
+    uint32_t H = 0;
+    for (int t = 0; t < 4; ++t)
+        for (int jj = 0; jj < 4; ++jj) {
+            H |= (uint32_t)((g[4 * t + jj] >> 4) & 1) << (8 * jj + t);
+            H |= (uint32_t)((g[16 + 4 * t + jj] >> 4) & 1) << (8 * jj + 4 + t);
+        }
+    return H;
+}
+
 static inline void dequant_row_host(int fmt, const uint8_t* row, int K, float* out) {
     if (fmt == FAST_P4) {
         for (int b = 0; b < K / 32; ++b) {
@@ -115,6 +153,23 @@ static inline void dequant_row_host(int fmt, const uint8_t* row, int K, float* o
         for (int b = 0; b < K / 32; ++b) {
             const uint8_t* p = row + 34 * b; uint16_t dh; std::memcpy(&dh, p, 2); float d = h2f_host(dh);
             for (int j = 0; j < 32; ++j) out[32 * b + j] = d * (float)(int8_t)p[2 + j];
+        }
+    } else if (fmt == FAST_P4M) {
+        for (int b = 0; b < K / 32; ++b) {
+            const uint8_t* p = row + 20 * b; uint16_t dh, mh; std::memcpy(&dh, p, 2); std::memcpy(&mh, p + 2, 2);
+            const float d = h2f_host(dh), m = h2f_host(mh);
+            for (int j = 0; j < 16; ++j) {
+                out[32 * b + j] = d * (float)(p[4 + j] & 15) + m;
+                out[32 * b + 16 + j] = d * (float)(p[4 + j] >> 4) + m;
+            }
+        }
+    } else if (fmt == FAST_K5) {
+        uint8_t q[256]; int sc[8], mn[8];
+        for (int b = 0; b < K / 256; ++b) {
+            const uint8_t* p = row + 176 * b; uint16_t dh, mh; std::memcpy(&dh, p, 2); std::memcpy(&mh, p + 2, 2);
+            const float d = h2f_host(dh), dmin = h2f_host(mh);
+            q5k_codes(p, q, sc, mn);
+            for (int e = 0; e < 256; ++e) out[256 * b + e] = d * (float)sc[e / 32] * (float)q[e] - dmin * (float)mn[e / 32];
         }
     } else {
         uint8_t q[256];
@@ -145,6 +200,23 @@ static inline void repack_host(const Layout& L, const uint8_t* src, uint8_t* dst
                 const uint8_t* b = s + 18 * kb;
                 std::memcpy(codes + (tc * rpl + r) * 512 + lane * 16, b + 2, 16);
                 std::memcpy(dp + (tc * 32 + lane) * rpl + r, b, 2);
+            } else if (L.fmt == FAST_P4M) {
+                const uint8_t* b = s + 20 * kb;
+                std::memcpy(codes + (tc * rpl + r) * 512 + lane * 16, b + 4, 16);
+                std::memcpy(dp + (tc * 32 + lane) * rpl + r, b, 2);
+                std::memcpy((uint16_t*)scp + (tc * 32 + lane) * rpl + r, b + 2, 2);
+            } else if (L.fmt == FAST_K5) {
+                const int sb = kb / 8, sub = kb % 8;
+                const uint8_t* b = s + 176 * sb;
+                uint8_t q[256]; int sc[8], mn[8]; q5k_codes(b, q, sc, mn);
+                const uint8_t* g = q + 32 * sub;
+                uint8_t* ql = codes + (tc * rpl + r) * 512 + lane * 16;
+                for (int i = 0; i < 16; ++i) ql[i] = (uint8_t)((g[i] & 15) | ((g[16 + i] & 15) << 4));
+                const uint32_t H = k5_hbits(g);
+                std::memcpy(qhp + (tc * rpl + r) * 128 + lane * 4, &H, 4);
+                uint8_t* scd = scp + ((tc * 32 + lane) * rpl + r) * 2;
+                scd[0] = (uint8_t)sc[sub]; scd[1] = (uint8_t)mn[sub];
+                std::memcpy((uint8_t*)dp + ((((tc * 2 + h) * 2 + (j >> 3)) * rpl + r) * 4), b, 4);
             } else if (L.fmt == FAST_Q8) {
                 const uint8_t* b = s + 34 * kb;
                 for (int p = 0; p < 2; ++p)
@@ -242,8 +314,10 @@ template <int FMT, int RPL>
 struct WChunk {
     int4 q[RPL][FMT == FAST_Q8 ? 2 : 1];
     uint2 hb[RPL];                 // K6 high bits
-    uint32_t dd[(RPL + 1) / 2];    // RPL fp16 scales (P4/Q8: per 32; K6: per 256), two per word
-    uint32_t sc[(RPL + 1) / 2];    // K6: RPL x 2 int8, one row per 16-bit half
+    uint32_t dd[(RPL + 1) / 2];    // RPL fp16 scales (P4/Q8/P4M: per 32; K6: per 256), two per word
+    uint32_t sc[(RPL + 1) / 2];    // K6: RPL x 2 int8, one row per 16-bit half; P4M: RPL fp16 m; K5: RPL x {sc, m} u8
+    uint32_t h5[RPL];              // K5 high bits
+    uint32_t d2[RPL];              // K5 {d, dmin} fp16 pair per 256
 };
 
 // RPL x 16-bit values at p (2*RPL bytes, naturally aligned) -> out[(RPL+1)/2] words
@@ -262,7 +336,22 @@ __device__ __forceinline__ void load_chunk(WChunk<FMT, RPL>& w, const GemvArgs& 
     for (int r = 0; r < RPL; ++r)
 #pragma unroll
         for (int p = 0; p < NP; ++p) w.q[r][p] = ldg_nc_v4(a.codes + ((tc * RPL + r) * NP + p) * 512 + lane * 16);
-    if (FMT == FAST_K6) {
+    if (FMT == FAST_P4M) {
+        ldg_halves<RPL>(w.dd, a.d + (tc * 32 + lane) * RPL);
+        ldg_halves<RPL>(w.sc, (const uint16_t*)a.sc + (tc * 32 + lane) * RPL);
+    } else if (FMT == FAST_K5) {
+#pragma unroll
+        for (int r = 0; r < RPL; ++r) w.h5[r] = ldg_nc_u32(a.qh + (tc * RPL + r) * 128 + lane * 4);
+        ldg_halves<RPL>(w.sc, a.sc + (tc * 32 + lane) * RPL * 2);
+        const int h = lane >> 4, j = lane & 15;
+        const uint32_t* dp = (const uint32_t*)a.d + ((tc * 2 + h) * 2 + (j >> 3)) * RPL;
+        if (RPL == 1) w.d2[0] = ldg_nc_u32(dp);
+        else if (RPL == 2) { uint2 v = ldg_nc_v2(dp); w.d2[0] = v.x; w.d2[1 % RPL] = v.y; }
+        else {
+            int4 v = ldg_nc_v4(dp);
+            w.d2[0] = v.x; w.d2[1 % RPL] = v.y; w.d2[2 % RPL] = v.z; w.d2[3 % RPL] = v.w;
+        }
+    } else if (FMT == FAST_K6) {
 #pragma unroll
         for (int r = 0; r < RPL; ++r) w.hb[r] = ldg_nc_v2(a.qh + (tc * RPL + r) * 256 + lane * 8);
         ldg_halves<RPL>(w.sc, a.sc + (tc * 32 + lane) * RPL * 2);
@@ -318,6 +407,46 @@ __device__ __forceinline__ float group_dot(const int4* q, uint2 hb, uint32_t dd1
         const int scA = (int)(int8_t)(sc16 & 0xff), scB = (int)(int8_t)((sc16 >> 8) & 0xff);
         const int si = scA * (sa - 32 * s0) + scB * (sb - 32 * s1);
         return h2f_bits(dd16) * (xd * (float)si);
+    }
+}
+
+// P4M / K5 group dot (one row r of the chunk) and dispatch for every format
+template <int FMT, int CVT, int RPL>
+__device__ __forceinline__ float group_dot_r(const WChunk<FMT, RPL>& w, int r, const int4& xl, const int4& xh, float xd,
+                                             int s0, int s1, int moff) {
+    if (FMT == FAST_P4M) {
+        const int m = 0x0F0F0F0F;
+        const int4 q = w.q[r][0];
+        int s = __dp4a(q.x & m, xl.x, 0);
+        s = __dp4a(q.y & m, xl.y, s);
+        s = __dp4a(q.z & m, xl.z, s);
+        s = __dp4a(q.w & m, xl.w, s);
+        s = __dp4a((q.x >> 4) & m, xh.x, s);
+        s = __dp4a((q.y >> 4) & m, xh.y, s);
+        s = __dp4a((q.z >> 4) & m, xh.z, s);
+        s = __dp4a((q.w >> 4) & m, xh.w, s);
+        const float d = h2f_bits(w.dd[r >> 1] >> (16 * (r & 1)));
+        const float mm = h2f_bits(w.sc[r >> 1] >> (16 * (r & 1)));
+        return d * (xd * (float)s) + mm * (xd * (float)(s0 + s1));
+    } else if (FMT == FAST_K5) {
+        const int m = 0x0F0F0F0F, mb = 0x10101010;
+        const int4 q = w.q[r][0];
+        const int H = (int)w.h5[r];
+        int s = __dp4a((q.x & m) | ((H << 4) & mb), xl.x, 0);
+        s = __dp4a((q.y & m) | ((H << 3) & mb), xl.y, s);
+        s = __dp4a((q.z & m) | ((H << 2) & mb), xl.z, s);
+        s = __dp4a((q.w & m) | ((H << 1) & mb), xl.w, s);
+        s = __dp4a(((q.x >> 4) & m) | (H & mb), xh.x, s);
+        s = __dp4a(((q.y >> 4) & m) | ((int)((unsigned)H >> 1) & mb), xh.y, s);
+        s = __dp4a(((q.z >> 4) & m) | ((int)((unsigned)H >> 2) & mb), xh.z, s);
+        s = __dp4a(((q.w >> 4) & m) | ((int)((unsigned)H >> 3) & mb), xh.w, s);
+        const uint32_t scm = w.sc[r >> 1] >> (16 * (r & 1));
+        const int sc = (int)(scm & 0xff), mn = (int)((scm >> 8) & 0xff);
+        const float d = h2f_bits(w.d2[r]), dmin = h2f_bits(w.d2[r] >> 16);
+        return xd * (d * (float)(sc * s) - dmin * (float)(mn * (s0 + s1)));
+    } else {
+        return group_dot<FMT, CVT>(w.q[r], w.hb[r], w.dd[r >> 1] >> (16 * (r & 1)),
+                                   FMT == FAST_K6 ? (w.sc[r >> 1] >> (16 * (r & 1))) : 0u, xl, xh, xd, s0, s1, moff);
     }
 }
 
@@ -381,9 +510,7 @@ __global__ void __launch_bounds__(256, 2) gemv_fast_kernel(const GemvArgs a) {
                 const int moff = FMT == FAST_P4 ? 0x4B400000 - 8 * (s0 + s1) : 0x4B400000;
 #pragma unroll
                 for (int r = 0; r < RPL; ++r)
-                    acc[r][col] += group_dot<FMT, CVT>(cur.q[r], cur.hb[r], cur.dd[r >> 1] >> (16 * (r & 1)),
-                                                       FMT == FAST_K6 ? (cur.sc[r >> 1] >> (16 * (r & 1))) : 0u, xl,
-                                                       xh, xd, s0, s1, moff);
+                    acc[r][col] += group_dot_r<FMT, CVT, RPL>(cur, r, xl, xh, xd, s0, s1, moff);
             }
         }
 #pragma unroll
@@ -449,15 +576,19 @@ static __global__ void quantize_q8_kernel(const float* __restrict__ x, int K, in
 
 // ------------------------------------------------------------------------------------------------ device repack
 // One thread per (row, 32-group). src rows are raw GGUF blocks (row stride src_row_bytes); dst zero-initialized.
+// rows [row0, row0 + N) of the layout; src holds exactly those N rows
 static __global__ void repack_kernel(int fmt, int N, int K, int rpl, int ntiles, size_t off_qh, size_t off_sc, size_t off_d,
-                              const uint8_t* __restrict__ src, uint8_t* __restrict__ dst) {
+                              const uint8_t* __restrict__ src, uint8_t* __restrict__ dst, int row0 = 0) {
     const size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     const int nb = K / 32;
     if (idx >= (size_t)N * nb) return;
-    const int row = (int)(idx / nb), kb = (int)(idx % nb);
+    const int lrow = (int)(idx / nb), kb = (int)(idx % nb);
+    const int row = row0 + lrow;
     const int nch = K / 512;
-    const size_t rb = (size_t)(K / (fmt == FAST_K6 ? 256 : 32)) * (fmt == FAST_P4 ? 18 : fmt == FAST_Q8 ? 34 : 210);
-    const uint8_t* s = src + (size_t)row * rb;
+    const int be = (fmt == FAST_K6 || fmt == FAST_K5) ? 256 : 32;
+    const int bb = fmt == FAST_P4 ? 18 : fmt == FAST_Q8 ? 34 : fmt == FAST_K6 ? 210 : fmt == FAST_P4M ? 20 : 176;
+    const size_t rb = (size_t)(K / be) * bb;
+    const uint8_t* s = src + (size_t)lrow * rb;
     const int tile = row / (2 * rpl), w = row % (2 * rpl), h = w / rpl, r = w % rpl;
     const int c = kb / 16, j = kb % 16, lane = h * 16 + j;
     const size_t tc = (size_t)tile * nch + c;
@@ -467,6 +598,39 @@ static __global__ void repack_kernel(int fmt, int N, int K, int rpl, int ntiles,
         uint8_t* o = dst + (tc * rpl + r) * 512 + lane * 16;
         for (int i = 0; i < 16; ++i) o[i] = b[2 + i];
         dp[(tc * 32 + lane) * rpl + r] = (uint16_t)(b[0] | (b[1] << 8));
+    } else if (fmt == FAST_P4M) {
+        const uint8_t* b = s + 20 * kb;
+        uint8_t* o = dst + (tc * rpl + r) * 512 + lane * 16;
+        for (int i = 0; i < 16; ++i) o[i] = b[4 + i];
+        dp[(tc * 32 + lane) * rpl + r] = (uint16_t)(b[0] | (b[1] << 8));
+        ((uint16_t*)(dst + off_sc))[(tc * 32 + lane) * rpl + r] = (uint16_t)(b[2] | (b[3] << 8));
+    } else if (fmt == FAST_K5) {
+        const int sb = kb / 8, sub = kb % 8;
+        const uint8_t* b = s + 176 * sb;
+        const uint8_t* qh = b + 16; const uint8_t* qs = b + 48;
+        uint8_t g[32];
+        for (int l = 0; l < 32; ++l) {
+            const int lo = (sub & 1) ? (qs[32 * (sub >> 1) + l] >> 4) : (qs[32 * (sub >> 1) + l] & 15);
+            g[l] = (uint8_t)(lo | (((qh[l] >> sub) & 1) << 4));
+        }
+        uint8_t* o = dst + (tc * rpl + r) * 512 + lane * 16;
+        for (int i = 0; i < 16; ++i) o[i] = (uint8_t)((g[i] & 15) | ((g[16 + i] & 15) << 4));
+        uint32_t H = 0;
+        for (int t = 0; t < 4; ++t)
+            for (int jj = 0; jj < 4; ++jj) {
+                H |= (uint32_t)((g[4 * t + jj] >> 4) & 1) << (8 * jj + t);
+                H |= (uint32_t)((g[16 + 4 * t + jj] >> 4) & 1) << (8 * jj + 4 + t);
+            }
+        *(uint32_t*)(dst + off_qh + (tc * rpl + r) * 128 + lane * 4) = H;
+        const uint8_t* q = b + 4;
+        int sc, mn;
+        if (sub < 4) { sc = q[sub] & 63; mn = q[sub + 4] & 63; }
+        else { sc = (q[sub + 4] & 0xF) | ((q[sub - 4] >> 6) << 4); mn = (q[sub + 4] >> 4) | ((q[sub] >> 6) << 4); }
+        uint8_t* scd = dst + off_sc + ((tc * 32 + lane) * rpl + r) * 2;
+        scd[0] = (uint8_t)sc; scd[1] = (uint8_t)mn;
+        if ((j & 7) == 0)
+            *(uint32_t*)(dst + off_d + (((tc * 2 + h) * 2 + (j >> 3)) * rpl + r) * 4) =
+                (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
     } else if (fmt == FAST_Q8) {
         const uint8_t* b = s + 34 * kb;
         for (int p = 0; p < 2; ++p) {
@@ -499,6 +663,15 @@ static __global__ void repack_kernel(int fmt, int N, int K, int rpl, int ntiles,
         scd[0] = b[192 + 2 * sub]; scd[1] = b[192 + 2 * sub + 1];
         if ((j & 7) == 0) dp[((tc * 2 + h) * 2 + (j >> 3)) * rpl + r] = (uint16_t)(b[208] | (b[209] << 8));
     }
+}
+
+// repack rows [row0, row0 + n) (d_src holds just those rows); the caller zeroes d_dst once beforehand
+static inline cudaError_t repack_device_rows(const Layout& L, const uint8_t* d_src, uint8_t* d_dst, int row0, int n,
+                                             cudaStream_t s) {
+    const size_t tot = (size_t)n * (L.K / 32);
+    repack_kernel<<<(unsigned)((tot + 255) / 256), 256, 0, s>>>(L.fmt, n, L.K, L.rpl, L.ntiles, L.off_qh, L.off_sc,
+                                                                 L.off_d, d_src, d_dst, row0);
+    return cudaGetLastError();
 }
 
 static inline cudaError_t repack_device(const Layout& L, const uint8_t* d_src, uint8_t* d_dst, cudaStream_t s) {

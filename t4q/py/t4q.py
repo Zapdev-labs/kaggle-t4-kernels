@@ -21,7 +21,7 @@ class Sampling(C.Structure):
 
 
 class T4Q:
-    def __init__(self, gguf, lib=None, max_ctx=4096, verbose=1):
+    def __init__(self, gguf, lib=None, max_ctx=4096, verbose=1, tp=0):
         lib = lib or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "libt4q.so")
         self.lib = L = C.CDLL(lib)
         L.t4q_load.restype = C.c_void_p
@@ -41,7 +41,7 @@ class T4Q:
         L.t4q_n_vocab.argtypes = [C.c_void_p]
         L.t4q_pos.argtypes = [C.c_void_p]
         L.t4q_last_error.restype = C.c_char_p
-        p = Params(2, 0, max_ctx, 0, 0, 0, verbose)
+        p = Params(2, tp, max_ctx, 0, 0, 0, verbose)
         self.ctx = L.t4q_load(gguf.encode(), C.byref(p))
         if not self.ctx:
             raise RuntimeError("t4q_load failed: " + L.t4q_last_error().decode())
@@ -116,8 +116,8 @@ class T4Q:
 
     def stats(self):
         import json
-        buf = C.create_string_buffer(4096)
-        self.lib.t4q_stats(self.ctx, buf, 4096)
+        buf = C.create_string_buffer(65536)
+        self.lib.t4q_stats(self.ctx, buf, 65536)
         return json.loads(buf.value.decode())
 
     def close(self):

@@ -20,9 +20,21 @@ static uint32_t rd32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v;
 static uint16_t rd16(const uint8_t* p) { uint16_t v; memcpy(&v, p, 2); return v; }
 
 static float group_dot(int fmt, const int* q /*4 or 8*/, uint32_t H0, uint32_t H1, uint16_t d16, uint16_t sc16,
-                       const int* xl, const int* xh, float xd, int s0, int s1) {
-    const int m = 0x0F0F0F0F, mh = 0x30303030;
-    if (fmt == FAST_P4) {
+                       const int* xl, const int* xh, float xd, int s0, int s1, uint16_t m16 = 0, uint32_t d2 = 0) {
+    const int m = 0x0F0F0F0F, mh = 0x30303030, mb = 0x10101010;
+    if (fmt == FAST_P4M) {
+        int t = 0;
+        for (int i = 0; i < 4; ++i) t = dp4a(q[i] & m, xl[i], t);
+        for (int i = 0; i < 4; ++i) t = dp4a((q[i] >> 4) & m, xh[i], t);
+        return h2f_host(d16) * (xd * (float)t) + h2f_host(m16) * (xd * (float)(s0 + s1));
+    } else if (fmt == FAST_K5) {
+        const int H = (int)H0;
+        int t = 0;
+        for (int i = 0; i < 4; ++i) t = dp4a((q[i] & m) | ((int)((unsigned)H << (4 - i)) & mb), xl[i], t);
+        for (int i = 0; i < 4; ++i) t = dp4a(((q[i] >> 4) & m) | ((int)((unsigned)H >> i) & mb), xh[i], t);
+        int sc = sc16 & 0xff, mn = sc16 >> 8;
+        return xd * (h2f_host(d2 & 0xffff) * (float)(sc * t) - h2f_host(d2 >> 16) * (float)(mn * (s0 + s1)));
+    } else if (fmt == FAST_P4) {
         int t = 0;
         for (int i = 0; i < 4; ++i) t = dp4a(q[i] & m, xl[i], t);
         for (int i = 0; i < 4; ++i) t = dp4a((q[i] >> 4) & m, xh[i], t);
@@ -58,6 +70,11 @@ static int run(int fmt, int N, int K, int rpl, int M) {
             uint8_t* blk = &src[r * rb + (size_t)b * bb];
             uint16_t d = f2h_host(0.001f + 0.01f * (rnd() % 1000) / 1000.f);
             memcpy(fmt == FAST_K6 ? blk + 208 : blk, &d, 2);
+            if (fmt == FAST_P4M || fmt == FAST_K5) {
+                uint16_t m2 = f2h_host(((int)(rnd() % 1000) - 500) * 1e-5f);
+                if (fmt == FAST_K5) m2 = f2h_host(0.0005f + 0.002f * (rnd() % 1000) / 1000.f);
+                memcpy(blk + 2, &m2, 2);
+            }
         }
     Layout L = make_layout(fmt, N, K, rpl);
     std::vector<uint8_t> P(L.bytes);
@@ -82,8 +99,15 @@ static int run(int fmt, int N, int K, int rpl, int M) {
                         for (int p = 0; p < NP; ++p)
                             for (int i = 0; i < 4; ++i)
                                 q[4 * p + i] = (int)rd32(&P[L.off_codes + ((tc * rpl + r) * NP + p) * 512 + lane * 16 + 4 * i]);
-                        uint32_t H0 = 0, H1 = 0; uint16_t d16, sc16 = 0;
-                        if (fmt == FAST_K6) {
+                        uint32_t H0 = 0, H1 = 0, d2 = 0; uint16_t d16 = 0, sc16 = 0, m16 = 0;
+                        if (fmt == FAST_K5) {
+                            H0 = rd32(&P[L.off_qh + (tc * rpl + r) * 128 + lane * 4]);
+                            sc16 = rd16(&P[L.off_sc + ((tc * 32 + lane) * rpl + r) * 2]);
+                            d2 = rd32(&P[L.off_d + (((tc * 2 + h) * 2 + (j >> 3)) * rpl + r) * 4]);
+                        } else if (fmt == FAST_P4M) {
+                            d16 = rd16(&P[L.off_d + ((tc * 32 + lane) * rpl + r) * 2]);
+                            m16 = rd16(&P[L.off_sc + ((tc * 32 + lane) * rpl + r) * 2]);
+                        } else if (fmt == FAST_K6) {
                             const uint8_t* qh = &P[L.off_qh + (tc * rpl + r) * 256 + lane * 8];
                             H0 = rd32(qh); H1 = rd32(qh + 4);
                             sc16 = rd16(&P[L.off_sc + ((tc * 32 + lane) * rpl + r) * 2]);
@@ -98,7 +122,7 @@ static int run(int fmt, int N, int K, int rpl, int M) {
                         float xd; memcpy(&xd, &xm[((size_t)col * NB + kb) * 2], 4);
                         int32_t my = xm[((size_t)col * NB + kb) * 2 + 1];
                         int s0 = (int)(short)(my & 0xffff), s1 = my >> 16;
-                        lanesum[lane] += group_dot(fmt, q, H0, H1, d16, sc16, xl, xh, xd, s0, s1);
+                        lanesum[lane] += group_dot(fmt, q, H0, H1, d16, sc16, xl, xh, xd, s0, s1, m16, d2);
                     }
                 }
                 for (int h = 0; h < 2; ++h) {
@@ -135,6 +159,8 @@ int main() {
         bad += run(FAST_Q8, 21, 1024, rpl, 3);
         bad += run(FAST_K6, 19, 1536, rpl, 3);
         bad += run(FAST_K6, 8, 5120, rpl, 2);
+        bad += run(FAST_P4M, 23, 8704, rpl, 2);
+        bad += run(FAST_K5, 17, 3072, rpl, 3);
     }
     printf(bad ? "LAYOUT CHECK FAILED\n" : "LAYOUT CHECK PASSED\n");
     return bad != 0;

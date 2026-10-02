@@ -27,6 +27,8 @@ constexpr float EPS = 1e-6f, ROPE_BASE = 1e7f;
 inline bool is_attn(int il) { return (il + 1) % 4 == 0; }
 }  // namespace hp
 
+namespace tp { struct State; }
+
 struct Layer {
     int il = 0, gpu = 0;
     bool attn = false;
@@ -80,6 +82,7 @@ struct t4q_ctx {
     long gen_tokens = 0, steps = 0;
     double step_s = 0;
     size_t vram_used[2] = {0, 0};
+    tp::State* tps = nullptr;  // TP engine (params.tp != 0)
 };
 
 // loader.cu
