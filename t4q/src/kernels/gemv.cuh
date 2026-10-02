@@ -377,7 +377,23 @@ __device__ __forceinline__ void load_chunk(WChunk<FMT, RPL>& w, const GemvArgs& 
 template <int FMT, int CVT>
 __device__ __forceinline__ float group_dot(const int4* q, uint2 hb, uint32_t dd16, uint32_t sc16, const int4& xl,
                                            const int4& xh, float xd, int s0, int s1, int moff) {
-    if (FMT == FAST_P4) {
+    if (FMT == FAST_P4 && CVT == 2) {
+        // high nibbles in place (bytes 0..240 = 16 * code) through dp4a.u32.s32: no shifts; s16 = 16 * sum exactly,
+        // moff = 0x4B400000 - 128 * (s0 + s1); (xd / 16) * (16 * s) rounds like xd * s (power-of-two scaling)
+        const int m = 0x0F0F0F0F;
+        const unsigned mh = 0xF0F0F0F0u;
+        int sl = __dp4a(q[0].x & m, xl.x, 0);
+        sl = __dp4a(q[0].y & m, xl.y, sl);
+        sl = __dp4a(q[0].z & m, xl.z, sl);
+        sl = __dp4a(q[0].w & m, xl.w, sl);
+        int sh;
+        asm("dp4a.u32.s32 %0, %1, %2, %3;" : "=r"(sh) : "r"((unsigned)q[0].x & mh), "r"(xh.x), "r"(0));
+        asm("dp4a.u32.s32 %0, %1, %2, %3;" : "=r"(sh) : "r"((unsigned)q[0].y & mh), "r"(xh.y), "r"(sh));
+        asm("dp4a.u32.s32 %0, %1, %2, %3;" : "=r"(sh) : "r"((unsigned)q[0].z & mh), "r"(xh.z), "r"(sh));
+        asm("dp4a.u32.s32 %0, %1, %2, %3;" : "=r"(sh) : "r"((unsigned)q[0].w & mh), "r"(xh.w), "r"(sh));
+        const int s16 = sl * 16 + sh;
+        return h2f_bits(dd16) * ((xd * 0.0625f) * (__int_as_float(s16 + moff) - 12582912.f));
+    } else if (FMT == FAST_P4) {
         const int m = 0x0F0F0F0F;
         int s = __dp4a(q[0].x & m, xl.x, 0);
         s = __dp4a(q[0].y & m, xl.y, s);

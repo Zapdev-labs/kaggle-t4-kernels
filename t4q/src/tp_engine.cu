@@ -105,7 +105,7 @@ void build_fw(t4q_ctx* c, Stage& sg, int g, tp::FW& W, const std::vector<Piece>&
     if (ff == FAST_K5 && getenv("T4Q_RPL_K5")) rpl = atoi(getenv("T4Q_RPL_K5"));
     if (il && (il != rpl || rows.size() != 2 || rows[0].nr != rows[1].nr))
         throw std::runtime_error(std::string("bad interleave in ") + what);
-    W.L = make_layout(ff, (int)N, (int)K, rpl, getenv("T4Q_CM") ? atoi(getenv("T4Q_CM")) : 0);
+    W.L = make_layout(ff, (int)N, (int)K, rpl, getenv("T4Q_CM") ? atoi(getenv("T4Q_CM")) : 1);  // chunk-major default
     CK(cudaSetDevice(g));
     CK(cudaMalloc(&W.base, W.L.bytes));
     CK(cudaMemsetAsync(W.base, 0, W.L.bytes, G.s));
@@ -300,6 +300,28 @@ void selftest(t4q_ctx* c) {
         float ms = 0;
         CK(cudaEventElapsedTime(&ms, e0, e1));
         const double us = 1e3 * ms / NIT, gbs = W.L.bytes / (us * 1e3);
+        // P4 unsigned high-nibble path: bit-identical outputs and its time
+        std::string p4j;
+        if (W.L.fmt == FAST_P4) {
+            tp::set_p4u(1);
+            tp::gemv(W, G.xq, G.xm, G.logits, G.s);
+            std::vector<float> y2(N);
+            CK(cudaMemcpyAsync(y2.data(), G.logits, (size_t)N * 4, cudaMemcpyDeviceToHost, G.s));
+            CK(cudaStreamSynchronize(G.s));
+            const bool same = memcmp(y2.data(), y.data(), (size_t)N * 4) == 0;
+            if (!same) worst = 1.0;  // fails the self-test
+            for (int it = 0; it < 3; it++) tp::gemv(W, G.xq, G.xm, G.logits, G.s);
+            CK(cudaEventRecord(e0, G.s));
+            for (int it = 0; it < NIT; it++) tp::gemv(W, G.xq, G.xm, G.logits, G.s);
+            CK(cudaEventRecord(e1, G.s));
+            CK(cudaEventSynchronize(e1));
+            float ms3 = 0;
+            CK(cudaEventElapsedTime(&ms3, e0, e1));
+            tp::set_p4u(S.p4u);
+            char bb[96];
+            snprintf(bb, sizeof bb, ",\"p4u_same\":%s,\"p4u_us\":%.1f", same ? "true" : "false", 1e3 * ms3 / NIT);
+            p4j = bb;
+        }
         // K-split weights: cost of the AR publish epilogue (remote float4 rows + fence + counter + flag)
         std::string arj;
         if (sp.what.find("ssm_out") != std::string::npos || sp.what.find("ffn_down") != std::string::npos ||
@@ -354,7 +376,7 @@ void selftest(t4q_ctx* c) {
         snprintf(b, sizeof b,
                  "%s{\"w\":\"%s\",\"fmt\":\"%s\",\"N\":%d,\"K\":%d,\"max_err_over_rms\":%.3e,\"us\":%.1f,"
                  "\"GBps\":%.1f%s}",
-                 k ? "," : "", sp.what.c_str(), fmt_name(W.L.fmt), N, K, rel, us, gbs, arj.c_str());
+                 k ? "," : "", sp.what.c_str(), fmt_name(W.L.fmt), N, K, rel, us, gbs, (arj + p4j).c_str());
         js += b;
     }
     char b[128];
@@ -597,14 +619,20 @@ struct Enq {
             } else {
                 tp::gemv(L.qkv_a, G.xq, G.xm, G.y, s, nullptr, nullptr, pre(G, pa, L.qkv_a));
                 mark(G, "gemv_attn_qkv");
-                tp::attn_prep(G.y, L.q_norm, L.k_norm, G.qa, L.kc, L.vc, S.max_ctx, G.st,
-                              powf(hp::ROPE_BASE, -2.0f / hp::NROT), s);
-                mark(G, "attn_prep");
-                tp::attn_split(G.qa, L.kc, L.vc, G.attn_ws, S.max_ctx, G.st, s);
-                mark(G, "attn_split");
-                const tp::Pf pf = pf_for(L.wo);
-                tp::attn_combine_q8(G.attn_ws, G.y, G.st, G.xq, G.xm, s, &pf);
-                mark(G, "attn_combine");
+                if (S.attnf) {
+                    tp::attn_fused(G.y, L.q_norm, L.k_norm, L.kc, L.vc, G.attn_ws, S.max_ctx, G.st,
+                                   powf(hp::ROPE_BASE, -2.0f / hp::NROT), G.gcnt + 24, G.xq, G.xm, s);
+                    mark(G, "attn_fused");
+                } else {
+                    tp::attn_prep(G.y, L.q_norm, L.k_norm, G.qa, L.kc, L.vc, S.max_ctx, G.st,
+                                  powf(hp::ROPE_BASE, -2.0f / hp::NROT), s);
+                    mark(G, "attn_prep");
+                    tp::attn_split(G.qa, L.kc, L.vc, G.attn_ws, S.max_ctx, G.st, s);
+                    mark(G, "attn_split");
+                    const tp::Pf pf = pf_for(L.wo);
+                    tp::attn_combine_q8(G.attn_ws, G.y, G.st, G.xq, G.xm, s, &pf);
+                    mark(G, "attn_combine");
+                }
                 tp::ArArgs a;
                 tp::gemv(L.wo, G.xq, G.xm, G.part + (idx & 1) * D, s, ksplit(G, idx, a));
                 mark(G, "gemv_attn_out");
@@ -1077,10 +1105,10 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
         sync_both(c);
         return 0;
     }
-    if (k == "arn") {  // host-side launch choice: graphs are re-captured
+    if (k == "arn" || k == "p4u") {  // host-side launch choice: graphs are re-captured
         sync_both(c);
-        tp::set_arn(v);
-        S.arn = v;
+        if (k == "arn") { tp::set_arn(v); S.arn = v; }
+        else { tp::set_p4u(v); S.p4u = v; }
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
             if (S.G[g].gexec) { cudaGraphExecDestroy(S.G[g].gexec); S.G[g].gexec = nullptr; }
@@ -1088,9 +1116,10 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
         }
         return 0;
     }
-    if (k == "ll" || k == "gdnf") {
+    if (k == "ll" || k == "gdnf" || k == "attnf") {
         sync_both(c);
         if (k == "ll") S.ll = v;
+        else if (k == "attnf") S.attnf = v;
         else S.gdnf = v;
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
@@ -1193,8 +1222,9 @@ std::string tp_stats_json(t4q_ctx* c) {
     char b[512];
     snprintf(b, sizeof b,
              ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"arpub\": %d, \"mega\": %d, \"pf_kb\": %d, \"graphs\": %d, "
-             "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"graph_capture_ms\": %.1f",
-             (int)S.p2p, S.fuse, S.arpub, S.mega, S.pf_kb, (int)S.graphs, S.ll, S.gdnf, S.spin_ns, S.arn,
+             "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"attnf\": %d, \"p4u\": %d, \"cm\": %d, \"graph_capture_ms\": %.1f",
+             (int)S.p2p, S.fuse, S.arpub, S.mega, S.pf_kb, (int)S.graphs, S.ll, S.gdnf, S.spin_ns, S.arn, S.attnf,
+             S.p4u, S.G[0].lm.L.cm,
              S.ms_graph_capture);
     std::string s = b;
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;

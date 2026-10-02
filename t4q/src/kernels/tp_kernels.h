@@ -11,6 +11,7 @@ namespace tp {
 void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t s, const ArArgs* ar = nullptr,
           const SegArgs* seg = nullptr, const ProArgs* pro = nullptr);
 void set_max_blocks(int n);
+void set_p4u(int v);  // P4 unsigned high-nibble dp4a path (option p4u)
 void set_threads(int n);
 void touch(const uint8_t* p, size_t n, int mode, float* sink, cudaStream_t s);  // L2 warm-up experiment  // GEMV block size for plain-x kernels (128 or 256)
 
@@ -52,6 +53,9 @@ void attn_split(const float* qa, const uint16_t* kc, const uint16_t* vc, float* 
                 cudaStream_t s);
 void attn_combine_q8(const float* ws, const float* ya, const StepState* st, int8_t* xq, int2* xm, cudaStream_t s,
                      const Pf* pf = nullptr);
+// fused attention: prep + split + combine (+ q8 for attn_output); cnt: 2 zeroed counters
+void attn_fused(const float* ya, const float* qw, const float* kw, uint16_t* kc, uint16_t* vc, float* ws, int max_ctx,
+                const StepState* st, float theta_scale, unsigned* cnt, int8_t* xq, int2* xm, cudaStream_t s);
 // argmax over the local logits shard, exchange with the peer, update StepState (token, pos, step), ring
 void argmax_step(const float* logits, int n, int row0, float* apart, float* amb, const unsigned* aflag,
                  float* peer_amb, unsigned* peer_aflag, StepState* st, int* ring, cudaStream_t s);

@@ -190,11 +190,11 @@ __device__ __forceinline__ void quant_smem(float v, int i, int8_t* s_lo, int8_t*
 int g_max_blocks = 80;
 int g_threads = 128;  // plain-x GEMV block size (M4 v11 selftest: 128 >= 256 on every shape)
 
-template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO, bool SQ = false>
+template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO, bool SQ = false, int CVX = 1>
 __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs ar, const SegArgs sg, const ProArgs pa,
                                                  int tpw) {
     constexpr int D = 2, M = 1;
-    constexpr int CVT = (FMT == FAST_P4 || FMT == FAST_Q8) ? 1 : 0;
+    constexpr int CVT = FMT == FAST_P4 ? CVX : FMT == FAST_Q8 ? 1 : 0;  // CVX 2: P4 unsigned high-nibble dp4a
     constexpr int NB = NCH * 16;
     constexpr int K = NCH * 512;
     const int tid = threadIdx.x, lane = tid & 31, h = lane >> 4, j = lane & 15, wib = tid >> 5;
@@ -467,7 +467,7 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
                 }
                 const float xd = __int_as_float(mt.x);
                 const int s0 = (int)(short)(mt.y & 0xffff), s1 = mt.y >> 16;
-                const int moff = FMT == FAST_P4 ? 0x4B400000 - 8 * (s0 + s1) : 0x4B400000;
+                const int moff = FMT == FAST_P4 ? 0x4B400000 - (CVT == 2 ? 128 : 8) * (s0 + s1) : 0x4B400000;
 #pragma unroll
                 for (int r = 0; r < RPL; ++r) acc[r][col] += group_dot_r<FMT, CVT, RPL>(cur, r, xl, xh, xd, s0, s1, moff);
             }
@@ -536,7 +536,7 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     }
 }
 
-template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO, bool SQ = false>
+template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO, bool SQ = false, int CVX = 1>
 void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t s, const ArArgs& ar,
                  const SegArgs& sg, const ProArgs& pa) {
     GemvArgs a = make_args(W.L, W.base, xq, xm, y, W.L.N);
@@ -549,10 +549,10 @@ void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaSt
         int dev = 0;
         cudaGetDevice(&dev);
         if (dev < 8 && !occ[dev]) {
-            cudaFuncSetAttribute(k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ>, cudaFuncAttributePreferredSharedMemoryCarveout,
+            cudaFuncSetAttribute(k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ, CVX>, cudaFuncAttributePreferredSharedMemoryCarveout,
                                  100);
             int nb = 0, nsm = 0;
-            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ>, 256, 0);
+            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ, CVX>, 256, 0);
             cudaDeviceGetAttribute(&nsm, cudaDevAttrMultiProcessorCount, dev);
             occ[dev] = nb * nsm;
             if (occ[dev] < 1) throw std::runtime_error("leader gemv: zero occupancy");
@@ -575,15 +575,17 @@ void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaSt
     int dev = 0;
     cudaGetDevice(&dev);
     if (dev < 8 && !attr[dev]) {
-        cudaFuncSetAttribute(k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ>, cudaFuncAttributePreferredSharedMemoryCarveout,
+        cudaFuncSetAttribute(k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ, CVX>, cudaFuncAttributePreferredSharedMemoryCarveout,
                              100);
         attr[dev] = true;
     }
-    k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ><<<blocks, threads, 0, s>>>(a, ar, sg, pa, tpw);
+    k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ, CVX><<<blocks, threads, 0, s>>>(a, ar, sg, pa, tpw);
 }
 
 }  // namespace
 
+int g_p4u = 0;  // 1: P4 GEMVs use the unsigned high-nibble dp4a path (bit-identical, fewer instructions)
+void set_p4u(int v) { g_p4u = v; }
 void set_max_blocks(int n) { g_max_blocks = n; }
 void set_threads(int n) { g_threads = (n == 128) ? 128 : 256; }
 
@@ -598,22 +600,28 @@ void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t 
     if (pro) pk = pro->xflag ? PRO_LEADER : pro->h_in ? PRO_ARNORM : pro->gu ? PRO_SILU : pro->o ? PRO_GNORM : PRO_NONE;
     if (pro && pro->sq_xq) {  // gate|up with the silu-quant epilogue
         if (f == FAST_P4 && rpl == 4 && nch == 10 && !isar && !isseg && pk == PRO_NONE) {
-            launch_gemv<FAST_P4, 4, 10, false, false, PRO_NONE, true>(W, xq, xm, y, s, A, S, P);
+            if (g_p4u) launch_gemv<FAST_P4, 4, 10, false, false, PRO_NONE, true, 2>(W, xq, xm, y, s, A, S, P);
+            else launch_gemv<FAST_P4, 4, 10, false, false, PRO_NONE, true>(W, xq, xm, y, s, A, S, P);
             return;
         }
         if (f == FAST_P4 && rpl == 4 && nch == 10 && !isar && !isseg && pk == PRO_ARNORM) {
-            launch_gemv<FAST_P4, 4, 10, false, false, PRO_ARNORM, true>(W, xq, xm, y, s, A, S, P);
+            if (g_p4u) launch_gemv<FAST_P4, 4, 10, false, false, PRO_ARNORM, true, 2>(W, xq, xm, y, s, A, S, P);
+            else launch_gemv<FAST_P4, 4, 10, false, false, PRO_ARNORM, true>(W, xq, xm, y, s, A, S, P);
             return;
         }
         if (f == FAST_P4 && rpl == 4 && nch == 10 && !isar && !isseg && pk == PRO_LEADER) {
-            launch_gemv<FAST_P4, 4, 10, false, false, PRO_LEADER, true>(W, xq, xm, y, s, A, S, P);
+            if (g_p4u) launch_gemv<FAST_P4, 4, 10, false, false, PRO_LEADER, true, 2>(W, xq, xm, y, s, A, S, P);
+            else launch_gemv<FAST_P4, 4, 10, false, false, PRO_LEADER, true>(W, xq, xm, y, s, A, S, P);
             return;
         }
         throw std::runtime_error("tp::gemv: no silu-quant instantiation");
     }
 #define T4Q_G(FMT, RPL, NCH, AR_, SEG_, PRO_)                                                     \
     if (f == FMT && rpl == RPL && nch == NCH && isar == AR_ && isseg == SEG_ && pk == PRO_) {      \
-        launch_gemv<FMT, RPL, NCH, AR_, SEG_, PRO_>(W, xq, xm, y, s, A, S, P);                    \
+        if (FMT == FAST_P4 && g_p4u)                                                              \
+            launch_gemv<FMT, RPL, NCH, AR_, SEG_, PRO_, false, (FMT == FAST_P4 ? 2 : 1)>(W, xq, xm, y, s, A, S, P); \
+        else                                                                                      \
+            launch_gemv<FMT, RPL, NCH, AR_, SEG_, PRO_>(W, xq, xm, y, s, A, S, P);                \
         return;                                                                                   \
     }
     T4Q_G(FAST_P4, 4, 10, false, true, PRO_ARNORM)   // DeltaNet qkvz + alpha/beta fp32 rows, AR + attn_norm
@@ -1094,6 +1102,216 @@ __device__ __forceinline__ void d_attn_split(const float* qa, const __half* kc, 
 __global__ void __launch_bounds__(256, 2) k_attn_split(const float* qa, const __half* kc, const __half* vc, float* ws,
                                                        int max_ctx, const StepState* st) { d_attn_split(qa, kc, vc, ws, max_ctx, st, blockIdx.x, blockIdx.y); }
 
+// Fused attention (option attnf, default since M4 round 2): q/k RMSNorm + RoPE + KV append, split-K flash decode
+// and the split merge + sigmoid gate + q8 in one kernel. grid (2 kv heads, NSPLIT), 256 threads, 2 blocks/SM.
+//   phase 1: warps 0-5 build the 6 q heads of kv head j in smem (warp per head); in the block whose chunk holds pos,
+//            warp 6 appends k (norm + rope) and warp 7 appends v
+//   phase 2: as d_attn_split, four positions in flight per warp
+//   phase 3: the last block of kv head j (atomic counter) merges the splits for its 6 heads, warp per head
+constexpr int ATT_MIN_CHUNK = 32;
+__global__ void __launch_bounds__(256, 2) k_attn_fused(const float* ya, const float* __restrict__ qw,
+                                                       const float* __restrict__ kw, __half* kc, __half* vc,
+                                                       float* ws, int max_ctx, const StepState* st, float theta_scale,
+                                                       unsigned* cnt, int8_t* xq, int2* xm) {
+    __shared__ float sq[6][256];
+    __shared__ float sm_m[8][3], sm_l[8][3];
+    __shared__ float sacc[8][256];
+    __shared__ int s_last;
+    const int j = blockIdx.x, sidx = blockIdx.y;
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, hg = warp >> 2, wq = warp & 3;
+    const int pos = st->pos;
+    const int n_kv = pos + 1;
+    const int chunk = max(ATT_MIN_CHUNK, (n_kv + NSPLIT - 1) / NSPLIT);
+    const int t0 = sidx * chunk, t1 = min(n_kv, t0 + chunk);
+    const bool has_pos = t0 <= pos && pos < t1;
+    // ---- phase 1
+    if (warp < 6 || has_pos) {
+        const bool isq = warp < 6;
+        const float* src = isq ? ya + (6 * j + warp) * 512 : (warp == 6 ? ya + 6144 + j * 256 : ya + 6656 + j * 256);
+        float x[8];
+        {
+            const float4 a = __ldcg((const float4*)(src + lane * 8)), b = __ldcg((const float4*)(src + lane * 8 + 4));
+            x[0] = a.x; x[1] = a.y; x[2] = a.z; x[3] = a.w; x[4] = b.x; x[5] = b.y; x[6] = b.z; x[7] = b.w;
+        }
+        if (warp == 7) {
+            __half* vd = vc + ((size_t)j * max_ctx + pos) * 256 + lane * 8;
+#pragma unroll
+            for (int i = 0; i < 8; i++) vd[i] = __float2half_rn(x[i]);
+        } else {
+            float ss = 0.f;
+#pragma unroll
+            for (int i = 0; i < 8; i++) ss += x[i] * x[i];
+            ss = warp_sum(ss);
+            const float scale = rsqrtf(ss / 256.0f + 1e-6f);
+            const float* w = isq ? qw : kw;
+            float y[8], pr[8];
+#pragma unroll
+            for (int i = 0; i < 8; i++) y[i] = (x[i] * scale) * w[lane * 8 + i];
+#pragma unroll
+            for (int i = 0; i < 8; i++) pr[i] = __shfl_xor_sync(0xffffffffu, y[i], 4);
+            if (lane < 8) {  // rotary dims 0..63: d < 32 pairs with d + 32 (lane ^ 4)
+#pragma unroll
+                for (int i = 0; i < 8; i++) {
+                    const int d = (lane & 3) * 8 + i;
+                    const float theta = (float)pos * powf(theta_scale, (float)d);
+                    const float c = cosf(theta), sn = sinf(theta);
+                    y[i] = lane < 4 ? y[i] * c - pr[i] * sn : pr[i] * sn + y[i] * c;
+                }
+            }
+            if (isq) {
+#pragma unroll
+                for (int i = 0; i < 8; i++) sq[warp][lane * 8 + i] = y[i];
+            } else {
+                __half* kd = kc + ((size_t)j * max_ctx + pos) * 256 + lane * 8;
+#pragma unroll
+                for (int i = 0; i < 8; i++) kd[i] = __float2half_rn(y[i]);
+            }
+        }
+    }
+    __syncthreads();
+    // ---- phase 2
+    float q[3][8];
+#pragma unroll
+    for (int hh = 0; hh < 3; hh++)
+#pragma unroll
+        for (int i = 0; i < 8; i++) q[hh][i] = sq[3 * hg + hh][lane * 8 + i];
+    float m[3], l[3], acc[3][8];
+#pragma unroll
+    for (int hh = 0; hh < 3; hh++) {
+        m[hh] = -FLT_MAX; l[hh] = 0.f;
+#pragma unroll
+        for (int i = 0; i < 8; i++) acc[hh][i] = 0.f;
+    }
+    const __half* K = kc + (size_t)j * max_ctx * 256;
+    const __half* Vv = vc + (size_t)j * max_ctx * 256;
+    for (int t = t0 + wq; t < t1; t += 16) {
+        uint4 kraw[4], vraw[4];
+#pragma unroll
+        for (int u = 0; u < 4; u++) {
+            const int tt = t + 4 * u;
+            if (tt < t1) {
+                kraw[u] = __ldcg((const uint4*)(K + (size_t)tt * 256 + lane * 8));
+                vraw[u] = __ldcg((const uint4*)(Vv + (size_t)tt * 256 + lane * 8));
+            }
+        }
+#pragma unroll
+        for (int u = 0; u < 4; u++) {
+            if (t + 4 * u >= t1) break;
+            float k[8], v[8];
+            const __half2* kh = (const __half2*)&kraw[u];
+            const __half2* vh = (const __half2*)&vraw[u];
+#pragma unroll
+            for (int i = 0; i < 4; i++) {
+                const float2 kf = __half22float2(kh[i]), vf = __half22float2(vh[i]);
+                k[2 * i] = kf.x; k[2 * i + 1] = kf.y; v[2 * i] = vf.x; v[2 * i + 1] = vf.y;
+            }
+#pragma unroll
+            for (int hh = 0; hh < 3; hh++) {
+                float dot = 0.f;
+#pragma unroll
+                for (int i = 0; i < 8; i++) dot += q[hh][i] * k[i];
+                dot = warp_sum(dot) * (1.0f / 16.0f);
+                const float mn = fmaxf(m[hh], dot);
+                const float c = expf(m[hh] - mn), p = expf(dot - mn);
+                l[hh] = l[hh] * c + p;
+#pragma unroll
+                for (int i = 0; i < 8; i++) acc[hh][i] = acc[hh][i] * c + p * v[i];
+                m[hh] = mn;
+            }
+        }
+    }
+    if (lane == 0) {
+#pragma unroll
+        for (int hh = 0; hh < 3; hh++) { sm_m[warp][hh] = m[hh]; sm_l[warp][hh] = l[hh]; }
+    }
+    __syncthreads();
+#pragma unroll
+    for (int hh = 0; hh < 3; hh++) {
+        float M = -FLT_MAX;
+#pragma unroll
+        for (int w = 0; w < 4; w++) M = fmaxf(M, sm_m[4 * hg + w][hh]);
+        const float sc = (l[hh] > 0.f) ? expf(m[hh] - M) : 0.f;
+#pragma unroll
+        for (int i = 0; i < 8; i++) sacc[warp][lane * 8 + i] = acc[hh][i] * sc;
+        __syncthreads();
+#pragma unroll
+        for (int g2 = 0; g2 < 2; g2++) {
+            float* out = ws + ((size_t)(j * NSPLIT + sidx) * 6 + 3 * g2 + hh) * 258;
+            float a = 0.f;
+#pragma unroll
+            for (int w = 0; w < 4; w++) a += sacc[4 * g2 + w][tid];
+            out[2 + tid] = a;
+            if (tid == 0) {
+                float M2 = -FLT_MAX;
+                for (int w = 0; w < 4; w++) M2 = fmaxf(M2, sm_m[4 * g2 + w][hh]);
+                float L = 0.f;
+                for (int w = 0; w < 4; w++)
+                    if (sm_l[4 * g2 + w][hh] > 0.f) L += sm_l[4 * g2 + w][hh] * expf(sm_m[4 * g2 + w][hh] - M2);
+                out[0] = M2;
+                out[1] = L;
+            }
+        }
+        __syncthreads();
+    }
+    // ---- phase 3: the last block of kv head j merges
+    __threadfence();
+    __syncthreads();
+    if (tid == 0) {
+        const unsigned old = atomicAdd(cnt + j, 1u);
+        s_last = old == (unsigned)(NSPLIT - 1);
+        if (s_last) cnt[j] = 0u;
+    }
+    __syncthreads();
+    if (!s_last || warp >= 6) return;
+    __threadfence();
+    const int nsp = (n_kv + chunk - 1) / chunk;
+    const int h6 = warp, hl = 6 * j + h6;
+    float M = -FLT_MAX;
+    for (int s2 = 0; s2 < nsp; s2++) M = fmaxf(M, __ldcg(ws + ((size_t)(j * NSPLIT + s2) * 6 + h6) * 258));
+    float num[8], den = 0.f;
+#pragma unroll
+    for (int i = 0; i < 8; i++) num[i] = 0.f;
+#pragma unroll 4
+    for (int s2 = 0; s2 < nsp; s2++) {
+        const float* p = ws + ((size_t)(j * NSPLIT + s2) * 6 + h6) * 258;
+        const float wgt = expf(__ldcg(p) - M);
+        den += wgt * __ldcg(p + 1);
+        const float2* a2 = (const float2*)(p + 2 + lane * 8);
+#pragma unroll
+        for (int i = 0; i < 4; i++) {
+            const float2 a = __ldcg(a2 + i);
+            num[2 * i] += wgt * a.x;
+            num[2 * i + 1] += wgt * a.y;
+        }
+    }
+    float val[8], amax = 0.f;
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        const float att = num[i] / den;
+        const float g = __ldcg(ya + hl * 512 + 256 + lane * 8 + i);
+        val[i] = att * (1.0f / (1.0f + expf(-g)));
+        amax = fmaxf(amax, fabsf(val[i]));
+    }
+    // q8 of the 32-group held by lanes 4g..4g+3 (same rule as quant_warp)
+    amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 1));
+    amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 2));
+    const float d = amax / 127.f;
+    int s8 = 0;
+    unsigned w0 = 0, w1 = 0;
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        const int qv = amax == 0.f ? 0 : (int)roundf(val[i] / d);
+        s8 += qv;
+        if (i < 4) w0 |= (unsigned)(qv & 0xff) << (8 * i);
+        else w1 |= (unsigned)(qv & 0xff) << (8 * (i - 4));
+    }
+    *(uint2*)(xq + hl * 256 + lane * 8) = make_uint2(w0, w1);
+    const int s16 = s8 + __shfl_xor_sync(0xffffffffu, s8, 1);  // lanes 4g, 4g+1: elements 0..15; 4g+2, 4g+3: 16..31
+    const int s16b = __shfl_xor_sync(0xffffffffu, s16, 2);
+    if ((lane & 3) == 0)
+        xm[hl * 8 + (lane >> 2)] = make_int2(__float_as_int(d), (int)((unsigned)(s16 & 0xffff) | ((unsigned)s16b << 16)));
+}
+
 // 12 blocks (local q heads) x 256: merge splits, sigmoid gate, q8 for attn_output
 __device__ __forceinline__ void d_attn_combine_q8(const float* ws, const float* ya, const StepState* st,
                                                          int8_t* xq, int2* xm, const Pf pf, int bx) {
@@ -1311,6 +1529,12 @@ void attn_combine_q8(const float* ws, const float* ya, const StepState* st, int8
                      const Pf* pf) {
     const Pf P = pf ? *pf : Pf{};
     k_attn_combine_q8<<<12 + P.blocks, 256, 0, s>>>(ws, ya, st, xq, xm, P);
+}
+
+void attn_fused(const float* ya, const float* qw, const float* kw, uint16_t* kc, uint16_t* vc, float* ws, int max_ctx,
+                const StepState* st, float theta_scale, unsigned* cnt, int8_t* xq, int2* xm, cudaStream_t s) {
+    k_attn_fused<<<dim3(2, NSPLIT), 256, 0, s>>>(ya, qw, kw, (__half*)kc, (__half*)vc, ws, max_ctx, st, theta_scale, cnt,
+                                                  xq, xm);
 }
 
 void argmax_step(const float* logits, int n, int row0, float* apart, float* amb, const unsigned* aflag,

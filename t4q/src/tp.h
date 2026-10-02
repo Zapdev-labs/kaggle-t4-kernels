@@ -229,6 +229,8 @@ struct State {
     int ll = 0;           // 1: LL all-reduce (tagged 8-byte rows from the K-split GEMVs, no flags; P2P, fuse 0 only)
     int gdnf = 0;         // 1: gdn and the gated norm q8 in one kernel
     int spin_ns = 0;      // spin-wait backoff
+    int attnf = 0;        // 1: fused attention kernel (prep + split + combine)
+    int p4u = 0;          // 1: P4 GEMVs with the unsigned high-nibble dp4a path
     int arn = 0;          // ar_norm kernel: 0 = multi-block (20 x 256), 1 = single block (round 1)
     int pf_kb = 0;        // L2 prefetch of the next GEMV during small kernels (0 = off; no gain in M4 v4)
     double ms_graph_capture = 0;
