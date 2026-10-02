@@ -49,6 +49,14 @@ struct SegArgs {  // extra fp32 rows (K = 5120) appended to a GEMV launch: y[i] 
     int nrows = 0;
 };
 
+// L2 prefetch of the next GEMV's first weight bytes, issued by extra blocks of the small kernel before it (the memory
+// system is otherwise idle during all-reduce waits and the small glue kernels)
+struct Pf {
+    const uint8_t* p[4] = {nullptr, nullptr, nullptr, nullptr};
+    unsigned n[4] = {0, 0, 0, 0};
+    int blocks = 0;  // extra blocks to launch (0: no prefetch)
+};
+
 // GEMV prologues (x is built per block in shared memory, after the first weight chunks are already in flight)
 enum ProKind { PRO_NONE = 0, PRO_ARNORM = 1, PRO_SILU = 2, PRO_GNORM = 3 };
 struct ProArgs {
@@ -142,7 +150,8 @@ struct State {
     std::string prof_json;
     int max_blocks = 80;  // co-resident GEMV blocks (2 per SM)
     bool p2p = true;      // false: host-mapped mailbox fallback
-    bool fuse = true;     // fused GEMV prologues (false: separate ar_norm / gnorm_q8 / silu_q8 kernels)
+    bool fuse = false;    // fused GEMV prologues (false: separate ar_norm / gnorm_q8 / silu_q8 kernels; faster in M4 v3)
+    int pf_kb = 2048;     // L2 prefetch of the next GEMV during small kernels (0 = off)
     double ms_graph_capture = 0;
 };
 

@@ -318,7 +318,8 @@ struct Enq {
     void start(int g) {
         tp::Gpu& G = c->tps->G[g];
         mark(G, "start");
-        tp::embed(G.embd, G.st, G.prompt, G.hb[0], G.s);
+        const tp::Pf pf = pf_for(G.L[0].attn ? G.L[0].qkv_a : G.L[0].qkvz);
+        tp::embed(G.embd, G.st, G.prompt, G.hb[0], G.s, &pf);
         mark(G, "embed");
     }
     // prologue consuming AR idx (idx < 0: layer 0, no all-reduce): residual in hb[idx & 1] -> hb[(idx + 1) & 1]
@@ -345,13 +346,31 @@ struct Enq {
         p.xn_out = G.xn;
         return p;
     }
+    // L2 prefetch spec for the first pf_kb of W (each plane gets the same fraction, i.e. the first tiles)
+    tp::Pf pf_for(const tp::FW& W) {
+        tp::Pf f;
+        const int kb = c->tps->pf_kb;
+        if (kb <= 0) return f;
+        const double frac = std::min(1.0, (double)kb * 1024.0 / (double)W.L.bytes);
+        const size_t start[4] = {0, W.L.off_qh, W.L.off_sc, W.L.off_d};
+        const size_t end[4] = {W.L.off_qh, W.L.off_sc, W.L.off_d, W.L.bytes};
+        for (int r = 0; r < 4; r++) {
+            const size_t sz = end[r] - start[r];
+            if (!sz) continue;
+            f.p[r] = W.base + start[r];
+            f.n[r] = (unsigned)std::min(sz, ((size_t)(sz * frac) + 127) & ~(size_t)127);
+        }
+        f.blocks = 32;
+        return f;
+    }
     // unfused path: the ARNORM prologue as its own kernel (q8 x to G.xq/G.xm, fp32 to G.xn); returns nullptr so the
-    // GEMV reads x from global memory
-    const tp::ProArgs* pre(tp::Gpu& G, const tp::ProArgs& p) {
+    // GEMV reads x from global memory. Its extra blocks prefetch the next GEMV (nxt) into L2.
+    const tp::ProArgs* pre(tp::Gpu& G, const tp::ProArgs& p, const tp::FW& nxt) {
         if (c->tps->fuse) return &p;
         // in fallback mode arnorm() already enqueued the pull and cleared p.flag
+        const tp::Pf pf = pf_for(nxt);
         tp::ar_norm(p.h_in, p.h_out, p.add ? G.part : nullptr, G.rx, p.flag ? G.flag : nullptr, G.st, p.idx, p.nw,
-                    G.xn, G.xq, G.xm, G.s);
+                    G.xn, G.xq, G.xm, G.s, &pf);
         mark(G, "ar_norm");
         return nullptr;
     }
@@ -367,28 +386,30 @@ struct Enq {
             if (!L.attn) {
                 tp::SegArgs sg;
                 sg.w = L.ab; sg.x = G.xn; sg.y = G.yab; sg.nrows = 48;
-                tp::gemv(L.qkvz, G.xq, G.xm, G.y, s, nullptr, &sg, pre(G, pa));
+                tp::gemv(L.qkvz, G.xq, G.xm, G.y, s, nullptr, &sg, pre(G, pa, L.qkvz));
                 mark(G, "gemv_qkvz");
                 tp::gdn(G.y, G.yab, L.conv_ring, L.conv_w, L.ssm_a, L.ssm_dt, L.S, G.o, G.st, s);
                 mark(G, "gdn");
                 tp::ProArgs pg;
                 pg.o = G.o; pg.z = G.y + 5120; pg.gw = L.ssm_norm;
                 if (!S.fuse) {
-                    tp::gnorm_q8(G.o, G.y + 5120, L.ssm_norm, G.xq, G.xm, s);
+                    const tp::Pf pf = pf_for(L.ssm_out);
+                    tp::gnorm_q8(G.o, G.y + 5120, L.ssm_norm, G.xq, G.xm, s, &pf);
                     mark(G, "gnorm_q8");
                 }
                 tp::ArArgs a = ar(G, idx);
                 tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, &a, nullptr, S.fuse ? &pg : nullptr);
                 mark(G, "gemv_ssm_out");
             } else {
-                tp::gemv(L.qkv_a, G.xq, G.xm, G.y, s, nullptr, nullptr, pre(G, pa));
+                tp::gemv(L.qkv_a, G.xq, G.xm, G.y, s, nullptr, nullptr, pre(G, pa, L.qkv_a));
                 mark(G, "gemv_attn_qkv");
                 tp::attn_prep(G.y, L.q_norm, L.k_norm, G.qa, L.kc, L.vc, S.max_ctx, G.st,
                               powf(hp::ROPE_BASE, -2.0f / hp::NROT), s);
                 mark(G, "attn_prep");
                 tp::attn_split(G.qa, L.kc, L.vc, G.attn_ws, S.max_ctx, G.st, s);
                 mark(G, "attn_split");
-                tp::attn_combine_q8(G.attn_ws, G.y, G.st, G.xq, G.xm, s);
+                const tp::Pf pf = pf_for(L.wo);
+                tp::attn_combine_q8(G.attn_ws, G.y, G.st, G.xq, G.xm, s, &pf);
                 mark(G, "attn_combine");
                 tp::ArArgs a = ar(G, idx);
                 tp::gemv(L.wo, G.xq, G.xm, G.part + (idx & 1) * D, s, &a);
@@ -397,12 +418,13 @@ struct Enq {
         } else {
             const int idx = 2 * il + 1;
             const tp::ProArgs pa = arnorm(G, 2 * il, L.post_norm);
-            tp::gemv(L.gateup, G.xq, G.xm, G.y, s, nullptr, nullptr, pre(G, pa));
+            tp::gemv(L.gateup, G.xq, G.xm, G.y, s, nullptr, nullptr, pre(G, pa, L.gateup));
             mark(G, "gemv_gateup");
             tp::ProArgs ps;
             ps.gu = G.y;
             if (!S.fuse) {
-                tp::silu_q8(G.y, 8704, G.xq, G.xm, s);
+                const tp::Pf pf = pf_for(L.down);
+                tp::silu_q8(G.y, 8704, G.xq, G.xm, s, &pf);
                 mark(G, "silu_q8");
             }
             tp::ArArgs a = ar(G, idx);
@@ -414,7 +436,7 @@ struct Enq {
         tp::State& S = *c->tps;
         tp::Gpu& G = S.G[g];
         const tp::ProArgs pa = arnorm(G, 127, G.output_norm);
-        tp::gemv(G.lm, G.xq, G.xm, G.logits, G.s, nullptr, nullptr, pre(G, pa));
+        tp::gemv(G.lm, G.xq, G.xm, G.logits, G.s, nullptr, nullptr, pre(G, pa, G.lm));
         mark(G, "gemv_lm_head");
         tp::argmax_step(G.logits, 124160, 124160 * g, G.apart, S.p2p ? G.amb : G.hamb,
                         S.p2p ? G.flag + 2 : G.hflag + 2, G.peer_amb, G.peer_flag + 2, G.st,
@@ -748,9 +770,10 @@ int tp_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop, int 
 int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     tp::State& S = *c->tps;
     if (k == "graphs") { S.graphs = v != 0; return 0; }
-    if (k == "fuse") {  // switch kernel structure; graphs are re-captured on the next step
+    if (k == "fuse" || k == "pf_kb") {  // switch kernel structure; graphs are re-captured on the next step
         sync_both(c);
-        S.fuse = v != 0;
+        if (k == "fuse") S.fuse = v != 0;
+        else S.pf_kb = v;
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
             if (S.G[g].gexec) { cudaGraphExecDestroy(S.G[g].gexec); S.G[g].gexec = nullptr; }
@@ -799,8 +822,9 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
 std::string tp_stats_json(t4q_ctx* c) {
     tp::State& S = *c->tps;
     char b[512];
-    snprintf(b, sizeof b, ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"graphs\": %d, \"graph_capture_ms\": %.1f",
-             (int)S.p2p, (int)S.fuse, (int)S.graphs, S.ms_graph_capture);
+    snprintf(b, sizeof b,
+             ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"pf_kb\": %d, \"graphs\": %d, \"graph_capture_ms\": %.1f",
+             (int)S.p2p, (int)S.fuse, S.pf_kb, (int)S.graphs, S.ms_graph_capture);
     std::string s = b;
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;
     if (!S.prof_json.empty()) s += ", \"profile\": " + S.prof_json;

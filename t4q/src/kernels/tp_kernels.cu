@@ -81,6 +81,22 @@ __device__ __forceinline__ void quant_warp(float v, int8_t* xq_i, int2* xm_g) {
 }
 __device__ __forceinline__ float h2f_u16(uint16_t b) { return __half2float(__ushort_as_half(b)); }
 
+// extra block b of nb: prefetch the ranges into L2 (128 B lines), then return
+__device__ __forceinline__ void do_prefetch(const Pf& pf, int b, int nb) {
+    const unsigned stride = (unsigned)nb * blockDim.x * 128u;
+#pragma unroll
+    for (int r = 0; r < 4; r++) {
+        if (!pf.p[r]) continue;
+        for (unsigned off = ((unsigned)b * blockDim.x + threadIdx.x) * 128u; off < pf.n[r]; off += stride)
+            asm volatile("prefetch.global.L2 [%0];" ::"l"(pf.p[r] + off));
+    }
+}
+#define T4Q_PF_BLOCKS(NWORK)                                       \
+    if ((int)blockIdx.x >= (NWORK)) {                              \
+        do_prefetch(pf, blockIdx.x - (NWORK), gridDim.x - (NWORK)); \
+        return;                                                    \
+    }
+
 // ------------------------------------------------------------------------------------------------ GEMV
 __device__ __forceinline__ float4 ld_vol_f4(const float4* p) {
     float4 v;
@@ -433,7 +449,8 @@ void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t 
 // ------------------------------------------------------------------------------------------------ small kernels
 namespace {
 
-__global__ void k_embed(const uint8_t* __restrict__ embd, const StepState* st, const int* prompt, float* h) {
+__global__ void k_embed(const uint8_t* __restrict__ embd, const StepState* st, const int* prompt, float* h, const Pf pf) {
+    T4Q_PF_BLOCKS(20)
     const int pos = st->pos;
     int tok = pos < st->n_prompt ? prompt[pos] : st->token;
     if (tok < 0 || tok >= 248320) tok = 0;
@@ -448,7 +465,9 @@ __global__ void k_embed(const uint8_t* __restrict__ embd, const StepState* st, c
 template <bool WAIT>
 __global__ void __launch_bounds__(1024) k_ar_norm(const float* h, float* h_out, const float* own, const float* rx,
                                                   const unsigned* flag, StepState* st, int idx,
-                                                  const float* __restrict__ w, float* xn, int8_t* xq, int2* xm) {
+                                                  const float* __restrict__ w, float* xn, int8_t* xq, int2* xm,
+                                                  const Pf pf) {
+    T4Q_PF_BLOCKS(1)
     __shared__ float red[32];
     __shared__ int s_ok;
     const int tid = threadIdx.x;
@@ -566,7 +585,8 @@ __global__ void __launch_bounds__(256) k_gdn(const float* __restrict__ y, const 
 }
 
 __global__ void __launch_bounds__(128) k_gnorm_q8(const float* o, const float* z, const float* __restrict__ w,
-                                                  int8_t* xq, int2* xm) {
+                                                  int8_t* xq, int2* xm, const Pf pf) {
+    T4Q_PF_BLOCKS(24)
     __shared__ float red[4];
     const int vl = blockIdx.x, i = threadIdx.x;
     const float x = o[vl * 128 + i];
@@ -577,7 +597,8 @@ __global__ void __launch_bounds__(128) k_gnorm_q8(const float* o, const float* z
     quant_warp(val, xq + vl * 128 + i, xm + vl * 4 + (i >> 5));
 }
 
-__global__ void k_silu_q8(const float* gu, int n, int8_t* xq, int2* xm) {
+__global__ void k_silu_q8(const float* gu, int n, int8_t* xq, int2* xm, const Pf pf) {
+    T4Q_PF_BLOCKS((n + 255) / 256)
     const int i = blockIdx.x * blockDim.x + threadIdx.x;  // n % 32 == 0; whole warps in range
     if (i - (threadIdx.x & 31) >= n) return;
     const float g = gu[i], u = gu[n + i];
@@ -722,7 +743,8 @@ __global__ void __launch_bounds__(256, 2) k_attn_split(const float* qa, const __
 
 // 12 blocks (local q heads) x 256: merge splits, sigmoid gate, q8 for attn_output
 __global__ void __launch_bounds__(256) k_attn_combine_q8(const float* ws, const float* ya, const StepState* st,
-                                                         int8_t* xq, int2* xm) {
+                                                         int8_t* xq, int2* xm, const Pf pf) {
+    T4Q_PF_BLOCKS(12)
     const int hl = blockIdx.x, d = threadIdx.x, j = hl / 6, h6 = hl % 6;
     const int n_kv = st->pos + 1;
     const int chunk = (n_kv + NSPLIT - 1) / NSPLIT;
@@ -832,14 +854,18 @@ void pull(const unsigned* hflag, const float* hrx, float* rx, StepState* st, int
     k_pull<<<1, 640, 0, s>>>(hflag, hrx, rx, st, idx);
 }
 
-void embed(const uint8_t* embd, StepState* st, const int* prompt, float* h, cudaStream_t s) {
-    k_embed<<<20, 256, 0, s>>>(embd, st, prompt, h);
+void embed(const uint8_t* embd, StepState* st, const int* prompt, float* h, cudaStream_t s, const Pf* pf) {
+    const Pf P = pf ? *pf : Pf{};
+    k_embed<<<20 + P.blocks, 256, 0, s>>>(embd, st, prompt, h, P);
 }
 
 void ar_norm(const float* h, float* h_out, const float* own, const float* rx, const unsigned* flag,
-             const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s) {
-    if (flag) k_ar_norm<true><<<1, 1024, 0, s>>>(h, h_out, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm);
-    else k_ar_norm<false><<<1, 1024, 0, s>>>(h, h_out, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm);
+             const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s,
+             const Pf* pf) {
+    const Pf P = pf ? *pf : Pf{};
+    const int nb = 1 + (P.blocks + 3) / 4;  // 1024-thread blocks
+    if (flag) k_ar_norm<true><<<nb, 1024, 0, s>>>(h, h_out, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm, P);
+    else k_ar_norm<false><<<nb, 1024, 0, s>>>(h, h_out, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm, P);
 }
 
 void gdn(const float* y, const float* yab, float* ring, const float* conv_w, const float* ssm_a, const float* ssm_dt,
@@ -847,12 +873,14 @@ void gdn(const float* y, const float* yab, float* ring, const float* conv_w, con
     k_gdn<<<96, 256, 0, s>>>(y, yab, ring, conv_w, ssm_a, ssm_dt, S, o, st);
 }
 
-void gnorm_q8(const float* o, const float* z, const float* w, int8_t* xq, int2* xm, cudaStream_t s) {
-    k_gnorm_q8<<<24, 128, 0, s>>>(o, z, w, xq, xm);
+void gnorm_q8(const float* o, const float* z, const float* w, int8_t* xq, int2* xm, cudaStream_t s, const Pf* pf) {
+    const Pf P = pf ? *pf : Pf{};
+    k_gnorm_q8<<<24 + 2 * P.blocks, 128, 0, s>>>(o, z, w, xq, xm, P);
 }
 
-void silu_q8(const float* gu, int n, int8_t* xq, int2* xm, cudaStream_t s) {
-    k_silu_q8<<<(n + 255) / 256, 256, 0, s>>>(gu, n, xq, xm);
+void silu_q8(const float* gu, int n, int8_t* xq, int2* xm, cudaStream_t s, const Pf* pf) {
+    const Pf P = pf ? *pf : Pf{};
+    k_silu_q8<<<(n + 255) / 256 + P.blocks, 256, 0, s>>>(gu, n, xq, xm, P);
 }
 
 void attn_prep(const float* ya, const float* qw, const float* kw, float* qa, uint16_t* kc, uint16_t* vc, int max_ctx,
@@ -865,8 +893,10 @@ void attn_split(const float* qa, const uint16_t* kc, const uint16_t* vc, float* 
     k_attn_split<<<dim3(2, NSPLIT), 256, 0, s>>>(qa, (const __half*)kc, (const __half*)vc, ws, max_ctx, st);
 }
 
-void attn_combine_q8(const float* ws, const float* ya, const StepState* st, int8_t* xq, int2* xm, cudaStream_t s) {
-    k_attn_combine_q8<<<12, 256, 0, s>>>(ws, ya, st, xq, xm);
+void attn_combine_q8(const float* ws, const float* ya, const StepState* st, int8_t* xq, int2* xm, cudaStream_t s,
+                     const Pf* pf) {
+    const Pf P = pf ? *pf : Pf{};
+    k_attn_combine_q8<<<12 + P.blocks, 256, 0, s>>>(ws, ya, st, xq, xm, P);
 }
 
 void argmax_step(const float* logits, int n, int row0, float* apart, float* amb, const unsigned* aflag,

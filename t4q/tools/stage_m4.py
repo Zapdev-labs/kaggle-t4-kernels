@@ -35,7 +35,7 @@ RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
 GGUF = "Qwen3.8-27B-Q4_0.gguf"
-TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584"]
+TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584", "--configs", "fuse=0,pf_kb=2048;fuse=0,pf_kb=0;fuse=0,pf_kb=3072"]
 
 
 def el():
@@ -304,8 +304,7 @@ def main():
         summ = {k: val.get(k) for k in ("load_s", "vram_used_mib", "correct", "gate_detail", "best_decode_tok_s",
                                          "depth_decode_tok_s", "gate_30", "V1", "V4_graphs_vs_eager_logits_bitident",
                                          "V4_graphs_vs_eager_greedy_identical", "V1_error", "V4_error",
-                                         "profile_at_depth_fuse1", "profile_at_depth_fuse0", "final_stats",
-                                         "V3_fuse0", "V3_fuse0_pass")}
+                                         "profile_at_depth", "final_stats", "V3_alt")}
         summ["selftest_worst"] = (val.get("selftest") or {}).get("worst")
         summ["bench"] = val.get("bench")
         for mode in ("eager", "graphs"):

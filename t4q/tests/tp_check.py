@@ -46,7 +46,8 @@ def main():
     ap.add_argument("--gen", type=int, default=256)
     ap.add_argument("--depth", type=int, default=3584)
     ap.add_argument("--sections", default="v1,v2,v3,v4")
-    ap.add_argument("--fuse", default="1,0", help="fuse settings to bench; the first is the validated default")
+    ap.add_argument("--configs", default="fuse=0,pf_kb=2048;fuse=0,pf_kb=0",
+                    help="';'-separated option sets to bench; the first is the default (validated by V1-V4)")
     a = ap.parse_args()
     secs = set(a.sections.split(","))
     modes = [m for m in a.modes.split(",") if m]
@@ -147,7 +148,16 @@ def main():
         save()
 
     # ---------------------------------------------------------------- bench
-    fuses = [int(x) for x in a.fuse.split(",") if x != ""]
+    cfgs = []
+    for c in a.configs.split(";"):
+        kv = dict(x.split("=") for x in c.split(",") if x)
+        cfgs.append(("_".join(f"{k}{v}" for k, v in kv.items()), {k: int(v) for k, v in kv.items()}))
+
+    def apply(opts):
+        for k, v in opts.items():
+            eng.set_option(k, v)
+
+    apply(cfgs[0][1])
     if a.bench:
         B = R.setdefault("bench", {})
 
@@ -165,30 +175,30 @@ def main():
                       "text_head": tok.decode(g[:60]) if tok else ""}
             log("bench", key, json.dumps(B[key])[:400])
 
-        for fi, fz in enumerate(fuses):
-            eng.set_option("fuse", fz)
+        for fi, (fz, opts) in enumerate(cfgs):
+            apply(opts)
             for mode in (modes if fi == 0 else [modes[-1]]):
                 eng.set_option("graphs", 1 if mode == "graphs" else 0)
                 for name in ("P0", "P1"):
                     try:
-                        bench_prompt(f"{mode}_fuse{fz}_{name}", name, a.gen)
+                        bench_prompt(f"{mode}_{fz}_{name}", name, a.gen)
                     except Exception:  # noqa: BLE001
-                        B[f"{mode}_fuse{fz}_{name}_error"] = traceback.format_exc()[-2000:]
-                        log(B[f"{mode}_fuse{fz}_{name}_error"])
+                        B[f"{mode}_{fz}_{name}_error"] = traceback.format_exc()[-2000:]
+                        log(B[f"{mode}_{fz}_{name}_error"])
                     save()
             if fi > 0 and "v3" in secs:  # greedy check of the alternative kernel structure
                 try:
                     v3, ok = VA.run_v3(eng, man, a, None)
-                    R[f"V3_fuse{fz}"] = {k: (v["first_divergence"], v["oracle_gap_at_div"]) for k, v in v3.items()}
-                    R[f"V3_fuse{fz}_pass"] = ok
+                    R.setdefault("V3_alt", {})[fz] = {k: (v["first_divergence"], v["oracle_gap_at_div"])
+                                                      for k, v in v3.items()} | {"pass": ok}
                 except Exception:  # noqa: BLE001
-                    R[f"V3_fuse{fz}_error"] = traceback.format_exc()[-2000:]
+                    R.setdefault("V3_alt", {})[fz] = {"error": traceback.format_exc()[-2000:]}
                 save()
         # depth bench: long prompt through decode steps, then generate 128 per fuse setting at ~depth tokens of context
         if a.depth > 0:
             mode = modes[-1]
             try:
-                eng.set_option("fuse", fuses[0])
+                apply(cfgs[0][1])
                 eng.set_option("graphs", 1 if mode == "graphs" else 0)
                 w = VA.read_ids(os.path.join(a.work, "W.i32"))
                 p0 = VA.read_ids(os.path.join(a.work, "P0.i32"))
@@ -198,20 +208,20 @@ def main():
                 eng.prefill(body)
                 tp_ = time.time() - t0
                 B["depth_prefill_via_decode_tok_s"] = round(len(body) / tp_, 2)
-                for fz in fuses:
-                    eng.set_option("fuse", fz)
+                for fz, opts in cfgs:
+                    apply(opts)
                     ctx0 = eng.pos
                     w0 = time.time()
                     g = eng.generate(128)
                     tg = time.time() - w0
-                    B[f"depth{a.depth}_{mode}_fuse{fz}"] = {"ctx_start": int(ctx0), "n_gen": int(len(g)),
+                    B[f"depth{a.depth}_{mode}_{fz}"] = {"ctx_start": int(ctx0), "n_gen": int(len(g)),
                                                           "decode_tok_s": round((len(g) - 1) / tg, 2), "t0": w0,
                                                           "t1": w0 + tg, "text_head": tok.decode(g[:40]) if tok else ""}
-                    log("bench depth", json.dumps(B[f"depth{a.depth}_{mode}_fuse{fz}"])[:400])
+                    log("bench depth", json.dumps(B[f"depth{a.depth}_{mode}_{fz}"])[:400])
                     eng.set_option("profile", 1)
-                    R[f"profile_at_depth_fuse{fz}"] = eng.stats().get("profile")
-                    log("profile", fz, json.dumps(R[f"profile_at_depth_fuse{fz}"]))
-                eng.set_option("fuse", fuses[0])
+                    R.setdefault("profile_at_depth", {})[fz] = eng.stats().get("profile")
+                    log("profile", fz, json.dumps(R["profile_at_depth"][fz]))
+                apply(cfgs[0][1])
             except Exception:  # noqa: BLE001
                 B["depth_error"] = traceback.format_exc()[-2000:]
                 log(B["depth_error"])
