@@ -91,6 +91,20 @@ __device__ __forceinline__ void do_prefetch(const Pf& pf, int b, int nb) {
             asm volatile("prefetch.global.L2 [%0];" ::"l"(pf.p[r] + off));
     }
 }
+// consumer-side publish: copy this GPU's partial (own slot, written by the previous kernel) to the peer's mailbox with
+// coalesced float4 stores, then one system fence + flag (the M0 two-level pattern). Whole block participates.
+__device__ __forceinline__ void publish_partial(const float* own_slot, float* peer_slot, unsigned* peer_flag_slot,
+                                                unsigned epoch) {
+    const float4* src = (const float4*)own_slot;
+    float4* dst = (float4*)peer_slot;
+    for (int i = threadIdx.x; i < 1280; i += blockDim.x) dst[i] = src[i];
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        __threadfence_system();
+        asm volatile("st.volatile.global.u32 [%0], %1;" ::"l"(peer_flag_slot), "r"(epoch) : "memory");
+    }
+}
+
 #define T4Q_PF_BLOCKS(NWORK)                                       \
     if ((int)blockIdx.x >= (NWORK)) {                              \
         do_prefetch(pf, blockIdx.x - (NWORK), gridDim.x - (NWORK)); \
@@ -469,12 +483,13 @@ template <bool WAIT>
 __global__ void __launch_bounds__(1024) k_ar_norm(const float* h, float* h_out, const float* own, const float* rx,
                                                   const unsigned* flag, StepState* st, int idx,
                                                   const float* __restrict__ w, float* xn, int8_t* xq, int2* xm,
-                                                  const Pf pf) {
+                                                  const Pf pf, float* pub_peer_rx, unsigned* pub_peer_flag) {
     T4Q_PF_BLOCKS(1)
     __shared__ float red[32];
     __shared__ int s_ok;
     const int tid = threadIdx.x;
     const int slot = idx & 1;
+    if (pub_peer_rx) publish_partial(own + slot * 5120, pub_peer_rx + slot * 5120, pub_peer_flag + slot, epoch_of(st, idx));
     if (WAIT) {
         if (tid == 0) {
             s_ok = wait_flag(flag + slot, epoch_of(st, idx));
@@ -835,8 +850,11 @@ __global__ void k_argmax_final(const float* apart, int row0, float* amb, const u
 }
 
 __global__ void __launch_bounds__(640) k_pull(const unsigned* hflag, const float* hrx, float* rx, StepState* st,
-                                              int idx) {
+                                              int idx, const float* own, float* pub_peer_rx, unsigned* pub_peer_flag) {
     __shared__ int ok;
+    if (pub_peer_rx)
+        publish_partial(own + (idx & 1) * 5120, pub_peer_rx + (idx & 1) * 5120, pub_peer_flag + (idx & 1),
+                        epoch_of(st, idx));
     if (threadIdx.x == 0) {
         ok = wait_flag(hflag, epoch_of(st, idx));
         if (!ok) st->err = 3000 + idx;
@@ -853,8 +871,9 @@ __global__ void __launch_bounds__(640) k_pull(const unsigned* hflag, const float
 
 }  // namespace
 
-void pull(const unsigned* hflag, const float* hrx, float* rx, StepState* st, int idx, cudaStream_t s) {
-    k_pull<<<1, 640, 0, s>>>(hflag, hrx, rx, st, idx);
+void pull(const unsigned* hflag, const float* hrx, float* rx, StepState* st, int idx, cudaStream_t s,
+          const float* own, float* pub_peer_rx, unsigned* pub_peer_flag) {
+    k_pull<<<1, 640, 0, s>>>(hflag, hrx, rx, st, idx, own, pub_peer_rx, pub_peer_flag);
 }
 
 void embed(const uint8_t* embd, StepState* st, const int* prompt, float* h, cudaStream_t s, const Pf* pf) {
@@ -864,11 +883,15 @@ void embed(const uint8_t* embd, StepState* st, const int* prompt, float* h, cuda
 
 void ar_norm(const float* h, float* h_out, const float* own, const float* rx, const unsigned* flag,
              const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s,
-             const Pf* pf) {
+             const Pf* pf, float* pub_peer_rx, unsigned* pub_peer_flag) {
     const Pf P = pf ? *pf : Pf{};
     const int nb = 1 + (P.blocks + 3) / 4;  // 1024-thread blocks
-    if (flag) k_ar_norm<true><<<nb, 1024, 0, s>>>(h, h_out, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm, P);
-    else k_ar_norm<false><<<nb, 1024, 0, s>>>(h, h_out, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm, P);
+    if (flag)
+        k_ar_norm<true><<<nb, 1024, 0, s>>>(h, h_out, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm, P,
+                                            pub_peer_rx, pub_peer_flag);
+    else
+        k_ar_norm<false><<<nb, 1024, 0, s>>>(h, h_out, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm, P,
+                                             pub_peer_rx, pub_peer_flag);
 }
 
 void gdn(const float* y, const float* yab, float* ring, const float* conv_w, const float* ssm_a, const float* ssm_dt,

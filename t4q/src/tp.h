@@ -155,6 +155,8 @@ struct State {
     float* hscratch[2] = {nullptr, nullptr};  // host-mapped AR test targets (self-test timing without P2P)
     int fuse = 0;         // 0: separate ar_norm / gnorm_q8 / silu_q8 kernels (fastest in M4 v3); 1: all prologues fused;
                           // 2: only the AR + RMSNorm prologue fused
+    int arpub = 1;        // 1: the consumer kernel publishes this GPU's partial (plain K-split GEMVs; default);
+                          // 0: the K-split GEMV epilogue publishes (M2-M4 v5). fuse != 0 forces 0.
     int pf_kb = 0;        // L2 prefetch of the next GEMV during small kernels (0 = off; no gain in M4 v4)
     double ms_graph_capture = 0;
 };

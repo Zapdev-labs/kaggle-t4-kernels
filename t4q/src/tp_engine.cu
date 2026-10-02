@@ -330,6 +330,7 @@ struct Enq {
         G.ev.push_back(e);
         G.ev_name.push_back(name);
     }
+    bool arpub() const { return c->tps->arpub && !c->tps->fuse; }
     tp::ArArgs ar(tp::Gpu& G, int idx) {
         tp::ArArgs a;
         a.y_peer = G.peer_rx + (idx & 1) * D;
@@ -359,8 +360,9 @@ struct Enq {
             p.rx = G.rx + (idx & 1) * D;
             if (c->tps->p2p) {
                 p.flag = G.flag + (idx & 1);
-            } else {  // fallback: a pull kernel waits on the host-mapped flag and copies the payload into rx first
-                tp::pull(G.hflag + (idx & 1), G.hrx + (idx & 1) * D, G.rx + (idx & 1) * D, G.st, idx, G.s);
+            } else {  // fallback: a pull kernel (publishes first if arpub) waits on the host flag, copies into rx
+                tp::pull(G.hflag + (idx & 1), G.hrx + (idx & 1) * D, G.rx + (idx & 1) * D, G.st, idx, G.s, G.part,
+                         arpub() ? G.peer_rx : nullptr, arpub() ? G.peer_flag : nullptr);
                 mark(G, "pull");
             }
         }
@@ -393,8 +395,9 @@ struct Enq {
         if (c->tps->fuse) return &p;  // fuse 1 and 2 both fuse the AR + norm prologue
         // in fallback mode arnorm() already enqueued the pull and cleared p.flag
         const tp::Pf pf = pf_for(nxt);
+        const bool pub = arpub() && p.add && c->tps->p2p;  // fallback mode published in pull()
         tp::ar_norm(p.h_in, p.h_out, p.add ? G.part : nullptr, G.rx, p.flag ? G.flag : nullptr, G.st, p.idx, p.nw,
-                    G.xn, G.xq, G.xm, G.s, &pf);
+                    G.xn, G.xq, G.xm, G.s, &pf, pub ? G.peer_rx : nullptr, pub ? G.peer_flag : nullptr);
         mark(G, "ar_norm");
         return nullptr;
     }
@@ -422,7 +425,8 @@ struct Enq {
                     mark(G, "gnorm_q8");
                 }
                 tp::ArArgs a = ar(G, idx);
-                tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, &a, nullptr, S.fuse == 1 ? &pg : nullptr);
+                tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, arpub() ? nullptr : &a, nullptr,
+                         S.fuse == 1 ? &pg : nullptr);
                 mark(G, "gemv_ssm_out");
             } else {
                 tp::gemv(L.qkv_a, G.xq, G.xm, G.y, s, nullptr, nullptr, pre(G, pa, L.qkv_a));
@@ -436,7 +440,7 @@ struct Enq {
                 tp::attn_combine_q8(G.attn_ws, G.y, G.st, G.xq, G.xm, s, &pf);
                 mark(G, "attn_combine");
                 tp::ArArgs a = ar(G, idx);
-                tp::gemv(L.wo, G.xq, G.xm, G.part + (idx & 1) * D, s, &a);
+                tp::gemv(L.wo, G.xq, G.xm, G.part + (idx & 1) * D, s, arpub() ? nullptr : &a);
                 mark(G, "gemv_attn_out");
             }
         } else {
@@ -452,7 +456,8 @@ struct Enq {
                 mark(G, "silu_q8");
             }
             tp::ArArgs a = ar(G, idx);
-            tp::gemv(L.down, G.xq, G.xm, G.part + (idx & 1) * D, s, &a, nullptr, S.fuse == 1 ? &ps : nullptr);
+            tp::gemv(L.down, G.xq, G.xm, G.part + (idx & 1) * D, s, arpub() ? nullptr : &a, nullptr,
+                     S.fuse == 1 ? &ps : nullptr);
             mark(G, "gemv_down");
         }
     }
@@ -796,9 +801,10 @@ int tp_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop, int 
 int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     tp::State& S = *c->tps;
     if (k == "graphs") { S.graphs = v != 0; return 0; }
-    if (k == "fuse" || k == "pf_kb") {  // switch kernel structure; graphs are re-captured on the next step
+    if (k == "fuse" || k == "pf_kb" || k == "arpub") {  // kernel structure; graphs are re-captured on the next step
         sync_both(c);
         if (k == "fuse") S.fuse = v;
+        else if (k == "arpub") S.arpub = v;
         else S.pf_kb = v;
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
@@ -813,7 +819,7 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
             S.G[g].ev.clear();
             S.G[g].ev_name.clear();
         }
-        if (!S.graphs) {
+        if (true) {  // event nodes in captured graphs did not give elapsed times (M4 v5): profile eagerly
             eager_step(c, true);
         } else {  // profile the real graph: capture a copy with event-record nodes after every kernel
             cudaGraph_t gr[2];
@@ -839,7 +845,7 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
         }
         c->pos++;
         c->steps++;
-        std::string js = S.graphs ? "{\"mode\": \"graph\", " : "{\"mode\": \"eager\", ";
+        std::string js = "{\"mode\": \"eager\", ";
         for (int g = 0; g < 2; g++) {
             tp::Gpu& G = S.G[g];
             std::map<std::string, std::pair<double, int>> agg;
@@ -872,8 +878,9 @@ std::string tp_stats_json(t4q_ctx* c) {
     tp::State& S = *c->tps;
     char b[512];
     snprintf(b, sizeof b,
-             ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"pf_kb\": %d, \"graphs\": %d, \"graph_capture_ms\": %.1f",
-             (int)S.p2p, S.fuse, S.pf_kb, (int)S.graphs, S.ms_graph_capture);
+             ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"arpub\": %d, \"pf_kb\": %d, \"graphs\": %d, "
+             "\"graph_capture_ms\": %.1f",
+             (int)S.p2p, S.fuse, S.arpub, S.pf_kb, (int)S.graphs, S.ms_graph_capture);
     std::string s = b;
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;
     if (!S.prof_json.empty()) s += ", \"profile\": " + S.prof_json;

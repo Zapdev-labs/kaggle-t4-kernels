@@ -13,7 +13,9 @@ void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t 
 void set_max_blocks(int n);
 
 // fallback (no P2P): wait for the host-mapped flag of AR idx, copy the 20 KB payload to the local rx slot
-void pull(const unsigned* hflag, const float* hrx, float* rx, StepState* st, int idx, cudaStream_t s);
+// pub_peer_rx/flag (optional): first publish this GPU's partial (own slot base) to the peer mailbox (slot bases)
+void pull(const unsigned* hflag, const float* hrx, float* rx, StepState* st, int idx, cudaStream_t s,
+          const float* own = nullptr, float* pub_peer_rx = nullptr, unsigned* pub_peer_flag = nullptr);
 // h = embed(token) (Q4_0 row dequant, bit-exact with ggml)
 // pf (optional): L2 prefetch of the next GEMV's weights by extra blocks (blocks counted in 256-thread units)
 void embed(const uint8_t* embd, StepState* st, const int* prompt, float* h, cudaStream_t s, const Pf* pf = nullptr);
@@ -21,7 +23,7 @@ void embed(const uint8_t* embd, StepState* st, const int* prompt, float* h, cuda
 // own == nullptr: no add (layer 0); flag == nullptr: no wait. own/rx are slot bases ([2][5120]); idx & 1 = slot
 void ar_norm(const float* h, float* h_out, const float* own, const float* rx, const unsigned* flag,
              const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s,
-             const Pf* pf = nullptr);
+             const Pf* pf = nullptr, float* pub_peer_rx = nullptr, unsigned* pub_peer_flag = nullptr);
 // DeltaNet step for 24 local heads: conv (ring), SiLU, L2 q/k, gates, recurrence; o [24][128]
 void gdn(const float* y, const float* yab, float* ring, const float* conv_w, const float* ssm_a, const float* ssm_dt,
          float* S, float* o, const StepState* st, cudaStream_t s);
