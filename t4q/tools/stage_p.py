@@ -33,8 +33,8 @@ WORK.mkdir(exist_ok=True)
 ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "p"
-SECTIONS = ["gemm"]
-PF_CONFIGS = "pf_ub=2048,pf_nsub=2,pf_fa=1,pf_fuse=1;pf_ub=512,pf_nsub=2,pf_fa=1,pf_fuse=1;pf_ub=1024,pf_nsub=2,pf_fa=1,pf_fuse=1;pf_ub=2048,pf_nsub=2,pf_fa=1,pf_fuse=0"
+SECTIONS = ["engine"]
+PF_CONFIGS = "pf_g8=1,pf_ga=32,pf_fuse=1;pf_g8=1,pf_ga=64,pf_fuse=0;pf_g8=1,pf_ga=0,pf_fuse=0;pf_g8=0,pf_fuse=1"
 RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
@@ -277,8 +277,11 @@ def gemm_section(t4q):
         else:
             log(f"gemm build u{u} failed:\n{o[-3000:]}")
     result("gemm_build", {"built": built, "secs": el()})
+    for fn in GEMM_SASS:
+        sh(f"cuobjdump -sass -fun '{fn}' {bdir / ('gemm_bench_u' + str(built[0]))} > {LOGS / ('sass_' + fn[-40:].replace('/', '_') + '.txt')}",
+           timeout=300) if built else None
     out = {}
-    for u in built:
+    for u in (built if GEMM_TABLE else []):
         rc, o = stream([str(bdir / f"gemm_bench_u{u}"), "--dev", "0"], f"gemm_u{u}_dev0.txt", timeout=900)
         rows = [json.loads(l[2:]) for l in o.splitlines() if l.startswith("R ")]
         checks = [json.loads(l[6:]) for l in o.splitlines() if l.startswith("CHECK ")]
@@ -371,8 +374,10 @@ def summarize_sustain(S):
 
 REF_SUSTAIN = 8
 GEMM_KBU = [2]
-GEMM_SUSTAIN = 10
-GEMM_SVARS = "6,7,0"
+GEMM_TABLE = True
+GEMM_SASS = ["_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE"]
+GEMM_SUSTAIN = 4
+GEMM_SVARS = "17,20,21,22,23,24,25,26,16"
 NVCC = "/usr/local/cuda/bin/nvcc" if os.path.exists("/usr/local/cuda/bin/nvcc") else (shutil.which("nvcc") or "nvcc")
 
 

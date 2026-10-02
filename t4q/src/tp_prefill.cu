@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "kernels/gemm.cuh"
+#include "kernels/gemm8.cuh"
 #include "model.h"
 #include "tp.h"
 #include "tp_api.h"
@@ -88,8 +89,9 @@ __global__ void __launch_bounds__(256) k_pf_add_norm(float* h, const float* own,
 // lane = element (same math as gemm::quant_rows_kernel)
 struct Q8Out {
     int8_t* xq;
-    float2* xs;
+    float2* xs;    // gemm.cuh meta (nullptr in gemm8 mode)
     float* xsum;
+    float* dx;     // gemm8 block scales [K/32][Tp] (nullptr in gemm.cuh mode)
     int K, Tp;
 };
 __device__ __forceinline__ void warp_q8(float v, const Q8Out& q, int tr, int k) {
@@ -104,9 +106,12 @@ __device__ __forceinline__ void warp_q8(float v, const Q8Out& q, int tr, int k) 
     q.xq[(size_t)tr * q.K + k] = (int8_t)qi;
     if ((threadIdx.x & 31) == 0) {
         const int b = k >> 5;
-        const float sc = d * 0.0625f;
-        q.xs[(size_t)b * q.Tp + tr] = make_float2(sc, -(float)(12582912 + 128 * sq) * sc);
-        q.xsum[(size_t)b * q.Tp + tr] = d * (float)sq;
+        if (q.dx) q.dx[(size_t)b * q.Tp + tr] = d;
+        if (q.xs) {
+            const float sc = d * 0.0625f;
+            q.xs[(size_t)b * q.Tp + tr] = make_float2(sc, -(float)(12582912 + 128 * sq) * sc);
+            q.xsum[(size_t)b * q.Tp + tr] = d * (float)sq;
+        }
     }
 }
 
@@ -162,36 +167,49 @@ __global__ void __launch_bounds__(128) k_pf_gnorm_q8(const float* __restrict__ o
     warp_q8(((x * scale) * w[i]) * (zz / (1.0f + expf(-zz))), q, t, vl * 128 + i);
 }
 
-// yab[t][i] = xn[t] . ab[i] (48 fp32 rows: 24 alpha then 24 beta). grid ceil(T/8) x 128; thread = (token tid & 7,
-// rows (tid >> 3) + 16j, j < 3)
+// yab[t][i] = xn[t] . ab[i] (48 fp32 rows: 24 alpha then 24 beta). Block = 32 tokens x 48 rows, 128 threads, each
+// 4 tokens x 3 rows (rows rg, rg + 16, rg + 32); K in tiles of 64 staged k-major in smem (x as [k][32 tok], ab as
+// [k][48]), so the inner loop is one LDS.128 + 3 LDS per 12 FMA. The ab matrix is read once per 32 tokens (was 8).
 __global__ void __launch_bounds__(128) k_pf_ab(const float* __restrict__ xn, const float* __restrict__ ab, int T,
                                                float* yab) {
-    __shared__ float xs[8][132];
-    __shared__ __align__(16) float as[48][132];
-    const int tid = threadIdx.x, tt = tid & 7, r0 = tid >> 3, t0 = blockIdx.x * 8;
-    float acc[3] = {0.f, 0.f, 0.f};
-    for (int k0 = 0; k0 < D; k0 += 128) {
+    __shared__ __align__(16) float xs[64][36];
+    __shared__ __align__(16) float as[64][52];
+    const int tid = threadIdx.x, tg = tid & 7, rg = tid >> 3, t0 = blockIdx.x * 32;
+    float acc[4][3];
+#pragma unroll
+    for (int a = 0; a < 4; a++)
+#pragma unroll
+        for (int j = 0; j < 3; j++) acc[a][j] = 0.f;
+    for (int k0 = 0; k0 < D; k0 += 64) {
         __syncthreads();
-        for (int i = tid; i < 8 * 32; i += 128) {
-            const int r = i >> 5, k = (i & 31) * 4;
+        for (int i = tid; i < 32 * 16; i += 128) {  // x: 32 tokens x 16 float4
+            const int r = i >> 4, k = (i & 15) * 4;
             const float4 v = (t0 + r < T) ? *(const float4*)(xn + (size_t)(t0 + r) * D + k0 + k) : make_float4(0.f, 0.f, 0.f, 0.f);
-            xs[r][k] = v.x; xs[r][k + 1] = v.y; xs[r][k + 2] = v.z; xs[r][k + 3] = v.w;
+            xs[k][r] = v.x; xs[k + 1][r] = v.y; xs[k + 2][r] = v.z; xs[k + 3][r] = v.w;
         }
-        for (int i = tid; i < 48 * 32; i += 128) {
-            const int r = i >> 5, k = (i & 31) * 4;
-            *(float4*)&as[r][k] = __ldg((const float4*)(ab + (size_t)r * D + k0 + k));
+        for (int i = tid; i < 48 * 16; i += 128) {  // ab: 48 rows x 16 float4
+            const int r = i >> 4, k = (i & 15) * 4;
+            const float4 v = __ldg((const float4*)(ab + (size_t)r * D + k0 + k));
+            as[k][r] = v.x; as[k + 1][r] = v.y; as[k + 2][r] = v.z; as[k + 3][r] = v.w;
         }
         __syncthreads();
 #pragma unroll 8
-        for (int k = 0; k < 128; k++) {
-            const float xv = xs[tt][k];
-#pragma unroll
-            for (int j = 0; j < 3; j++) acc[j] += xv * as[r0 + 16 * j][k];
+        for (int k = 0; k < 64; k++) {
+            const float4 xv = *(const float4*)&xs[k][tg * 4];
+            const float a0 = as[k][rg], a1 = as[k][rg + 16], a2 = as[k][rg + 32];
+            acc[0][0] += xv.x * a0; acc[0][1] += xv.x * a1; acc[0][2] += xv.x * a2;
+            acc[1][0] += xv.y * a0; acc[1][1] += xv.y * a1; acc[1][2] += xv.y * a2;
+            acc[2][0] += xv.z * a0; acc[2][1] += xv.z * a1; acc[2][2] += xv.z * a2;
+            acc[3][0] += xv.w * a0; acc[3][1] += xv.w * a1; acc[3][2] += xv.w * a2;
         }
     }
-    if (t0 + tt < T)
 #pragma unroll
-        for (int j = 0; j < 3; j++) yab[(size_t)(t0 + tt) * 48 + r0 + 16 * j] = acc[j];
+    for (int a = 0; a < 4; a++) {
+        const int t = t0 + tg * 4 + a;
+        if (t < T)
+#pragma unroll
+            for (int j = 0; j < 3; j++) yab[(size_t)t * 48 + rg + 16 * j] = acc[a][j];
+    }
 }
 
 // conv1d (4 taps over raw q|k|v inputs, history from the ring for positions < p0) + SiLU; q/k L2-normalized per head
@@ -602,6 +620,7 @@ struct PfGpu {
     int8_t* xq = nullptr;
     float2* xs = nullptr;
     float* xsum = nullptr;
+    float* dx = nullptr;  // gemm8 activation block scales
     cudaStream_t sc = nullptr;              // copy stream (AR payloads)
     cudaEvent_t part_ev[NSUB] = {};         // compute stream: partial rows of sub s written
     cudaEvent_t sent[NSUB][2] = {};         // copy stream: sub s rows of AR slot copied to the peer
@@ -631,7 +650,7 @@ Pf* pf_get(t4q_ctx* c) {
             PfGpu& B = P->G[g];
             for (void* p : {(void*)B.ids, (void*)B.h, (void*)B.xn, (void*)B.y, (void*)B.part, (void*)B.rx[0],
                             (void*)B.rx[1], (void*)B.yab, (void*)B.qkv, (void*)B.o, (void*)B.g32, (void*)B.qa,
-                            (void*)B.xq, (void*)B.xs, (void*)B.xsum})
+                            (void*)B.xq, (void*)B.xs, (void*)B.xsum, (void*)B.dx})
                 cudaFree(p);
             for (auto e : B.part_ev) cudaEventDestroy(e);
             for (auto& r : B.sent) for (auto e : r) cudaEventDestroy(e);
@@ -641,7 +660,7 @@ Pf* pf_get(t4q_ctx* c) {
     }
     P = new Pf();
     P->cap = ub;
-    const size_t U = ub, Up = (size_t)(ub + 127) / 128 * 128;
+    const size_t U = ub, Up = (size_t)(ub + 255) / 256 * 256;
     for (int g = 0; g < 2; g++) {
         CK(cudaSetDevice(g));
         PfGpu& B = P->G[g];
@@ -660,11 +679,27 @@ Pf* pf_get(t4q_ctx* c) {
         B.xq = dalloc<int8_t>(Up * 8704);
         B.xs = dalloc<float2>(Up * (8704 / 32));
         B.xsum = dalloc<float>(Up * (8704 / 32));
+        B.dx = dalloc<float>(Up * (8704 / 32));
         CK(cudaStreamCreateWithFlags(&B.sc, cudaStreamNonBlocking));
         for (auto& e : B.part_ev) CK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming));
         for (auto& r : B.sent) for (auto& e : r) CK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming));
         // the memsets above run on the legacy stream, which does not order against the engine's non-blocking streams
         CK(cudaDeviceSynchronize());
+    }
+    // gemm8 per-row scales of every prefill GEMM weight (once per context)
+    for (int g = 0; g < 2; g++) {
+        CK(cudaSetDevice(g));
+        tp::Gpu& G = S.G[g];
+        for (int il = 0; il < 64; il++) {
+            tp::Layer& L = G.L[il];
+            for (tp::FW* W : {&L.qkvz, &L.ssm_out, &L.qkv_a, &L.wo, &L.gateup, &L.down}) {
+                if (!W->ok() || W->invs) continue;
+                CK(cudaMalloc(&W->invs, (size_t)W->L.N * 4));
+                gemm8::Args a = gemm8::make_args(W->L, W->base, W->invs, nullptr, nullptr, nullptr, 0, 0, 0);
+                CK(gemm8::row_invs(W->L.fmt, W->L.rpl, a, W->invs, G.s));
+            }
+        }
+        CK(cudaStreamSynchronize(G.s));
     }
     S.pf = P;
     return P;
@@ -682,6 +717,9 @@ struct PfRun {
     int nsub = 1, st0[NSUB] = {0, 0}, sT[NSUB] = {0, 0};
     int ar = 0;  // all-reduce counter (slot = ar & 1); all sub-batches of one phase share the slot (disjoint rows)
     bool i4 = false;
+    bool g8 = false;  // gemm8 path (pf_g8)
+    int ga = 32;      // gemm8 activation scale group (pf_ga)
+    int tpad(int Ts) const { return g8 ? (Ts + 255) / 256 * 256 : (Ts + 127) / 128 * 128; }
     // profiling (option pf_prof): events on GPU0's stream after each op group, named by the op that just ended
     std::vector<cudaEvent_t>* ev = nullptr;
     std::vector<const char*>* evn = nullptr;
@@ -698,10 +736,11 @@ struct PfRun {
     void quant(int g, int s, const float* x, int K) {
         tp::Gpu& G = c->tps->G[g];
         PfGpu& B = P->G[g];
-        const int Ts = sT[s], Tps = (Ts + 127) / 128 * 128;
+        const int Ts = sT[s], Tps = tpad(Ts);
         const int n = Tps * (K >> 5);
         const float* xs0 = x + (size_t)st0[s] * K;
-        if (i4) gemm::quant_rows_i4_kernel<<<(n + 127) / 128, 128, 0, G.s>>>(xs0, K, Ts, Tps, K, B.xq, B.xs, B.xsum);
+        if (g8) gemm8::quant8(xs0, K, Ts, Tps, K, B.xq, B.dx, G.s, ga);
+        else if (i4) gemm::quant_rows_i4_kernel<<<(n + 127) / 128, 128, 0, G.s>>>(xs0, K, Ts, Tps, K, B.xq, B.xs, B.xsum);
         else gemm::quant_rows_kernel<<<(n + 127) / 128, 128, 0, G.s>>>(xs0, K, Ts, Tps, K, B.xq, B.xs, B.xsum);
         ck_launch("quant");
         mark(g, "quant");
@@ -709,10 +748,15 @@ struct PfRun {
     void gemm(int g, int s, const tp::FW& W, float* y, int ldy) {
         tp::Gpu& G = c->tps->G[g];
         PfGpu& B = P->G[g];
-        const int Ts = sT[s], Tps = (Ts + 127) / 128 * 128;
-        gemm::GemmArgs a = gemm::make_args(W.L, W.base, B.xq, B.xs, B.xsum, y + (size_t)st0[s] * ldy, ldy, Ts, Tps);
+        const int Ts = sT[s], Tps = tpad(Ts);
         cudaError_t e;
-        if (i4 && W.L.fmt != gemv::FAST_K5) {
+        gemm::GemmArgs a = gemm::make_args(W.L, W.base, B.xq, B.xs, B.xsum, y + (size_t)st0[s] * ldy, ldy, Ts, Tps);
+        if (g8) {
+            gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, B.xq, B.dx, y + (size_t)st0[s] * ldy, ldy, Ts, Tps);
+            const int pbn = c->tps->pf_bn;
+            const int bn = pbn ? pbn : (Tps >= 512 ? 256 : 128);
+            e = gemm8::launch9(W.L.fmt, W.L.rpl, (Tps % bn) ? 128 : bn, ga, a8, G.s);
+        } else if (i4 && W.L.fmt != gemv::FAST_K5) {
             if (W.L.fmt == gemv::FAST_P4) e = W.L.rpl == 4 ? gemm::gemm_launch<gemv::FAST_P4, 4, 3>(a, G.s)
                                                              : gemm::gemm_launch<gemv::FAST_P4, 2, 3>(a, G.s);
             else e = W.L.rpl == 4 ? gemm::gemm_launch<gemv::FAST_P4M, 4, 3>(a, G.s)
@@ -727,10 +771,12 @@ struct PfRun {
     Q8Out q8out(int g, int s, int K) {
         PfGpu& B = P->G[g];
         Q8Out q;
-        q.xq = B.xq; q.xs = B.xs; q.xsum = B.xsum; q.K = K; q.Tp = (sT[s] + 127) / 128 * 128;
+        q.xq = B.xq; q.K = K; q.Tp = tpad(sT[s]);
+        q.xs = g8 ? nullptr : B.xs; q.xsum = g8 ? nullptr : B.xsum; q.dx = g8 ? B.dx : nullptr;
         return q;
     }
-    bool fused() const { return c->tps->pf_fuse && !i4; }
+    // fused producers write 32-element q8 groups (gemm.cuh layout or gemm8 GA 32); other GA use the quant kernels
+    bool fused() const { return c->tps->pf_fuse && !i4 && (!g8 || ga == 32); }
     // K5 GEMMs need int8 activations even in i4 mode
     void qg(int g, int s, const tp::FW& W, const float* x, int K, float* y, int ldy) {
         const bool save = i4;
@@ -788,7 +834,7 @@ struct PfRun {
         if (!L.attn) {
             if (fu) gemm(g, s, L.qkvz, B.y, 8192);
             else qg(g, s, L.qkvz, B.xn, D, B.y, 8192);
-            k_pf_ab<<<(Ts + 7) / 8, 128, 0, G.s>>>(B.xn + (size_t)t0 * D, L.ab, Ts, B.yab + (size_t)t0 * 48);
+            k_pf_ab<<<(Ts + 31) / 32, 128, 0, G.s>>>(B.xn + (size_t)t0 * D, L.ab, Ts, B.yab + (size_t)t0 * 48);
             mark(g, "ab");
             k_pf_conv<<<dim3(Ts, 40), 128, 0, G.s>>>(B.y + (size_t)t0 * 8192, 8192, L.conv_ring, L.conv_w, ps,
                                                      B.qkv + (size_t)t0 * 5120);
@@ -863,7 +909,8 @@ struct PfRun {
     void run(const int32_t* ids) {
         tp::State& S = *c->tps;
         nsub = (S.pf_nsub >= 2 && T >= 256) ? 2 : 1;
-        const int half = nsub == 2 ? ((T / 2 + 127) / 128) * 128 : T;  // sub-batch 0 rows: a multiple of 128
+        const int al = g8 ? 256 : 128;  // sub-batch 0 rows: a multiple of the GEMM token tile
+        const int half = nsub == 2 ? ((T / 2 + al - 1) / al) * al : T;
         st0[0] = 0; sT[0] = std::min(T, half);
         st0[1] = sT[0]; sT[1] = T - sT[0];
         if (nsub == 2 && sT[1] <= 0) nsub = 1;
@@ -919,7 +966,9 @@ int tp_prefill_batched(t4q_ctx* c, const int32_t* ids, int n, void (*run_last_st
         PfRun R{c, P};
         R.T = std::min(S.pf_ub, nb - b0);
         R.p0 = c->pos + b0;
-        R.i4 = S.pf_i4 != 0;
+        R.g8 = S.pf_g8 != 0;
+        R.ga = S.pf_ga;
+        R.i4 = S.pf_i4 != 0 && !R.g8;
         if (S.pf_prof) { R.ev = &ev; R.evn = &evn; }
         R.run(ids + b0);
         if (S.pf_prof) {

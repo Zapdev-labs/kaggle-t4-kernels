@@ -86,6 +86,11 @@ __device__ __forceinline__ void mma_s8(int& d0, int& d1, uint32_t a, uint32_t b,
     asm volatile("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0,%1}, {%2}, {%3}, {%4,%5};"
                  : "=r"(d0), "=r"(d1) : "r"(a), "r"(b), "r"(c0), "r"(c1));
 }
+// non-volatile: a pure function of its inputs, so ptxas may schedule it freely
+__device__ __forceinline__ void mma_s8p(int& d0, int& d1, uint32_t a, uint32_t b, int c0, int c1) {
+    asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0,%1}, {%2}, {%3}, {%4,%5};"
+        : "=r"(d0), "=r"(d1) : "r"(a), "r"(b), "r"(c0), "r"(c1));
+}
 __device__ __forceinline__ void ldsm_x4(uint32_t& r0, uint32_t& r1, uint32_t& r2, uint32_t& r3, const void* p) {
     const unsigned sp = (unsigned)__cvta_generic_to_shared(p);
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
@@ -178,12 +183,18 @@ __device__ __forceinline__ void stage_load(Stage<BN>& S, const Args& a, int row0
     }
 }
 
-template <int FMT, int BN>
+template <int FMT, int BN, int MODE = 0>
+// ph: bias group phase of this stage: 0 first (bkeep = partial), 1 middle (bkeep += partial), 2 last (write the sum)
 __device__ __forceinline__ void stage_store(const Stage<BN>& S, unsigned char* buf, float invs, float2& bkeep,
-                                            bool odd, int tid) {
+                                            int ph, int tid) {
     using C = Cfg<BN>;
     // ---- weights
-    {
+    if (MODE & 1) {  // timing only: no conversion (raw codes into both units)
+        const int row = tid >> 1, blk = tid & 1;
+        unsigned char* wr = buf + C::O_W + row * 64;
+        *(int4*)(wr + swz(row, blk * 2) * 16) = S.wq;
+        *(int4*)(wr + swz(row, blk * 2 + 1) * 16) = S.wq;
+    } else {
         const uint32_t q[4] = {(uint32_t)S.wq.x, (uint32_t)S.wq.y, (uint32_t)S.wq.z, (uint32_t)S.wq.w};
         uint32_t lo[4], hi[4];
         const __half2 k1536 = __float2half2_rn(1536.f);
@@ -250,12 +261,17 @@ __device__ __forceinline__ void stage_store(const Stage<BN>& S, unsigned char* b
         dxs[tid] = S.dx0;
         dxs[BN / 2 + tid] = S.dx1;
         const float2 pb = make_float2(MAGIC_F * (S.dx0.x + S.dx1.x), MAGIC_F * (S.dx0.y + S.dx1.y));
-        if (odd) ((float2*)(buf + C::O_BI))[tid] = make_float2(bkeep.x + pb.x, bkeep.y + pb.y);
+        if (ph == 2) ((float2*)(buf + C::O_BI))[tid] = make_float2(bkeep.x + pb.x, bkeep.y + pb.y);
+        else if (ph == 1) bkeep = make_float2(bkeep.x + pb.x, bkeep.y + pb.y);
         else bkeep = pb;
     }
 }
 
-template <int FMT, int RPL, int BN>
+// MODE (timing-only ablations, bench only): bit 0 no weight conversion, bit 1 no FFMA epilogue (int32 accumulate),
+// bit 2 no global loads, bit 3 no smem stores / barriers (pure ldmatrix + mma loop).
+// MODE bit 4 (real math): batched issue order -- per pair of token groups, the 16 first-half mmas, then the 16
+// dependent second-half mmas, then the 32 FFMAs, so no instruction waits on the one just before it.
+template <int FMT, int RPL, int BN, int MODE = 0>
 __global__ void __launch_bounds__(NT, 1) gemm8_kernel(const Args a) {
     using C = Cfg<BN>;
     constexpr int NG = C::NG, WN = C::WN;
@@ -276,13 +292,13 @@ __global__ void __launch_bounds__(NT, 1) gemm8_kernel(const Args a) {
     Stage<BN> S;
     float2 bkeep = make_float2(0.f, 0.f);
     stage_load<FMT, RPL, BN>(S, a, row0, tok0, 0, tid);
-    stage_store<FMT, BN>(S, smem, invs_st, bkeep, false, tid);
+    stage_store<FMT, BN>(S, smem, invs_st, bkeep, 0, tid);
     __syncthreads();
 
     int buf = 0;
     for (int kb0 = 0; kb0 < nkb; kb0 += 2) {
         const bool more = kb0 + 2 < nkb;
-        if (more) stage_load<FMT, RPL, BN>(S, a, row0, tok0, kb0 + 2, tid);
+        if (more && !(MODE & 4)) stage_load<FMT, RPL, BN>(S, a, row0, tok0, kb0 + 2, tid);
         const unsigned char* B = smem + buf * C::BYTES;
 #pragma unroll
         for (int kb = 0; kb < 2; ++kb) {
@@ -303,12 +319,43 @@ __global__ void __launch_bounds__(NT, 1) gemm8_kernel(const Args a) {
                             B + C::O_X + tok * 64 + swz(tok, u) * 16);
                 }
             }
+            if (MODE & 16) {
+#pragma unroll
+                for (int gp = 0; gp < NG / 2; ++gp) {
+                    int tq[2][8][2];
+#pragma unroll
+                    for (int h = 0; h < 2; ++h)
+#pragma unroll
+                        for (int gg = 0; gg < 2; ++gg)
+#pragma unroll
+                            for (int i = 0; i < 8; ++i)
+                                mma_s8p(tq[gg][i][0], tq[gg][i][1], af[h][i], bf[h][gp * 2 + gg], h ? tq[gg][i][0] : MAGIC_I,
+                                        h ? tq[gg][i][1] : MAGIC_I);
+#pragma unroll
+                    for (int gg = 0; gg < 2; ++gg) {
+                        const int g = gp * 2 + gg;
+                        const float2 dv = *(const float2*)(B + C::O_DX + (kb * BN + wn * WN + 8 * g + 2 * t4) * 4);
+#pragma unroll
+                        for (int i = 0; i < 8; ++i) {
+                            acc[i][g][0] = fmaf(__int_as_float(tq[gg][i][0]), dv.x, acc[i][g][0]);
+                            acc[i][g][1] = fmaf(__int_as_float(tq[gg][i][1]), dv.y, acc[i][g][1]);
+                        }
+                    }
+                }
+                continue;
+            }
 #pragma unroll
             for (int g = 0; g < NG; ++g) {
                 const float2 dv = *(const float2*)(B + C::O_DX + (kb * BN + wn * WN + 8 * g + 2 * t4) * 4);
 #pragma unroll
                 for (int i = 0; i < 8; ++i) {
                     int d0, d1;
+                    if (MODE & 2) {
+                        mma_s8(d0, d1, af[0][i], bf[0][g], __float_as_int(acc[i][g][0]), __float_as_int(acc[i][g][1]));
+                        mma_s8(d0, d1, af[1][i], bf[1][g], d0, d1);
+                        acc[i][g][0] = __int_as_float(d0); acc[i][g][1] = __int_as_float(d1);
+                        continue;
+                    }
                     mma_s8(d0, d1, af[0][i], bf[0][g], MAGIC_I, MAGIC_I);
                     mma_s8(d0, d1, af[1][i], bf[1][g], d0, d1);
                     acc[i][g][0] = fmaf(__int_as_float(d0), dv.x, acc[i][g][0]);
@@ -316,7 +363,7 @@ __global__ void __launch_bounds__(NT, 1) gemm8_kernel(const Args a) {
                 }
             }
         }
-        if (kb0 & 2) {  // odd stage: end of a 4-block group
+        if ((kb0 & 2) && !(MODE & 2)) {  // odd stage: end of a 4-block group
 #pragma unroll
             for (int g = 0; g < NG; ++g) {
                 const float2 bv = *(const float2*)(B + C::O_BI + (wn * WN + 8 * g + 2 * t4) * 4);
@@ -324,8 +371,8 @@ __global__ void __launch_bounds__(NT, 1) gemm8_kernel(const Args a) {
                 for (int i = 0; i < 8; ++i) { acc[i][g][0] -= bv.x; acc[i][g][1] -= bv.y; }
             }
         }
-        if (more) {
-            stage_store<FMT, BN>(S, smem + (buf ^ 1) * C::BYTES, invs_st, bkeep, ((kb0 + 2) & 2) != 0, tid);
+        if (more && !(MODE & 8)) {
+            stage_store<FMT, BN, MODE>(S, smem + (buf ^ 1) * C::BYTES, invs_st, bkeep, ((kb0 + 2) & 2) ? 2 : 0, tid);
             __syncthreads();
             buf ^= 1;
         }
@@ -348,9 +395,316 @@ __global__ void __launch_bounds__(NT, 1) gemm8_kernel(const Args a) {
     }
 }
 
-template <int FMT, int RPL, int BN>
+// ================================================================================================ gemm9 (round 2, v2)
+// Same math as gemm8_kernel, rebuilt for instruction economy (t4q-p v9 ablation: a pure ldmatrix + mma loop sustains
+// 90 TOPS at the cap, the gemm8 loop with ~1100 instructions per 256 mmas only 27):
+//   * per-thread weight / activation / scale pointers computed once (no per-stage index math);
+//   * GA: activation scale group: 32 (exact q8 blocks, 1 FFMA per output per 32), 64 (1 FFMA per output per 64;
+//     |S| <= 64*127*127 < 2^22 keeps the magic exact), or 0 = one scale per token (int32 accumulation over all of K,
+//     no FFMA in the loop; |S| <= 8704*127^2 < 2^31);
+//   * per 8-token group: one ldmatrix.x4 for B, then the mmas in dependency-free order, then the FFMAs.
+// AB (timing-only ablations, bench): bit 0 no weight conversion, bit 1 no FFMA (int32 accumulate), bit 2 loads cycle
+// over the first two stages (L1/L2-hot), bit 3 no global loads (staging registers perturbed per stage), bit 4 no
+// smem stores / barriers.
+template <int FMT, int RPL>
+struct WPtr {
+    const uint8_t* code;  // this thread's (row, blk) 16-B code group at kb0 = 0
+    const uint8_t* sa;    // P4 / P4M: fp16 d; K5: {sc, mn} bytes
+    const uint8_t* sb;    // P4M: fp16 m; K5: {d, dmin} (per 256)
+    const uint8_t* hq;    // K5: high bits
+    long long cs_code, cs_s, cs_d, cs_h;  // bytes per 512-chunk
+    __device__ __forceinline__ WPtr(const Args& a, int R, int blk) {
+        const int lt = R / (2 * RPL), w = R % (2 * RPL), h = w / RPL, r = w % RPL;
+        const int lane0 = h * 16 + blk;
+        const long long dtc = a.cm ? a.ntiles : 1;
+        const long long tc0 = (long long)gemv::tc_index(lt, 0, a.K >> 9, a.ntiles, a.cm);
+        code = a.codes + (tc0 * RPL + r) * 512 + lane0 * 16;
+        cs_code = dtc * RPL * 512;
+        if (FMT == gemv::FAST_K5) {
+            sa = a.sc + ((tc0 * 32 + lane0) * RPL + r) * 2;
+            sb = (const uint8_t*)a.d + (((tc0 * 2 + h) * 2) * RPL + r) * 4;
+            hq = a.qh + (tc0 * RPL + r) * 128 + lane0 * 4;
+            cs_d = dtc * 4 * RPL * 4;
+            cs_h = dtc * RPL * 128;
+        } else {
+            sa = (const uint8_t*)(a.d + (tc0 * 32 + lane0) * RPL + r);
+            sb = FMT == gemv::FAST_P4M ? (const uint8_t*)((const uint16_t*)a.sc + (tc0 * 32 + lane0) * RPL + r) : nullptr;
+            hq = nullptr;
+            cs_d = 0; cs_h = 0;
+        }
+        cs_s = dtc * 32 * RPL * 2;
+    }
+};
+
+template <int FMT, int RPL, int BN, int GA, int AB>
+__device__ __forceinline__ void stage_load9(Stage<BN>& S, const WPtr<FMT, RPL>& P, const int8_t* xb, long long xstep,
+                                            const float* dxb, long long tps, int kb0, int tid) {
+    if (AB & 8) {  // no loads: perturb the staged values so the data still changes per stage
+        S.wq.x ^= kb0 * 0x01010101; S.wq.y += kb0; S.wq.z ^= kb0 << 3; S.wq.w += 7 * kb0;
+#pragma unroll
+        for (int i = 0; i < Cfg<BN>::NXA; ++i) { S.xa[i].x ^= kb0 * 0x01030507; S.xa[i].y += kb0; S.xa[i].z ^= kb0 << 9; S.xa[i].w += 3 * kb0; }
+        return;
+    }
+    if (AB & 4) kb0 &= 2;
+    const int c = kb0 >> 4, jj = kb0 & 15;
+    S.wq = gemv::ldg_nc_v4(P.code + c * P.cs_code + jj * 16);
+    if (FMT == gemv::FAST_K5) {
+        S.s0 = (uint32_t)__ldg((const unsigned short*)(P.sa + c * P.cs_s + jj * RPL * 2));
+        S.s1 = __ldg((const unsigned int*)(P.sb + c * P.cs_d + (jj >> 3) * RPL * 4));
+        S.hb = __ldg((const unsigned int*)(P.hq + c * P.cs_h + jj * 4));
+    } else {
+        S.s0 = (uint32_t)__ldg((const unsigned short*)(P.sa + c * P.cs_s + jj * RPL * 2));
+        if (FMT == gemv::FAST_P4M) S.s1 = (uint32_t)__ldg((const unsigned short*)(P.sb + c * P.cs_s + jj * RPL * 2));
+    }
+    const int8_t* xp = xb + kb0 * 32;
+#pragma unroll
+    for (int i = 0; i < Cfg<BN>::NXA; ++i) S.xa[i] = __ldg((const int4*)(xp + i * xstep));
+    if (GA != 0 && tid < BN / 2) {
+        if (GA == 32) {
+            S.dx0 = __ldg((const float2*)(dxb + kb0 * tps));
+            S.dx1 = __ldg((const float2*)(dxb + (kb0 + 1) * tps));
+        } else {
+            S.dx0 = __ldg((const float2*)(dxb + (kb0 >> 1) * tps));
+            S.dx1 = make_float2(0.f, 0.f);
+        }
+    }
+}
+
+template <int FMT, int RPL, int BN, int GA, int AB = 0>
+__global__ void __launch_bounds__(NT, 1) gemm9_kernel(const Args a) {
+    using C = Cfg<BN>;
+    constexpr int NG = C::NG, WN = C::WN;
+    extern __shared__ __align__(16) unsigned char smem[];
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const int wm = warp & 1, wn = warp >> 1;
+    const int tok0 = blockIdx.x * BN, row0 = blockIdx.y * BM;
+    const int nkb = a.K >> 5;
+    const int t4 = lane & 3;
+    const float invs_st = a.invs[row0 + (tid >> 1)];
+    const WPtr<FMT, RPL> P(a, row0 + (tid >> 1), tid & 1);
+    const int8_t* xb = a.xq + (size_t)(tok0 + (tid >> 2)) * a.K + (tid & 3) * 16;
+    const long long xstep = (long long)(NT / 4) * a.K;
+    const float* dxb = a.dx + tok0 + 2 * (tid & (BN / 2 - 1));
+    const long long tps = a.Tp;
+
+    float acc[8][NG][2];  // GA 0: int32 bits
+#pragma unroll
+    for (int i = 0; i < 8; ++i)
+#pragma unroll
+        for (int g = 0; g < NG; ++g) acc[i][g][0] = acc[i][g][1] = 0.f;
+
+    Stage<BN> S;
+    S.dx0 = S.dx1 = make_float2(0.f, 0.f);
+    float2 bkeep = make_float2(0.f, 0.f);
+    stage_load9<FMT, RPL, BN, GA, AB & 4>(S, P, xb, xstep, dxb, tps, 0, tid);
+    stage_store<FMT, BN, AB & 1>(S, smem, invs_st, bkeep, 0, tid);
+    __syncthreads();
+
+    int arow[2], brow[NG];
+#pragma unroll
+    for (int q = 0; q < 2; ++q) arow[q] = wm * 64 + (q * 4 + (lane >> 3)) * 8 + (lane & 7);
+#pragma unroll
+    for (int g = 0; g < NG; ++g) brow[g] = wn * WN + 8 * g + (lane & 7);
+
+    int buf = 0;
+    for (int kb0 = 0; kb0 < nkb; kb0 += 2) {
+        const bool more = kb0 + 2 < nkb;
+        if (more) stage_load9<FMT, RPL, BN, GA, AB>(S, P, xb, xstep, dxb, tps, kb0 + 2, tid);
+        const unsigned char* B = smem + ((AB & 16) ? 0 : buf) * C::BYTES;
+        if (GA == 64 || GA == 0) {
+            uint32_t af[4][8];
+#pragma unroll
+            for (int u = 0; u < 4; ++u)
+#pragma unroll
+                for (int q = 0; q < 2; ++q)
+                    ldsm_x4(af[u][q * 4], af[u][q * 4 + 1], af[u][q * 4 + 2], af[u][q * 4 + 3],
+                            B + C::O_W + arow[q] * 64 + swz(arow[q], u) * 16);
+#pragma unroll
+            for (int g = 0; g < NG; ++g) {
+                uint32_t b[4];
+                ldsm_x4(b[0], b[1], b[2], b[3], B + C::O_X + brow[g] * 64 + swz(brow[g], lane >> 3) * 16);
+                if (GA == 0 || (AB & 2)) {
+#pragma unroll
+                    for (int u = 0; u < 4; ++u)
+#pragma unroll
+                        for (int i = 0; i < 8; ++i) {
+                            int d0, d1;
+                            mma_s8p(d0, d1, af[u][i], b[u], __float_as_int(acc[i][g][0]), __float_as_int(acc[i][g][1]));
+                            acc[i][g][0] = __int_as_float(d0); acc[i][g][1] = __int_as_float(d1);
+                        }
+                    continue;
+                }
+                int tq[8][2];
+#pragma unroll
+                for (int u = 0; u < 4; ++u)
+#pragma unroll
+                    for (int i = 0; i < 8; ++i)
+                        mma_s8p(tq[i][0], tq[i][1], af[u][i], b[u], u ? tq[i][0] : MAGIC_I, u ? tq[i][1] : MAGIC_I);
+                const float2 dv = *(const float2*)(B + C::O_DX + (wn * WN + 8 * g + 2 * t4) * 4);
+#pragma unroll
+                for (int i = 0; i < 8; ++i) {
+                    acc[i][g][0] = fmaf(__int_as_float(tq[i][0]), dv.x, acc[i][g][0]);
+                    acc[i][g][1] = fmaf(__int_as_float(tq[i][1]), dv.y, acc[i][g][1]);
+                }
+            }
+        } else {
+#pragma unroll
+            for (int kb = 0; kb < 2; ++kb) {
+                uint32_t af[2][8];
+#pragma unroll
+                for (int h = 0; h < 2; ++h)
+#pragma unroll
+                    for (int q = 0; q < 2; ++q)
+                        ldsm_x4(af[h][q * 4], af[h][q * 4 + 1], af[h][q * 4 + 2], af[h][q * 4 + 3],
+                                B + C::O_W + arow[q] * 64 + swz(arow[q], kb * 2 + h) * 16);
+#pragma unroll
+                for (int gp = 0; gp < NG / 2; ++gp) {
+                    uint32_t b[4];
+                    {
+                        const int m = lane >> 3, row = brow[2 * gp + (m & 1)];
+                        ldsm_x4(b[0], b[1], b[2], b[3], B + C::O_X + row * 64 + swz(row, kb * 2 + (m >> 1)) * 16);
+                    }
+#pragma unroll
+                    for (int gg = 0; gg < 2; ++gg) {
+                        const int g = 2 * gp + gg;
+                        if (AB & 2) {
+#pragma unroll
+                            for (int h = 0; h < 2; ++h)
+#pragma unroll
+                                for (int i = 0; i < 8; ++i) {
+                                    int d0, d1;
+                                    mma_s8p(d0, d1, af[h][i], b[h * 2 + gg], __float_as_int(acc[i][g][0]),
+                                            __float_as_int(acc[i][g][1]));
+                                    acc[i][g][0] = __int_as_float(d0); acc[i][g][1] = __int_as_float(d1);
+                                }
+                            continue;
+                        }
+                        int tq[8][2];
+#pragma unroll
+                        for (int h = 0; h < 2; ++h)
+#pragma unroll
+                            for (int i = 0; i < 8; ++i)
+                                mma_s8p(tq[i][0], tq[i][1], af[h][i], b[h * 2 + gg], h ? tq[i][0] : MAGIC_I,
+                                        h ? tq[i][1] : MAGIC_I);
+                        const float2 dv = *(const float2*)(B + C::O_DX + (kb * BN + wn * WN + 8 * g + 2 * t4) * 4);
+#pragma unroll
+                        for (int i = 0; i < 8; ++i) {
+                            acc[i][g][0] = fmaf(__int_as_float(tq[i][0]), dv.x, acc[i][g][0]);
+                            acc[i][g][1] = fmaf(__int_as_float(tq[i][1]), dv.y, acc[i][g][1]);
+                        }
+                    }
+                }
+            }
+        }
+        if (GA != 0 && !(AB & 2) && (kb0 & 6) == 6) {  // end of a 256-k bias group (every 4th stage)
+#pragma unroll
+            for (int g = 0; g < NG; ++g) {
+                const float2 bv = *(const float2*)(B + C::O_BI + (wn * WN + 8 * g + 2 * t4) * 4);
+#pragma unroll
+                for (int i = 0; i < 8; ++i) { acc[i][g][0] -= bv.x; acc[i][g][1] -= bv.y; }
+            }
+        }
+        if (more && !(AB & 16)) {
+            const int sp = ((kb0 + 2) >> 1) & 3;
+            stage_store<FMT, BN, AB & 1>(S, smem + (buf ^ 1) * C::BYTES, invs_st, bkeep, sp == 0 ? 0 : sp == 3 ? 2 : 1, tid);
+            __syncthreads();
+            buf ^= 1;
+        }
+    }
+    // GA 0: per-token scale dx[t] (dx is [Tp])
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const int row = row0 + wm * 64 + i * 8 + (lane >> 2);
+        const float sr = __frcp_rn(a.invs[row]);
+#pragma unroll
+        for (int g = 0; g < NG; ++g)
+#pragma unroll
+            for (int e = 0; e < 2; ++e) {
+                const int tok = tok0 + wn * WN + 8 * g + 2 * t4 + e;
+                if (tok < a.T) {
+                    float* p = a.y + (size_t)tok * a.ldy + row;
+                    const float v = GA == 0 ? (float)__float_as_int(acc[i][g][e]) * (a.dx[tok] * sr) : acc[i][g][e] * sr;
+                    *p = a.accumulate ? *p + v : v;
+                }
+            }
+    }
+}
+
+template <int FMT, int RPL, int BN, int GA, int AB = 0>
+static cudaError_t launch9_t(const Args& a, cudaStream_t s) {
+    auto k = gemm9_kernel<FMT, RPL, BN, GA, AB>;
+    const int smem = 2 * Cfg<BN>::BYTES;
+    static int attr_dev_mask = 0;
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (!(attr_dev_mask & (1 << dev))) {
+        cudaError_t e = cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        if (e != cudaSuccess) return e;
+        attr_dev_mask |= 1 << dev;
+    }
+    if (a.N % BM || a.K % 256 || a.Tp % BN) return cudaErrorInvalidValue;
+    dim3 grid(a.Tp / BN, a.N / BM);
+    k<<<grid, NT, smem, s>>>(a);
+    return cudaGetLastError();
+}
+
+// ga: activation group (32 exact q8 blocks, 64, or 0 = per token); bn 256 / 128
+static inline cudaError_t launch9(int fmt, int rpl, int bn, int ga, const Args& a, cudaStream_t s) {
+#define T4Q_G9(F, R)                                                                                     \
+    if (fmt == F && rpl == R) {                                                                          \
+        if (ga == 64) return bn == 256 ? launch9_t<F, R, 256, 64>(a, s) : launch9_t<F, R, 128, 64>(a, s); \
+        if (ga == 0) return bn == 256 ? launch9_t<F, R, 256, 0>(a, s) : launch9_t<F, R, 128, 0>(a, s);    \
+        return bn == 256 ? launch9_t<F, R, 256, 32>(a, s) : launch9_t<F, R, 128, 32>(a, s);               \
+    }
+    T4Q_G9(gemv::FAST_P4, 4) T4Q_G9(gemv::FAST_P4, 2)
+    T4Q_G9(gemv::FAST_P4M, 4) T4Q_G9(gemv::FAST_P4M, 2)
+    T4Q_G9(gemv::FAST_K5, 4) T4Q_G9(gemv::FAST_K5, 2)
+#undef T4Q_G9
+    return cudaErrorInvalidValue;
+}
+
+// per-token quantizer (GA 0): one 256-thread block per token, q = round(x / d), d = amax(x[t]) / 127; dx is [Tp]
+__global__ void __launch_bounds__(256) quant8_tok_kernel(const float* __restrict__ x, int ldx, int T, int K,
+                                                         int8_t* __restrict__ xq, float* __restrict__ dx) {
+    __shared__ float red[8];
+    const int t = blockIdx.x, tid = threadIdx.x;
+    int8_t* dst = xq + (size_t)t * K;
+    if (t >= T) {
+        for (int k = tid * 4; k < K; k += 1024) *(int*)(dst + k) = 0;
+        if (tid == 0) dx[t] = 0.f;
+        return;
+    }
+    const float* src = x + (size_t)t * ldx;
+    float m = 0.f;
+    for (int k = tid * 4; k < K; k += 1024) {
+        const float4 v = *(const float4*)(src + k);
+        m = fmaxf(m, fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w))));
+    }
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+    if ((tid & 31) == 0) red[tid >> 5] = m;
+    __syncthreads();
+    float amax = 0.f;
+#pragma unroll
+    for (int w = 0; w < 8; ++w) amax = fmaxf(amax, red[w]);
+    const float d = amax / 127.f;
+    for (int k = tid * 4; k < K; k += 1024) {
+        const float4 v = *(const float4*)(src + k);
+        const float f[4] = {v.x, v.y, v.z, v.w};
+        uint32_t pk = 0;
+#pragma unroll
+        for (int e = 0; e < 4; ++e) {
+            const int q = amax == 0.f ? 0 : __float2int_rn(f[e] / d);
+            pk |= (uint32_t)(q & 0xff) << (8 * e);
+        }
+        *(uint32_t*)(dst + k) = pk;
+    }
+    if (tid == 0) dx[t] = d;
+}
+
+template <int FMT, int RPL, int BN, int MODE = 0>
 static cudaError_t launch_t(const Args& a, cudaStream_t s) {
-    auto k = gemm8_kernel<FMT, RPL, BN>;
+    auto k = gemm8_kernel<FMT, RPL, BN, MODE>;
     const int smem = 2 * Cfg<BN>::BYTES;
     static int attr_dev_mask = 0;
     int dev = 0;
@@ -390,32 +744,34 @@ static inline cudaError_t row_invs(int fmt, int rpl, const Args& a, float* invs,
 
 // prefill activation quantizer for this kernel: x [T][K] fp32 -> xq [Tp][K] int8, dx [K/32][Tp] (d = amax/127).
 // One thread per (token, 32-block); padding tokens get zeros. Same q values as gemm::quant_rows_kernel.
+template <int GA = 32>
 __global__ void quant8_kernel(const float* __restrict__ x, int ldx, int T, int Tp, int K, int8_t* __restrict__ xq,
                               float* __restrict__ dx) {
-    const int nb = K >> 5;
+    const int nb = K / GA;
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= Tp * nb) return;
     const int t = i / nb, b = i % nb;
-    int4* dst = (int4*)(xq + (size_t)t * K + b * 32);
+    int4* dst = (int4*)(xq + (size_t)t * K + b * GA);
     if (t >= T) {
-        dst[0] = make_int4(0, 0, 0, 0); dst[1] = make_int4(0, 0, 0, 0);
+#pragma unroll
+        for (int k = 0; k < GA / 16; ++k) dst[k] = make_int4(0, 0, 0, 0);
         dx[(size_t)b * Tp + t] = 0.f;
         return;
     }
-    const float4* src = (const float4*)(x + (size_t)t * ldx + b * 32);
-    float v[32];
+    const float4* src = (const float4*)(x + (size_t)t * ldx + b * GA);
+    float v[GA];
 #pragma unroll
-    for (int k = 0; k < 8; ++k) {
+    for (int k = 0; k < GA / 4; ++k) {
         const float4 f = src[k];
         v[4 * k] = f.x; v[4 * k + 1] = f.y; v[4 * k + 2] = f.z; v[4 * k + 3] = f.w;
     }
     float amax = 0.f;
 #pragma unroll
-    for (int k = 0; k < 32; ++k) amax = fmaxf(amax, fabsf(v[k]));
+    for (int k = 0; k < GA; ++k) amax = fmaxf(amax, fabsf(v[k]));
     const float d = amax / 127.f;
-    uint32_t w[8];
+    uint32_t w[GA / 4];
 #pragma unroll
-    for (int k = 0; k < 8; ++k) {
+    for (int k = 0; k < GA / 4; ++k) {
         uint32_t pk = 0;
 #pragma unroll
         for (int e = 0; e < 4; ++e) {
@@ -424,14 +780,18 @@ __global__ void quant8_kernel(const float* __restrict__ x, int ldx, int T, int T
         }
         w[k] = pk;
     }
-    dst[0] = make_int4(w[0], w[1], w[2], w[3]);
-    dst[1] = make_int4(w[4], w[5], w[6], w[7]);
+#pragma unroll
+    for (int k = 0; k < GA / 16; ++k) dst[k] = make_int4(w[4 * k], w[4 * k + 1], w[4 * k + 2], w[4 * k + 3]);
     dx[(size_t)b * Tp + t] = d;
 }
 
-static inline void quant8(const float* x, int ldx, int T, int Tp, int K, int8_t* xq, float* dx, cudaStream_t s) {
-    const int n = Tp * (K >> 5);
-    quant8_kernel<<<(n + 127) / 128, 128, 0, s>>>(x, ldx, T, Tp, K, xq, dx);
+// ga: activation scale group (32 or 64); dx is [K/ga][Tp]
+static inline void quant8(const float* x, int ldx, int T, int Tp, int K, int8_t* xq, float* dx, cudaStream_t s,
+                          int ga = 32) {
+    if (ga == 0) { quant8_tok_kernel<<<Tp, 256, 0, s>>>(x, ldx, T, K, xq, dx); return; }
+    const int n = Tp * (K / ga);
+    if (ga == 64) quant8_kernel<64><<<(n + 127) / 128, 128, 0, s>>>(x, ldx, T, Tp, K, xq, dx);
+    else quant8_kernel<32><<<(n + 127) / 128, 128, 0, s>>>(x, ldx, T, Tp, K, xq, dx);
 }
 
 }  // namespace gemm8

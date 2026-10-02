@@ -31,6 +31,7 @@ struct StepState {
 struct FW {  // fast packed weight on one GPU
     t4q::gemv::Layout L;
     uint8_t* base = nullptr;
+    float* invs = nullptr;  // prefill gemm8: per-row 127 / max|w| (computed on first batched prefill)
     bool ok() const { return base != nullptr; }
 };
 
@@ -277,6 +278,9 @@ struct State {
     int pf_fuse = 1;      // 1: norm / silu / gated norm quantize straight into the GEMM activation layout
     int pf_fa = 1;        // 1: tensor-core flash attention for prefill (0: SIMT online-softmax kernel)
     int pf_nsub = 2;      // sub-batches per ubatch (AR copy of one overlaps the other's compute); 1 = off
+    int pf_g8 = 1;        // 1: gemm8 (in-kernel per-row int8 requant, one FFMA per output per block); 0: gemm.cuh W4A8
+    int pf_ga = 64;       // gemm8 activation scale group: 32 (exact q8 blocks), 64, or 0 (one scale per token)
+    int pf_bn = 0;        // gemm8 token tile: 128 / 256, 0 = auto (256 when the sub-batch has >= 512 padded tokens)
     int pf_prof = 0;      // 1: per-op event profile of GPU0 (ms per op class) in stats "pf_profile"
     std::string pf_json;
     double pf_last_batch_s = 0, pf_last_total_s = 0;
