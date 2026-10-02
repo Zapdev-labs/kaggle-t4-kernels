@@ -92,7 +92,14 @@ void build_fw(t4q_ctx* c, Stage& sg, int g, tp::FW& W, const std::vector<Piece>&
     for (auto& cr : cols)
         if (cr.first % be || cr.second % be) throw std::runtime_error(std::string("unaligned column split in ") + what);
     if (K % 512) throw std::runtime_error(std::string("K % 512 != 0 in ") + what);
-    if ((ff == FAST_P4 || ff == FAST_P4M) && getenv("T4Q_RPL_P4") && !il) rpl = atoi(getenv("T4Q_RPL_P4"));  // A/B
+    if ((ff == FAST_P4 || ff == FAST_P4M) && !il) {  // A/B knobs: all P4, N-split (qkvz, qkv_a), K-split (down, wo)
+        const std::string w(what);
+        const bool nsplit = w.find("qkvz") != std::string::npos || w.find("qkv_a") != std::string::npos;
+        const bool ksplit = w.find("ffn_down") != std::string::npos || w.find("attn_output") != std::string::npos;
+        if (getenv("T4Q_RPL_P4")) rpl = atoi(getenv("T4Q_RPL_P4"));
+        if (nsplit && getenv("T4Q_RPL_N")) rpl = atoi(getenv("T4Q_RPL_N"));
+        if (ksplit && getenv("T4Q_RPL_K")) rpl = atoi(getenv("T4Q_RPL_K"));
+    }
     if (il && (il != rpl || rows.size() != 2 || rows[0].nr != rows[1].nr))
         throw std::runtime_error(std::string("bad interleave in ") + what);
     W.L = make_layout(ff, (int)N, (int)K, rpl);
@@ -687,6 +694,7 @@ void tp_load(t4q_ctx* c, const char* path) {
         CK(cudaDeviceGetAttribute(&nsm, cudaDevAttrMultiProcessorCount, 0));
         S.max_blocks = 2 * nsm;
         tp::set_max_blocks(S.max_blocks);
+        if (getenv("T4Q_THREADS")) tp::set_threads(atoi(getenv("T4Q_THREADS")));  // A/B knob
     }
     CK(cudaSetDevice(0));
     CK(cudaHostAlloc(&S.h_ring, tp::RING * 4, cudaHostAllocMapped | cudaHostAllocPortable));

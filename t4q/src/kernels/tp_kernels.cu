@@ -162,6 +162,7 @@ __device__ __forceinline__ void quant_smem(float v, int i, int8_t* s_lo, int8_t*
 }
 
 int g_max_blocks = 80;
+int g_threads = 256;
 
 template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO, bool SQ = false>
 __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs ar, const SegArgs sg, const ProArgs pa,
@@ -171,7 +172,8 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     constexpr int NB = NCH * 16;
     constexpr int K = NCH * 512;
     const int tid = threadIdx.x, lane = tid & 31, h = lane >> 4, j = lane & 15, wib = tid >> 5;
-    const int warp = blockIdx.x * 8 + wib;
+    const int wpb = blockDim.x >> 5;  // warps per block (8, or 4 for 128-thread plain kernels)
+    const int warp = blockIdx.x * wpb + wib;
     const int ntot = a.ntiles + (SEG ? sg.nrows : 0);
     const int tbeg = warp * tpw, tend = min(ntot, tbeg + tpw);
     // AR: a block owns the contiguous rows of its 8 * tpw tiles (tpw <= 2); they are staged here and sent to the peer
@@ -456,23 +458,24 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
                 const int row = tile * 2 * RPL + h * RPL + r;
                 if (SQ) {  // half 0 holds gate row r, half 1 the matching up row
                     const float u = __shfl_xor_sync(0xffffffffu, v, 16);
-                    if (lane == 0) sa[(tile - blockIdx.x * 8 * tpw) * RPL + r] = (v / (1.0f + expf(-v))) * u;
+                    if (lane == 0) sa[(tile - blockIdx.x * wpb * tpw) * RPL + r] = (v / (1.0f + expf(-v))) * u;
                 }
                 if (j == 0 && row < a.N) {
                     a.y[(size_t)col * a.ldy + row] = v;
-                    if (AR) sy[(tile - blockIdx.x * 8 * tpw) * 2 * RPL + h * RPL + r] = v;
+                    if (AR) sy[(tile - blockIdx.x * wpb * tpw) * 2 * RPL + h * RPL + r] = v;
                 }
             }
     }
-    if (SQ) {  // the block owns outputs [blockIdx.x * tpw * 32, +tpw * 32): tpw q8 groups
+    if (SQ) {  // the block owns outputs [blockIdx.x * ng * 32, +ng * 32), ng = wpb * tpw * RPL / 32 q8 groups
         __syncthreads();
-        if (wib < tpw)
-            quant_warp(sa[wib * 32 + lane], pa.sq_xq + (blockIdx.x * tpw + wib) * 32 + lane,
-                       pa.sq_xm + blockIdx.x * tpw + wib);
+        const int ng = wpb * tpw * RPL / 32;
+        if (wib < ng)
+            quant_warp(sa[wib * 32 + lane], pa.sq_xq + (blockIdx.x * ng + wib) * 32 + lane,
+                       pa.sq_xm + blockIdx.x * ng + wib);
     }
     if (AR) {
         __syncthreads();
-        const int nrow = 8 * tpw * 2 * RPL;
+        const int nrow = wpb * tpw * 2 * RPL;
         bool wrote = false;
         if (ar.fence != -2)
             for (int t = tid; t < nrow / 4; t += blockDim.x) {
@@ -523,11 +526,17 @@ void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaSt
         cap = std::min(cap, occ[dev < 8 ? dev : 0]);
     }
     const bool coresident = (PRO != PRO_NONE && !(SQ && PRO != PRO_LEADER));
-    const int target = coresident ? std::min((ntot + 7) / 8, cap) : (ntot + 7) / 8;
-    const int tpw = (ntot + 8 * target - 1) / (8 * target);
-    const int blocks = (ntot + 8 * tpw - 1) / (8 * tpw);
+    // block size: 128 threads (T4Q_THREADS) only for plain-x kernels; prologue kernels assume 256
+    const int threads = PRO == PRO_NONE ? g_threads : 256;
+    const int wpb = threads / 32;
+    const int target = coresident ? std::min((ntot + wpb - 1) / wpb, cap) : (ntot + wpb - 1) / wpb;
+    int tpw = (ntot + wpb * target - 1) / (wpb * target);
+    if (SQ) tpw = std::max(tpw, 32 / (wpb * RPL));  // a block must own whole q8 groups
+    const int blocks = (ntot + wpb * tpw - 1) / (wpb * tpw);
     if (AR && (W.L.N % 4 || SEG || tpw > 2)) throw std::runtime_error("AR gemv needs N % 4 == 0, no segment, tpw <= 2");
-    if (SQ && (tpw > 8 || RPL != 4 || SEG || AR || W.L.ntiles % (8 * tpw))) throw std::runtime_error("bad silu-quant gemv");
+    if (SQ && (tpw > 8 || RPL != 4 || SEG || AR || W.L.ntiles % (wpb * tpw) || (wpb * tpw * RPL) % 32))
+        throw std::runtime_error("bad silu-quant gemv");
+    if (AR && wpb * tpw * 2 * RPL > 8 * 2 * 2 * RPL) throw std::runtime_error("AR gemv: staging too small");
     static bool attr[8] = {false};  // per device: prefer max shared memory so two prologue blocks fit per SM
     int dev = 0;
     cudaGetDevice(&dev);
@@ -536,12 +545,13 @@ void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaSt
                              100);
         attr[dev] = true;
     }
-    k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ><<<blocks, 256, 0, s>>>(a, ar, sg, pa, tpw);
+    k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ><<<blocks, threads, 0, s>>>(a, ar, sg, pa, tpw);
 }
 
 }  // namespace
 
 void set_max_blocks(int n) { g_max_blocks = n; }
+void set_threads(int n) { g_threads = (n == 128) ? 128 : 256; }
 
 void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t s, const ArArgs* ar,
           const SegArgs* seg, const ProArgs* pro) {

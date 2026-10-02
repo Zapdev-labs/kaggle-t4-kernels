@@ -11,6 +11,7 @@ namespace tp {
 void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t s, const ArArgs* ar = nullptr,
           const SegArgs* seg = nullptr, const ProArgs* pro = nullptr);
 void set_max_blocks(int n);
+void set_threads(int n);  // GEMV block size for plain-x kernels (128 or 256)
 
 // fallback (no P2P): wait for the host-mapped flag of AR idx, copy the 20 KB payload to the local rx slot
 // pub_peer_rx/flag (optional): first publish this GPU's partial (own slot base) to the peer mailbox (slot bases)

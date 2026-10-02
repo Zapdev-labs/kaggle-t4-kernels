@@ -35,7 +35,7 @@ RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
 GGUF = "Qwen3.8-27B-Q4_0.gguf"
-TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584", "--configs", "arpub=2;arpub=1;fuse=3"]
+TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584", "--configs", "arpub=2"]
 
 
 def el():
@@ -316,15 +316,17 @@ def main():
         summ["p2p"] = val.get("p2p")
         result("summary", summ)
         # variant processes: forced host-mapped fallback (on a P2P box), and RPL=2 P4 layouts; greedy V3 + short bench
-        variants = [("nop2p", {"T4Q_NO_P2P": "1"}, bool(val.get("p2p")))]
+        variants = [("t128", {"T4Q_THREADS": "128"}, True), ("rplN2", {"T4Q_RPL_N": "2"}, True),
+                    ("rplN2_t128", {"T4Q_RPL_N": "2", "T4Q_THREADS": "128"}, True),
+                    ("rpl2_t128", {"T4Q_RPL_P4": "2", "T4Q_THREADS": "128"}, True)]
         for vname, venv, run in variants:
-            if not run or DEADLINE - el() < 420:
+            if not run or DEADLINE - el() < 300:
                 continue
             vout2 = OUT / f"results_tp_{vname}.json"
             rc, o = stream([sys.executable, "-u", str(t4q / "tests" / "tp_check.py"), "--model", model, "--work",
                             str(WORK), "--oracle", str(ORC), "--out", str(vout2), "--lib",
                             str(t4q / "build" / "libt4q.so"), "--modes", "graphs", "--sections", "v3", "--gen", "256",
-                            "--depth", "0", "--configs", "arpub=2;fuse=3"], f"tp_check_{vname}.log",
+                            "--depth", "0", "--configs", "arpub=2"], f"tp_check_{vname}.log",
                            timeout=DEADLINE - el() - 60, env=dict(os.environ, **venv))
             v2_ = json.loads(vout2.read_text()) if vout2.exists() else {}
             bench = {}
