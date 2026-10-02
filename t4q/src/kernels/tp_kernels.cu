@@ -494,6 +494,15 @@ __global__ void __launch_bounds__(256) k_gdn(const float* __restrict__ y, const 
     const int lane = tid & 31, warp = tid >> 5;
     const int pos = st->pos;
     const int p0 = (pos + 1) & 3, p1 = (pos + 2) & 3, p2 = (pos + 3) & 3, pw = pos & 3;  // pos-3, pos-2, pos-1, pos
+    // state rows first: their DRAM latency overlaps the conv / L2-norm phase
+    float s[4][4];
+#pragma unroll
+    for (int cc = 0; cc < 4; cc++) {
+        const int col = sl * 32 + warp * 4 + cc;
+        const float* Sp = S + ((size_t)vl * 128 + col) * 128;
+#pragma unroll
+        for (int r = 0; r < 4; r++) s[cc][r] = Sp[r * 32 + lane];
+    }
     // q (tid < 128) or k (tid >= 128) channel of local k head kl
     {
         const int ch = tid < 128 ? kl * 128 + tid : 1024 + kl * 128 + (tid - 128);
@@ -535,14 +544,6 @@ __global__ void __launch_bounds__(256) k_gdn(const float* __restrict__ y, const 
     float kr[4], qr[4];
 #pragma unroll
     for (int r = 0; r < 4; r++) { kr[r] = sk[r * 32 + lane]; qr[r] = sq[r * 32 + lane]; }
-    float s[4][4];
-#pragma unroll
-    for (int cc = 0; cc < 4; cc++) {
-        const int col = sl * 32 + warp * 4 + cc;
-        const float* Sp = S + ((size_t)vl * 128 + col) * 128;
-#pragma unroll
-        for (int r = 0; r < 4; r++) s[cc][r] = Sp[r * 32 + lane];
-    }
 #pragma unroll
     for (int cc = 0; cc < 4; cc++) {
         const int col = sl * 32 + warp * 4 + cc;
@@ -620,43 +621,43 @@ __global__ void k_attn_prep(const float* ya, const float* qw, const float* kw, f
     }
 }
 
-// grid (2 kv heads, NSPLIT), 256 threads. Each block: 6 q heads of its kv head over a chunk of positions.
+// grid (2 kv heads, NSPLIT), 256 threads, 2 blocks/SM (one wave). Warps 0-3 serve q heads 0-2 of the kv head, warps
+// 4-7 heads 3-5, each group striding over the block's chunk of positions (two positions in flight per warp).
 // ws layout: [(j * NSPLIT + s) * 6 + h6] x 258 floats {m, l, acc[256]}
-__global__ void __launch_bounds__(256) k_attn_split(const float* qa, const __half* kc, const __half* vc, float* ws,
-                                                    int max_ctx, const StepState* st) {
-    __shared__ float sm_m[8][6], sm_l[8][6];
+__global__ void __launch_bounds__(256, 2) k_attn_split(const float* qa, const __half* kc, const __half* vc, float* ws,
+                                                       int max_ctx, const StepState* st) {
+    __shared__ float sm_m[8][3], sm_l[8][3];
     __shared__ float sacc[8][256];
     const int j = blockIdx.x, sidx = blockIdx.y;
-    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, hg = warp >> 2, wq = warp & 3;
     const int n_kv = st->pos + 1;
     const int chunk = (n_kv + NSPLIT - 1) / NSPLIT;
     const int t0 = sidx * chunk, t1 = min(n_kv, t0 + chunk);
-    float q[6][8];
+    float q[3][8];
 #pragma unroll
-    for (int h6 = 0; h6 < 6; h6++) {
-        const float4* qp = (const float4*)(qa + (j * 6 + h6) * 256 + lane * 8);
+    for (int hh = 0; hh < 3; hh++) {
+        const float4* qp = (const float4*)(qa + (j * 6 + 3 * hg + hh) * 256 + lane * 8);
         const float4 a = qp[0], b = qp[1];
-        q[h6][0] = a.x; q[h6][1] = a.y; q[h6][2] = a.z; q[h6][3] = a.w;
-        q[h6][4] = b.x; q[h6][5] = b.y; q[h6][6] = b.z; q[h6][7] = b.w;
+        q[hh][0] = a.x; q[hh][1] = a.y; q[hh][2] = a.z; q[hh][3] = a.w;
+        q[hh][4] = b.x; q[hh][5] = b.y; q[hh][6] = b.z; q[hh][7] = b.w;
     }
-    float m[6], l[6], acc[6][8];
+    float m[3], l[3], acc[3][8];
 #pragma unroll
-    for (int h6 = 0; h6 < 6; h6++) {
-        m[h6] = -FLT_MAX; l[h6] = 0.f;
+    for (int hh = 0; hh < 3; hh++) {
+        m[hh] = -FLT_MAX; l[hh] = 0.f;
 #pragma unroll
-        for (int i = 0; i < 8; i++) acc[h6][i] = 0.f;
+        for (int i = 0; i < 8; i++) acc[hh][i] = 0.f;
     }
     const __half* K = kc + (size_t)j * max_ctx * 256;
     const __half* Vv = vc + (size_t)j * max_ctx * 256;
-    // two positions per warp iteration (both K/V rows in flight before the math)
-    for (int t = t0 + warp; t < t1; t += 16) {
-        const bool two = t + 8 < t1;
+    for (int t = t0 + wq; t < t1; t += 8) {
+        const bool two = t + 4 < t1;
         uint4 kraw[2], vraw[2];
         kraw[0] = *(const uint4*)(K + (size_t)t * 256 + lane * 8);
         vraw[0] = *(const uint4*)(Vv + (size_t)t * 256 + lane * 8);
         if (two) {
-            kraw[1] = *(const uint4*)(K + (size_t)(t + 8) * 256 + lane * 8);
-            vraw[1] = *(const uint4*)(Vv + (size_t)(t + 8) * 256 + lane * 8);
+            kraw[1] = *(const uint4*)(K + (size_t)(t + 4) * 256 + lane * 8);
+            vraw[1] = *(const uint4*)(Vv + (size_t)(t + 4) * 256 + lane * 8);
         }
 #pragma unroll
         for (int u = 0; u < 2; u++) {
@@ -670,45 +671,50 @@ __global__ void __launch_bounds__(256) k_attn_split(const float* qa, const __hal
                 k[2 * i] = kf.x; k[2 * i + 1] = kf.y; v[2 * i] = vf.x; v[2 * i + 1] = vf.y;
             }
 #pragma unroll
-            for (int h6 = 0; h6 < 6; h6++) {
+            for (int hh = 0; hh < 3; hh++) {
                 float dot = 0.f;
 #pragma unroll
-                for (int i = 0; i < 8; i++) dot += q[h6][i] * k[i];
+                for (int i = 0; i < 8; i++) dot += q[hh][i] * k[i];
                 dot = warp_sum(dot) * (1.0f / 16.0f);
-                const float mn = fmaxf(m[h6], dot);
-                const float c = expf(m[h6] - mn), p = expf(dot - mn);
-                l[h6] = l[h6] * c + p;
+                const float mn = fmaxf(m[hh], dot);
+                const float c = expf(m[hh] - mn), p = expf(dot - mn);
+                l[hh] = l[hh] * c + p;
 #pragma unroll
-                for (int i = 0; i < 8; i++) acc[h6][i] = acc[h6][i] * c + p * v[i];
-                m[h6] = mn;
+                for (int i = 0; i < 8; i++) acc[hh][i] = acc[hh][i] * c + p * v[i];
+                m[hh] = mn;
             }
         }
     }
     if (lane == 0) {
 #pragma unroll
-        for (int h6 = 0; h6 < 6; h6++) { sm_m[warp][h6] = m[h6]; sm_l[warp][h6] = l[h6]; }
+        for (int hh = 0; hh < 3; hh++) { sm_m[warp][hh] = m[hh]; sm_l[warp][hh] = l[hh]; }
     }
     __syncthreads();
 #pragma unroll
-    for (int h6 = 0; h6 < 6; h6++) {
+    for (int hh = 0; hh < 3; hh++) {
         float M = -FLT_MAX;
 #pragma unroll
-        for (int w = 0; w < 8; w++) M = fmaxf(M, sm_m[w][h6]);
-        const float sc = (l[h6] > 0.f) ? expf(m[h6] - M) : 0.f;
+        for (int w = 0; w < 4; w++) M = fmaxf(M, sm_m[4 * hg + w][hh]);
+        const float sc = (l[hh] > 0.f) ? expf(m[hh] - M) : 0.f;
 #pragma unroll
-        for (int i = 0; i < 8; i++) sacc[warp][lane * 8 + i] = acc[h6][i] * sc;
+        for (int i = 0; i < 8; i++) sacc[warp][lane * 8 + i] = acc[hh][i] * sc;
         __syncthreads();
-        float* out = ws + ((size_t)(j * NSPLIT + sidx) * 6 + h6) * 258;
-        float a = 0.f;
 #pragma unroll
-        for (int w = 0; w < 8; w++) a += sacc[w][tid];
-        out[2 + tid] = a;
-        if (tid == 0) {
-            float L = 0.f;
-            for (int w = 0; w < 8; w++)
-                if (sm_l[w][h6] > 0.f) L += sm_l[w][h6] * expf(sm_m[w][h6] - M);
-            out[0] = M;
-            out[1] = L;
+        for (int g2 = 0; g2 < 2; g2++) {
+            float* out = ws + ((size_t)(j * NSPLIT + sidx) * 6 + 3 * g2 + hh) * 258;
+            float a = 0.f;
+#pragma unroll
+            for (int w = 0; w < 4; w++) a += sacc[4 * g2 + w][tid];
+            out[2 + tid] = a;
+            if (tid == 0) {
+                float M2 = -FLT_MAX;
+                for (int w = 0; w < 4; w++) M2 = fmaxf(M2, sm_m[4 * g2 + w][hh]);
+                float L = 0.f;
+                for (int w = 0; w < 4; w++)
+                    if (sm_l[4 * g2 + w][hh] > 0.f) L += sm_l[4 * g2 + w][hh] * expf(sm_m[4 * g2 + w][hh] - M2);
+                out[0] = M2;
+                out[1] = L;
+            }
         }
         __syncthreads();
     }

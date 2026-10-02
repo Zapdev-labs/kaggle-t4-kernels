@@ -13,7 +13,7 @@
 namespace tp {
 
 constexpr int NAR = 256;     // epoch stride per step (2 ARs per layer = 128 used)
-constexpr int NSPLIT = 32;   // attention split-K blocks per kv head
+constexpr int NSPLIT = 40;   // attention split-K blocks per kv head (2 x 40 = one wave at 2 blocks/SM)
 constexpr int RING = 4096;   // host-mapped token ring
 
 // device step state (one per GPU, identical contents on both)
