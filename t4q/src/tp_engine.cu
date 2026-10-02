@@ -1269,6 +1269,7 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     if (k == "pf_fa") { S.pf_fa = v; return 0; }
     if (k == "pf_fuse") { S.pf_fuse = v; return 0; }
     if (k == "pf_g8") { S.pf_g8 = v; return 0; }
+    if (k == "pf_gdn2") { S.pf_gdn2 = v; return 0; }
     if (k == "pf_ga") { if (v != 0 && v != 32 && v != 64) throw std::runtime_error("pf_ga must be 0, 32 or 64"); S.pf_ga = v; return 0; }
     if (k == "pf_bn") { if (v != 0 && v != 128 && v != 256) throw std::runtime_error("pf_bn must be 0, 128 or 256"); S.pf_bn = v; return 0; }
     if (k == "spin_ns") {

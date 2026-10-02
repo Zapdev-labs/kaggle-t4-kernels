@@ -32,9 +32,9 @@ WORK = W / "work"
 WORK.mkdir(exist_ok=True)
 ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
-STAGE = "p"
-SECTIONS = ["engine"]
-PF_CONFIGS = "pf_g8=1,pf_ga=64,pf_fuse=1,pf_gdn2=1;pf_g8=1,pf_ga=64,pf_fuse=1,pf_gdn2=0"
+STAGE = "pg"
+SECTIONS = ["gemm"]
+PF_CONFIGS = "pf_g8=1,pf_ga=64,pf_fuse=1;pf_g8=1,pf_ga=32,pf_fuse=1"
 RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
@@ -375,9 +375,9 @@ def summarize_sustain(S):
 REF_SUSTAIN = 8
 GEMM_KBU = [2]
 GEMM_TABLE = True
-GEMM_SASS = ["_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE"]
+GEMM_SASS = ["_ZN3t4q5gemm812gemm12_kernelILi0ELi4ELi3EEEvNS0_4ArgsE"]
 GEMM_SUSTAIN = 4
-GEMM_SVARS = "17,27,28,29,17"
+GEMM_SVARS = "17,32,33,16,17,33"
 NVCC = "/usr/local/cuda/bin/nvcc" if os.path.exists("/usr/local/cuda/bin/nvcc") else (shutil.which("nvcc") or "nvcc")
 
 

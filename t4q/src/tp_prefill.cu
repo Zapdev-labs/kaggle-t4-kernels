@@ -91,9 +91,23 @@ struct Q8Out {
     int8_t* xq;
     float2* xs;    // gemm.cuh meta (nullptr in gemm8 mode)
     float* xsum;
-    float* dx;     // gemm8 block scales [K/32][Tp] (nullptr in gemm.cuh mode)
+    float* dx;     // gemm8 block scales [K/ga][Tp] (nullptr in gemm.cuh mode)
     int K, Tp;
+    int ga;        // gemm8 group: 32 (warp_q8) or 64 (warp pairs, q8_64)
 };
+// GA 64: v of element k with the 64-group amax (two consecutive warps) -> xq, dx (same math as gemm8::quant8_kernel<64>)
+__device__ __forceinline__ void q8_64_write(float v, float amax, const Q8Out& q, int tr, int k) {
+    const float d = amax / 127.f;
+    const int qi = amax == 0.f ? 0 : __float2int_rn(v / d);
+    q.xq[(size_t)tr * q.K + k] = (int8_t)qi;
+    if ((threadIdx.x & 63) == 0) q.dx[(size_t)(k >> 6) * q.Tp + tr] = d;
+}
+__device__ __forceinline__ float warp_amax(float v) {
+    float a = fabsf(v);
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) a = fmaxf(a, __shfl_xor_sync(0xffffffffu, a, o));
+    return a;
+}
 __device__ __forceinline__ void warp_q8(float v, const Q8Out& q, int tr, int k) {
     float amax = fabsf(v);
 #pragma unroll
@@ -138,6 +152,22 @@ __global__ void __launch_bounds__(256) k_pf_add_norm_q8(float* h, const float* o
     for (int k = 0; k < 20; k++) ss += x[k] * x[k];
     ss = block_sum(ss, red);
     const float scale = rsqrtf(ss / 5120.f + 1e-6f);
+    if (q.ga == 64) {
+        __shared__ float am[20][8];
+#pragma unroll
+        for (int k = 0; k < 20; k++) {
+            const int e = tid + 256 * k;
+            x[k] = (x[k] * scale) * w[e];
+            if (xn) xn[(size_t)t * D + e] = x[k];
+            const float a = warp_amax(x[k]);
+            if ((tid & 31) == 0) am[k][tid >> 5] = a;
+        }
+        __syncthreads();
+#pragma unroll
+        for (int k = 0; k < 20; k++)
+            q8_64_write(x[k], fmaxf(am[k][tid >> 5], am[k][(tid >> 5) ^ 1]), q, t, tid + 256 * k);
+        return;
+    }
 #pragma unroll
     for (int k = 0; k < 20; k++) {
         const int e = tid + 256 * k;
@@ -152,7 +182,16 @@ __global__ void k_pf_silu_q8(const float* __restrict__ y, int ldy, Q8Out q) {
     const int t = blockIdx.x, i = blockIdx.y * 256 + threadIdx.x;
     const int gr = (i >> 2) * 8 + (i & 3);
     const float g = y[(size_t)t * ldy + gr], u = y[(size_t)t * ldy + gr + 4];
-    warp_q8((g / (1.0f + expf(-g))) * u, q, t, i);
+    const float v = (g / (1.0f + expf(-g))) * u;
+    if (q.ga == 64) {
+        __shared__ float am[8];
+        const float a = warp_amax(v);
+        if ((threadIdx.x & 31) == 0) am[threadIdx.x >> 5] = a;
+        __syncthreads();
+        q8_64_write(v, fmaxf(am[threadIdx.x >> 5], am[(threadIdx.x >> 5) ^ 1]), q, t, i);
+        return;
+    }
+    warp_q8(v, q, t, i);
 }
 
 // gated RMSNorm per head -> q8 (K = 3072). grid (T, 24) x 128
@@ -164,48 +203,62 @@ __global__ void __launch_bounds__(128) k_pf_gnorm_q8(const float* __restrict__ o
     const float ss = block_sum(x * x, red);
     const float scale = rsqrtf(ss / 128.0f + 1e-6f);
     const float zz = y[(size_t)t * ldy + 5120 + vl * 128 + i];
-    warp_q8(((x * scale) * w[i]) * (zz / (1.0f + expf(-zz))), q, t, vl * 128 + i);
+    const float v = ((x * scale) * w[i]) * (zz / (1.0f + expf(-zz)));
+    if (q.ga == 64) {
+        __shared__ float am[4];
+        const float a = warp_amax(v);
+        if ((i & 31) == 0) am[i >> 5] = a;
+        __syncthreads();
+        q8_64_write(v, fmaxf(am[i >> 5], am[(i >> 5) ^ 1]), q, t, vl * 128 + i);
+        return;
+    }
+    warp_q8(v, q, t, vl * 128 + i);
 }
 
-// yab[t][i] = xn[t] . ab[i] (48 fp32 rows: 24 alpha then 24 beta). Block = 32 tokens x 48 rows, 128 threads, each
-// 4 tokens x 3 rows (rows rg, rg + 16, rg + 32); K in tiles of 64 staged k-major in smem (x as [k][32 tok], ab as
-// [k][48]), so the inner loop is one LDS.128 + 3 LDS per 12 FMA. The ab matrix is read once per 32 tokens (was 8).
-__global__ void __launch_bounds__(128) k_pf_ab(const float* __restrict__ xn, const float* __restrict__ ab, int T,
-                                               float* yab) {
-    __shared__ __align__(16) float xs[64][36];
-    __shared__ __align__(16) float as[64][52];
-    const int tid = threadIdx.x, tg = tid & 7, rg = tid >> 3, t0 = blockIdx.x * 32;
-    float acc[4][3];
+// yab[kz][t][i] = xn[t][kz-th quarter of K] . ab[i][same] (48 fp32 rows: 24 alpha then 24 beta); the consumer (k_pf_gdn)
+// sums the AB_KS = 4 slices in a fixed order. grid (ceil(T/128), AB_KS), 256 threads: thread = 8 tokens (tg = tid & 15)
+// x 3 rows (rg, rg + 16, rg + 32; rg = tid >> 4). K in tiles of 32 staged k-major in smem (x [k][128 tok], ab [k][48]):
+// two LDS.128 + 3 LDS per 24 FMA, and the 983 KB ab matrix is read once per 128 tokens.
+constexpr int AB_KS = 4;
+__global__ void __launch_bounds__(256) k_pf_ab(const float* __restrict__ xn, const float* __restrict__ ab, int T,
+                                               float* yab, int sstride) {
+    __shared__ __align__(16) float xs[32][132];
+    __shared__ __align__(16) float as[32][52];
+    const int tid = threadIdx.x, tg = tid & 15, rg = tid >> 4, t0 = blockIdx.x * 128;
+    float acc[8][3];
 #pragma unroll
-    for (int a = 0; a < 4; a++)
+    for (int a = 0; a < 8; a++)
 #pragma unroll
         for (int j = 0; j < 3; j++) acc[a][j] = 0.f;
-    for (int k0 = 0; k0 < D; k0 += 64) {
+    const int kbeg = blockIdx.y * (D / AB_KS);
+    yab += (size_t)blockIdx.y * sstride;
+    for (int k0 = kbeg; k0 < kbeg + D / AB_KS; k0 += 32) {
         __syncthreads();
-        for (int i = tid; i < 32 * 16; i += 128) {  // x: 32 tokens x 16 float4
-            const int r = i >> 4, k = (i & 15) * 4;
+        for (int i = tid; i < 128 * 8; i += 256) {  // x: 128 tokens x 8 float4
+            const int r = i >> 3, k = (i & 7) * 4;
             const float4 v = (t0 + r < T) ? *(const float4*)(xn + (size_t)(t0 + r) * D + k0 + k) : make_float4(0.f, 0.f, 0.f, 0.f);
             xs[k][r] = v.x; xs[k + 1][r] = v.y; xs[k + 2][r] = v.z; xs[k + 3][r] = v.w;
         }
-        for (int i = tid; i < 48 * 16; i += 128) {  // ab: 48 rows x 16 float4
-            const int r = i >> 4, k = (i & 15) * 4;
+        for (int i = tid; i < 48 * 8; i += 256) {  // ab: 48 rows x 8 float4
+            const int r = i >> 3, k = (i & 7) * 4;
             const float4 v = __ldg((const float4*)(ab + (size_t)r * D + k0 + k));
             as[k][r] = v.x; as[k + 1][r] = v.y; as[k + 2][r] = v.z; as[k + 3][r] = v.w;
         }
         __syncthreads();
-#pragma unroll 8
-        for (int k = 0; k < 64; k++) {
-            const float4 xv = *(const float4*)&xs[k][tg * 4];
+#pragma unroll 4
+        for (int k = 0; k < 32; k++) {
+            const float4 x0 = *(const float4*)&xs[k][tg * 8], x1 = *(const float4*)&xs[k][tg * 8 + 4];
             const float a0 = as[k][rg], a1 = as[k][rg + 16], a2 = as[k][rg + 32];
-            acc[0][0] += xv.x * a0; acc[0][1] += xv.x * a1; acc[0][2] += xv.x * a2;
-            acc[1][0] += xv.y * a0; acc[1][1] += xv.y * a1; acc[1][2] += xv.y * a2;
-            acc[2][0] += xv.z * a0; acc[2][1] += xv.z * a1; acc[2][2] += xv.z * a2;
-            acc[3][0] += xv.w * a0; acc[3][1] += xv.w * a1; acc[3][2] += xv.w * a2;
+            const float xv[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
+#pragma unroll
+            for (int t = 0; t < 8; t++) {
+                acc[t][0] += xv[t] * a0; acc[t][1] += xv[t] * a1; acc[t][2] += xv[t] * a2;
+            }
         }
     }
 #pragma unroll
-    for (int a = 0; a < 4; a++) {
-        const int t = t0 + tg * 4 + a;
+    for (int a = 0; a < 8; a++) {
+        const int t = t0 + tg * 8 + a;
         if (t < T)
 #pragma unroll
             for (int j = 0; j < 3; j++) yab[(size_t)t * 48 + rg + 16 * j] = acc[a][j];
@@ -259,7 +312,11 @@ __global__ void k_pf_ring(const float* __restrict__ y, int ldy, int T, int p0, f
 // are 3 shuffles each. Inputs are staged through shared memory in chunks of 8 tokens (double buffered); the decay and
 // beta gates are computed once per token in the staging step.
 constexpr int GCH = 8;  // 18.5 KB smem: 3 blocks per SM, all 96 resident
-__global__ void __launch_bounds__(256) k_pf_gdn(const float* __restrict__ qkv, const float* __restrict__ yab, int T,
+// V2 (pf_gdn2): one pass over the state per token computes the update, o_t = S_t q_t AND kv_{t+1} = S_t k_{t+1}
+// (both reductions interleaved, 4 partial sums each), so a token costs one dependent pass + one shuffle tree instead
+// of two; the first token of each staged chunk gets its own kv pass.
+template <int V2>
+__global__ void __launch_bounds__(256) k_pf_gdn(const float* __restrict__ qkv, const float* __restrict__ yab, int ab_ss, int T,
                                                 const float* __restrict__ ssm_a, const float* __restrict__ ssm_dt,
                                                 float* S, float* o) {
     __shared__ __align__(16) float sq[2][GCH][128], sk[2][GCH][128], svv[2][GCH][32], sab[2][GCH][2];
@@ -296,7 +353,12 @@ __global__ void __launch_bounds__(256) k_pf_gdn(const float* __restrict__ qkv, c
         if (tid >= 64 && tid < 64 + GCH) {
             const int t = c0 + tid - 64;
             if (t < T) {
-                const float ya_ = __ldg(yab + (size_t)t * 48 + vl), yb = __ldg(yab + (size_t)t * 48 + 24 + vl);
+                float ya_ = 0.f, yb = 0.f;
+#pragma unroll
+                for (int kz = 0; kz < AB_KS; ++kz) {
+                    ya_ += __ldg(yab + (size_t)kz * ab_ss + (size_t)t * 48 + vl);
+                    yb += __ldg(yab + (size_t)kz * ab_ss + (size_t)t * 48 + 24 + vl);
+                }
                 rbeta = 1.0f / (1.0f + expf(-yb));
                 const float xg = ya_ + dtv;
                 const float sp = xg > 20.0f ? xg : logf(1.0f + expf(xg));
@@ -316,6 +378,67 @@ __global__ void __launch_bounds__(256) k_pf_gdn(const float* __restrict__ qkv, c
     for (int c0 = 0, b = 0; c0 < T; c0 += GCH, b ^= 1) {
         if (c0 + GCH < T) gload(c0 + GCH);
         const int n = min(GCH, T - c0);
+        if (V2) {
+            float kr[4][4];
+#pragma unroll
+            for (int m = 0; m < 4; m++) {
+                const float4 kv4 = *(const float4*)&sk[b][0][32 * m + 4 * i8];
+                kr[m][0] = kv4.x; kr[m][1] = kv4.y; kr[m][2] = kv4.z; kr[m][3] = kv4.w;
+            }
+            float delta;
+            {
+                float p[4];
+#pragma unroll
+                for (int m = 0; m < 4; m++) p[m] = s[m][0] * kr[m][0] + s[m][1] * kr[m][1] + s[m][2] * kr[m][2] + s[m][3] * kr[m][3];
+                float kv = (p[0] + p[1]) + (p[2] + p[3]);
+                kv += __shfl_xor_sync(0xffffffffu, kv, 1);
+                kv += __shfl_xor_sync(0xffffffffu, kv, 2);
+                kv += __shfl_xor_sync(0xffffffffu, kv, 4);
+                delta = (svv[b][0][colw] - sab[b][0][0] * kv) * sab[b][0][1];
+            }
+            for (int tt = 0; tt < n; tt++) {
+                const float gv = sab[b][tt][0];
+                const bool nx = tt + 1 < n;
+                float qr[4][4], kn[4][4];
+#pragma unroll
+                for (int m = 0; m < 4; m++) {
+                    const float4 qv4 = *(const float4*)&sq[b][tt][32 * m + 4 * i8];
+                    qr[m][0] = qv4.x; qr[m][1] = qv4.y; qr[m][2] = qv4.z; qr[m][3] = qv4.w;
+                    const float4 kn4 = nx ? *(const float4*)&sk[b][tt + 1][32 * m + 4 * i8] : make_float4(0.f, 0.f, 0.f, 0.f);
+                    kn[m][0] = kn4.x; kn[m][1] = kn4.y; kn[m][2] = kn4.z; kn[m][3] = kn4.w;
+                }
+                float pa[4], pk[4];
+#pragma unroll
+                for (int m = 0; m < 4; m++) {
+                    pa[m] = 0.f; pk[m] = 0.f;
+#pragma unroll
+                    for (int e = 0; e < 4; e++) {
+                        const float sn = gv * s[m][e] + kr[m][e] * delta;
+                        pa[m] += sn * qr[m][e];
+                        pk[m] += sn * kn[m][e];
+                        s[m][e] = sn;
+                    }
+                }
+                float a = (pa[0] + pa[1]) + (pa[2] + pa[3]), kv = (pk[0] + pk[1]) + (pk[2] + pk[3]);
+                a += __shfl_xor_sync(0xffffffffu, a, 1);
+                kv += __shfl_xor_sync(0xffffffffu, kv, 1);
+                a += __shfl_xor_sync(0xffffffffu, a, 2);
+                kv += __shfl_xor_sync(0xffffffffu, kv, 2);
+                a += __shfl_xor_sync(0xffffffffu, a, 4);
+                kv += __shfl_xor_sync(0xffffffffu, kv, 4);
+                if (i8 == 0) o[(size_t)(c0 + tt) * 3072 + vl * 128 + col] = a * (1.0f / sqrtf(128.0f));
+                if (nx) {
+                    delta = (svv[b][tt + 1][colw] - sab[b][tt + 1][0] * kv) * sab[b][tt + 1][1];
+#pragma unroll
+                    for (int m = 0; m < 4; m++)
+#pragma unroll
+                        for (int e = 0; e < 4; e++) kr[m][e] = kn[m][e];
+                }
+            }
+            if (c0 + GCH < T) sstore(b ^ 1);
+            __syncthreads();
+            continue;
+        }
         for (int tt = 0; tt < n; tt++) {
             float kr[4][4], qr[4][4];
 #pragma unroll
@@ -671,7 +794,7 @@ Pf* pf_get(t4q_ctx* c) {
         B.part = dalloc<float>(U * D);
         B.rx[0] = dalloc<float>(U * D);
         B.rx[1] = dalloc<float>(U * D);
-        B.yab = dalloc<float>(U * 48);
+        B.yab = dalloc<float>(U * 48 * AB_KS);
         B.qkv = dalloc<float>(U * 5120);
         B.o = dalloc<float>(U * 3072);
         B.g32 = dalloc<float>(U * 8704);
@@ -773,10 +896,11 @@ struct PfRun {
         Q8Out q;
         q.xq = B.xq; q.K = K; q.Tp = tpad(sT[s]);
         q.xs = g8 ? nullptr : B.xs; q.xsum = g8 ? nullptr : B.xsum; q.dx = g8 ? B.dx : nullptr;
+        q.ga = g8 ? ga : 32;
         return q;
     }
     // fused producers write 32-element q8 groups (gemm.cuh layout or gemm8 GA 32); other GA use the quant kernels
-    bool fused() const { return c->tps->pf_fuse && !i4 && (!g8 || ga == 32); }
+    bool fused() const { return c->tps->pf_fuse && !i4 && (!g8 || ga == 32 || ga == 64); }
     // K5 GEMMs need int8 activations even in i4 mode
     void qg(int g, int s, const tp::FW& W, const float* x, int K, float* y, int ldy) {
         const bool save = i4;
@@ -834,7 +958,8 @@ struct PfRun {
         if (!L.attn) {
             if (fu) gemm(g, s, L.qkvz, B.y, 8192);
             else qg(g, s, L.qkvz, B.xn, D, B.y, 8192);
-            k_pf_ab<<<(Ts + 31) / 32, 128, 0, G.s>>>(B.xn + (size_t)t0 * D, L.ab, Ts, B.yab + (size_t)t0 * 48);
+            k_pf_ab<<<dim3((Ts + 127) / 128, AB_KS), 256, 0, G.s>>>(B.xn + (size_t)t0 * D, L.ab, Ts, B.yab + (size_t)t0 * 48,
+                                                                   P->cap * 48);
             mark(g, "ab");
             k_pf_conv<<<dim3(Ts, 40), 128, 0, G.s>>>(B.y + (size_t)t0 * 8192, 8192, L.conv_ring, L.conv_w, ps,
                                                      B.qkv + (size_t)t0 * 5120);
@@ -843,11 +968,13 @@ struct PfRun {
             {
                 static int carve[2] = {0, 0};
                 if (!carve[g]) {
-                    CK(cudaFuncSetAttribute(k_pf_gdn, cudaFuncAttributePreferredSharedMemoryCarveout, 100));
+                    CK(cudaFuncSetAttribute(k_pf_gdn<0>, cudaFuncAttributePreferredSharedMemoryCarveout, 100));
+                    CK(cudaFuncSetAttribute(k_pf_gdn<1>, cudaFuncAttributePreferredSharedMemoryCarveout, 100));
                     carve[g] = 1;
                 }
             }
-            k_pf_gdn<<<96, 256, 0, G.s>>>(B.qkv + (size_t)t0 * 5120, B.yab + (size_t)t0 * 48, Ts, L.ssm_a, L.ssm_dt,
+            auto gk = S.pf_gdn2 ? k_pf_gdn<1> : k_pf_gdn<0>;
+            gk<<<96, 256, 0, G.s>>>(B.qkv + (size_t)t0 * 5120, B.yab + (size_t)t0 * 48, P->cap * 48, Ts, L.ssm_a, L.ssm_dt,
                                           L.S, B.o + (size_t)t0 * 3072);
             mark(g, "gdn_scan");
             if (fu) {
