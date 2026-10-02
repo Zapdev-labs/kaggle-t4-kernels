@@ -255,7 +255,7 @@ struct State {
     int attnf = 0;        // 1: fused attention kernel (prep + split + combine)
     int attn2 = 0;        // 1: split attention v2 (slower than v1 in M4 v20: 27.6 vs 20.9 us short, 48 vs 48 at 3.6k)
     int sqt = 256;        // gate|up silu-quant GEMV block size (256 since M4 v21: gate|up 199 -> 195 us)
-    int pn = 1;           // no P2P: one pull_norm kernel instead of pull + ar_norm (arpub 1 only)
+    int pn = 0;           // no P2P: one pull_norm kernel instead of pull + ar_norm (arpub 1 only; slower in v22)
     int p4u = 1;          // 1: P4 GEMVs with the unsigned high-nibble dp4a path (default; bit-identical)
     int tail = 0;         // 1: AR + norm in tail blocks of the K-split GEMVs (no ar_norm kernels; P2P only)
     int arn = 0;          // ar_norm kernel: 0 = multi-block (20 x 256), 1 = single block (round 1)

@@ -285,11 +285,15 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     __shared__ float sa[SQ ? 8 * 8 * RPL : 1];  // SQ: silu(g) * u of the block's 8 * tpw * RPL outputs (tpw <= 8)
 
     WChunk<FMT, RPL> w[D];
-    const bool pre = PRO != PRO_NONE && tbeg < tend && tbeg < a.ntiles;
+    // SEG: the fp32 rows are work items 0..nrows-1 (first, so their latency is not the kernel tail), quantized
+    // tiles follow (work item t -> tile t - nrows)
+    const int nseg = SEG ? sg.nrows : 0;
+    const int qbeg = tbeg - nseg;
+    const bool pre = PRO != PRO_NONE && tbeg < tend && qbeg >= 0 && qbeg < a.ntiles;
     if (pre) {
 #pragma unroll
         for (int c = 0; c < D; ++c)
-            if (c < NCH) load_chunk<FMT, RPL, NCH>(w[c], a, tbeg, c, lane);
+            if (c < NCH) load_chunk<FMT, RPL, NCH>(w[c], a, qbeg, c, lane);
     }
     if (PRO == PRO_ARNORM) {
         static_assert(PRO != PRO_ARNORM || K == 5120, "ARNORM prologue needs K = 5120");
@@ -492,9 +496,10 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
         __syncthreads();
     }
 
-    for (int tile = tbeg; tile < tend; tile++) {
-        if (SEG && tile >= a.ntiles) {
-            const int row = tile - a.ntiles;
+    for (int item = tbeg; item < tend; item++) {
+        const int tile = item - nseg;
+        if (SEG && item < nseg) {
+            const int row = item;
             const float4* w4 = (const float4*)(sg.w + (size_t)row * 5120);
             const float4* x4 = (PRO == PRO_ARNORM || PRO == PRO_LEADER) ? (const float4*)s_xf : (const float4*)sg.x;
             float acc = 0.f;
@@ -512,7 +517,7 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
         for (int r = 0; r < RPL; ++r)
 #pragma unroll
             for (int c = 0; c < M; ++c) acc[r][c] = 0.f;
-        if (!(pre && tile == tbeg)) {
+        if (!(pre && item == tbeg)) {
 #pragma unroll
             for (int c = 0; c < D; ++c)
                 if (c < NCH) load_chunk<FMT, RPL, NCH>(w[c], a, tile, c, lane);

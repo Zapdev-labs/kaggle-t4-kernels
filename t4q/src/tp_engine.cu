@@ -402,6 +402,14 @@ struct Enq {
     bool arpub() const { return c->tps->arpub && (c->tps->fuse == 0 || c->tps->fuse == 3); }
     tp::ProArgs lead;  // storage for the leader-prologue args of the current GEMV
     bool rows_in_gemv() const { return arpub() && c->tps->arpub == 2; }  // arpub 2: GEMV writes rows, consumer flags
+    bool rows_dma() const { return arpub() && c->tps->arpub == 4 && c->tps->p2p; }  // arpub 4: DMA copy node
+    // after a K-split GEMV (arpub 4): copy this GPU's partial to the peer's mailbox with the copy engine
+    void dma_rows(tp::Gpu& G, int idx) {
+        if (!rows_dma()) return;
+        const int sl = idx & 1;
+        CK(cudaMemcpyPeerAsync(G.peer_rx + sl * D, 1 - G.g, G.part + sl * D, G.g, D * sizeof(float), G.s));
+        mark(G, "dma_rows");
+    }
     // AR args for a K-split GEMV: nullptr (arpub 1: plain GEMV), rows-only (arpub 2) or full epilogue publish
     bool ll() const { return c->tps->ll && c->tps->p2p && c->tps->fuse == 0 && !mega(); }
     bool pn() const {
@@ -540,7 +548,7 @@ struct Enq {
         const tp::Pf pf = pf_for(nxt);
         const bool pub = arpub() && p.add && c->tps->p2p;  // fallback mode published in pull()
         tp::ar_norm(p.h_in, p.h_out, p.add ? G.part : nullptr, G.rx, p.flag ? G.flag : nullptr, G.st, p.idx, p.nw,
-                    G.xn, G.xq, G.xm, G.s, &pf, pub && !rows_in_gemv() ? G.peer_rx : nullptr,
+                    G.xn, G.xq, G.xm, G.s, &pf, pub && !rows_in_gemv() && !rows_dma() ? G.peer_rx : nullptr,
                     pub ? G.peer_flag : nullptr);
         mark(G, "ar_norm");
         return nullptr;
@@ -658,6 +666,7 @@ struct Enq {
                 tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, ksplit(G, idx, a, L.post_norm), nullptr,
                          S.fuse == 1 ? &pg : nullptr);
                 mark(G, "gemv_ssm_out");
+                dma_rows(G, idx);
             } else {
                 tp::gemv(L.qkv_a, G.xq, G.xm, G.y, s, nullptr, nullptr, pre(G, pa, L.qkv_a));
                 mark(G, "gemv_attn_qkv");
@@ -678,6 +687,7 @@ struct Enq {
                 tp::ArArgs a;
                 tp::gemv(L.wo, G.xq, G.xm, G.part + (idx & 1) * D, s, ksplit(G, idx, a, L.post_norm));
                 mark(G, "gemv_attn_out");
+                dma_rows(G, idx);
             }
         } else {
             const int idx = 2 * il + 1;
@@ -693,6 +703,7 @@ struct Enq {
             tp::gemv(L.down, G.xq2, G.xm2, G.part + (idx & 1) * D, s,
                      ksplit(G, idx, a, il < 63 ? G.L[il + 1].attn_norm : G.output_norm));
             mark(G, "gemv_down");
+            dma_rows(G, idx);
         }
     }
     void head(int g) {

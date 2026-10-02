@@ -35,10 +35,10 @@ RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
 GGUF = "Qwen3.8-27B-Q4_0.gguf"
-CONFIGS = "arpub=-1,sqt=256,pn=1;arpub=-1,sqt=128,pn=1;arpub=-1,sqt=256,pn=0"
+CONFIGS = "arpub=-1;arpub=1;arpub=3;arpub=4;arpub=2"
 TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584", "--configs", CONFIGS, "--rounds", "2",
            "--trace", "24", "--trace_dir", str(OUT / "traces")]
-VARIANT_CONFIGS = "arpub=-1,sqt=256,pn=1;arpub=-1,sqt=256,pn=0"
+VARIANT_CONFIGS = "arpub=-1"
 
 
 def el():
@@ -327,8 +327,7 @@ def main():
         summ["p2p"] = val.get("p2p")
         result("summary", summ)
         # variant processes: forced host-mapped fallback (on a P2P box), and RPL=2 P4 layouts; greedy V3 + short bench
-        variants = [("t256", {"T4Q_THREADS": "256"}, True),
-                    ("nop2p", {"T4Q_NO_P2P": "1"}, bool(val.get("p2p")))]
+        variants = [("nop2p", {"T4Q_NO_P2P": "1"}, bool(val.get("p2p")))]
         for vname, venv, run in variants:
             if not run or DEADLINE - el() < 300:
                 continue
