@@ -6,8 +6,11 @@ namespace tp {
 
 // y = W x (q8 activations xq/xm). With ar: also stores rows to ar.y_peer and publishes the AR flag (two-level).
 // With seg: extra fp32 rows. m columns (1 for decode).
+// pro: optional prologue (x built in shared memory, xq/xm unused). Grid: <= max_blocks co-resident blocks, each warp
+// owns a contiguous run of tiles.
 void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t s, const ArArgs* ar = nullptr,
-          const SegArgs* seg = nullptr);
+          const SegArgs* seg = nullptr, const ProArgs* pro = nullptr);
+void set_max_blocks(int n);
 
 // h = embed(token) (Q4_0 row dequant, bit-exact with ggml)
 void embed(const uint8_t* embd, StepState* st, const int* prompt, float* h, cudaStream_t s);

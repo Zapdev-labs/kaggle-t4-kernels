@@ -316,37 +316,52 @@ struct Enq {
     }
     void start(int g) {
         tp::Gpu& G = c->tps->G[g];
-        if (prof) mark(G, "start");
-        tp::embed(G.embd, G.st, G.prompt, G.h, G.s);
+        mark(G, "start");
+        tp::embed(G.embd, G.st, G.prompt, G.hb[0], G.s);
         mark(G, "embed");
     }
-    // part 0: input AR + norm; part 1: mixer + post AR + norm; part 2: FFN (publishes the next AR)
+    // prologue consuming AR idx (idx < 0: layer 0, no all-reduce): residual in hb[idx & 1] -> hb[(idx + 1) & 1]
+    tp::ProArgs arnorm(tp::Gpu& G, int idx, const float* nw) {
+        tp::ProArgs p;
+        if (idx < 0) {
+            p.h_in = G.hb[0];
+        } else {
+            p.h_in = G.hb[idx & 1];
+            p.h_out = G.hb[(idx + 1) & 1];
+            p.own = G.part + (idx & 1) * D;
+            p.rx = G.rx + (idx & 1) * D;
+            p.flag = G.flag + (idx & 1);
+        }
+        p.st = G.st;
+        p.idx = idx;
+        p.nw = nw;
+        p.xn_out = G.xn;
+        return p;
+    }
+    // part 0: [AR + attn_norm] mixer, publishes AR 2il; part 1: [AR + post_norm] FFN, publishes AR 2il+1
     void layer(int g, int il, int part) {
         tp::State& S = *c->tps;
         tp::Gpu& G = S.G[g];
         tp::Layer& L = G.L[il];
         cudaStream_t s = G.s;
         if (part == 0) {
-            tp::ar_norm(G.h, G.part, G.rx, il == 0 ? nullptr : G.flag, G.st, 2 * il - 1, L.attn_norm, G.xn, G.xq,
-                        G.xm, s);
-            mark(G, "ar_norm");
-        } else if (part == 1) {
             const int idx = 2 * il;
+            const tp::ProArgs pa = arnorm(G, 2 * il - 1, L.attn_norm);
             if (!L.attn) {
                 tp::SegArgs sg;
                 sg.w = L.ab; sg.x = G.xn; sg.y = G.yab; sg.nrows = 48;
-                tp::gemv(L.qkvz, G.xq, G.xm, G.y, s, nullptr, &sg);
-                mark(G, "gemv_qkvz");
+                tp::gemv(L.qkvz, G.xq, G.xm, G.y, s, nullptr, &sg, &pa);
+                mark(G, "gemv_qkvz+arnorm");
                 tp::gdn(G.y, G.yab, L.conv_ring, L.conv_w, L.ssm_a, L.ssm_dt, L.S, G.o, G.st, s);
                 mark(G, "gdn");
-                tp::gnorm_q8(G.o, G.y + 5120, L.ssm_norm, G.xq, G.xm, s);
-                mark(G, "gnorm_q8");
+                tp::ProArgs pg;
+                pg.o = G.o; pg.z = G.y + 5120; pg.gw = L.ssm_norm;
                 tp::ArArgs a = ar(G, idx);
-                tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, &a);
-                mark(G, "gemv_ssm_out");
+                tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, &a, nullptr, &pg);
+                mark(G, "gemv_ssm_out+gnorm");
             } else {
-                tp::gemv(L.qkv_a, G.xq, G.xm, G.y, s);
-                mark(G, "gemv_attn_qkv");
+                tp::gemv(L.qkv_a, G.xq, G.xm, G.y, s, nullptr, nullptr, &pa);
+                mark(G, "gemv_attn_qkv+arnorm");
                 tp::attn_prep(G.y, L.q_norm, L.k_norm, G.qa, L.kc, L.vc, S.max_ctx, G.st,
                               powf(hp::ROPE_BASE, -2.0f / hp::NROT), s);
                 mark(G, "attn_prep");
@@ -358,39 +373,33 @@ struct Enq {
                 tp::gemv(L.wo, G.xq, G.xm, G.part + (idx & 1) * D, s, &a);
                 mark(G, "gemv_attn_out");
             }
-            tp::ar_norm(G.h, G.part, G.rx, G.flag, G.st, idx, L.post_norm, G.xn, G.xq, G.xm, s);
-            mark(G, "ar_norm");
         } else {
             const int idx = 2 * il + 1;
-            tp::gemv(L.gateup, G.xq, G.xm, G.y, s);
-            mark(G, "gemv_gateup");
-            tp::silu_q8(G.y, 8704, G.xq, G.xm, s);
-            mark(G, "silu_q8");
+            const tp::ProArgs pa = arnorm(G, 2 * il, L.post_norm);
+            tp::gemv(L.gateup, G.xq, G.xm, G.y, s, nullptr, nullptr, &pa);
+            mark(G, "gemv_gateup+arnorm");
+            tp::ProArgs ps;
+            ps.gu = G.y;
             tp::ArArgs a = ar(G, idx);
-            tp::gemv(L.down, G.xq, G.xm, G.part + (idx & 1) * D, s, &a);
-            mark(G, "gemv_down");
+            tp::gemv(L.down, G.xq, G.xm, G.part + (idx & 1) * D, s, &a, nullptr, &ps);
+            mark(G, "gemv_down+silu");
         }
     }
-    void head(int g, int part) {
+    void head(int g) {
         tp::State& S = *c->tps;
         tp::Gpu& G = S.G[g];
-        if (part == 0) {
-            tp::ar_norm(G.h, G.part, G.rx, G.flag, G.st, 127, G.output_norm, G.xn, G.xq, G.xm, G.s);
-            mark(G, "ar_norm");
-        } else {
-            tp::gemv(G.lm, G.xq, G.xm, G.logits, G.s);
-            mark(G, "gemv_lm_head");
-            tp::argmax_step(G.logits, 124160, 124160 * g, G.apart, G.amb, G.flag + 2, G.peer_amb, G.peer_flag + 2,
-                            G.st, g == 0 ? S.d_ring : nullptr, G.s);
-            mark(G, "argmax");
-        }
+        const tp::ProArgs pa = arnorm(G, 127, G.output_norm);
+        tp::gemv(G.lm, G.xq, G.xm, G.logits, G.s, nullptr, nullptr, &pa);
+        mark(G, "gemv_lm_head+arnorm");
+        tp::argmax_step(G.logits, 124160, 124160 * g, G.apart, G.amb, G.flag + 2, G.peer_amb, G.peer_flag + 2, G.st,
+                        g == 0 ? S.d_ring : nullptr, G.s);
+        mark(G, "argmax");
     }
     void gpu_step(int g) {  // whole step on one GPU (graph capture)
         start(g);
         for (int il = 0; il < 64; il++)
-            for (int p = 0; p < 3; p++) layer(g, il, p);
-        head(g, 0);
-        head(g, 1);
+            for (int p = 0; p < 2; p++) layer(g, il, p);
+        head(g);
     }
 };
 
@@ -430,32 +439,31 @@ void eager_step(t4q_ctx* c, bool prof) {
     if (dmp) c->dumps.clear();
     for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); q.start(g); }
     for (int il = 0; il < 64; il++)
-        for (int p = 0; p < 3; p++) {
+        for (int p = 0; p < 2; p++) {
             for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); q.layer(g, il, p); }
             check_launch("layer");
-            if (dmp && p != 2) {
+            if (dmp) {
                 sync_both(c);
                 tp::Gpu& G = S.G[0];
-                if (p == 0) {
-                    if (il > 0) dumpv(c, "l_out-" + std::to_string(il - 1), G.h, D);
+                if (p == 0) {  // first kernel consumed AR 2il-1: residual in hb[0], xn = attn_norm
+                    if (il > 0) dumpv(c, "l_out-" + std::to_string(il - 1), G.hb[0], D);
                     dumpv(c, "attn_norm-" + std::to_string(il), G.xn, D);
-                } else {
-                    dumpv(c, "attn_residual-" + std::to_string(il), G.h, D);
+                } else {       // consumed AR 2il: residual in hb[1], xn = post norm
+                    dumpv(c, "attn_residual-" + std::to_string(il), G.hb[1], D);
                     dumpv(c, "attn_post_norm-" + std::to_string(il), G.xn, D);
                 }
             }
         }
-    for (int p = 0; p < 2; p++)
-        for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); q.head(g, p); }
+    for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); q.head(g); }
     check_launch("head");
     if (dmp || prof) sync_both(c);
     if (dmp) {
-        dumpv(c, "l_out-63", S.G[0].h, D);
+        dumpv(c, "l_out-63", S.G[0].hb[0], D);
         dumpv(c, "result_norm", S.G[0].xn, D);
         // both GPUs must hold the same residual bits
         std::vector<float> h1(D);
         CK(cudaSetDevice(1));
-        CK(cudaMemcpy(h1.data(), S.G[1].h, D * 4, cudaMemcpyDeviceToHost));
+        CK(cudaMemcpy(h1.data(), S.G[1].hb[0], D * 4, cudaMemcpyDeviceToHost));
         c->dumps["tp_h_mismatch"] = {(float)(memcmp(h1.data(), c->dumps["l_out-63"].data(), D * 4) != 0)};
     }
 }
@@ -532,7 +540,7 @@ void tp_load(t4q_ctx* c, const char* path) {
         if (e != cudaSuccess && e != cudaErrorPeerAccessAlreadyEnabled) CK(e);
         cudaGetLastError();
         CK(cudaStreamCreateWithFlags(&G.s, cudaStreamNonBlocking));
-        G.h = dmalloc<float>(D); G.xn = dmalloc<float>(D); G.y = dmalloc<float>(17408); G.yab = dmalloc<float>(64);
+        G.hb[0] = dmalloc<float>(D); G.hb[1] = dmalloc<float>(D); G.xn = dmalloc<float>(D); G.y = dmalloc<float>(17408); G.yab = dmalloc<float>(64);
         G.o = dmalloc<float>(3072); G.qa = dmalloc<float>(12 * 256);
         G.attn_ws = dmalloc<float>((size_t)2 * tp::NSPLIT * 6 * 258);
         G.logits = dmalloc<float>(124160);
@@ -547,6 +555,12 @@ void tp_load(t4q_ctx* c, const char* path) {
         S.G[g].peer_rx = S.G[1 - g].rx;
         S.G[g].peer_flag = S.G[1 - g].flag;
         S.G[g].peer_amb = S.G[1 - g].amb;
+    }
+    {
+        int nsm = 40;
+        CK(cudaDeviceGetAttribute(&nsm, cudaDevAttrMultiProcessorCount, 0));
+        S.max_blocks = 2 * nsm;
+        tp::set_max_blocks(S.max_blocks);
     }
     CK(cudaSetDevice(0));
     CK(cudaHostAlloc(&S.h_ring, tp::RING * 4, cudaHostAllocMapped | cudaHostAllocPortable));

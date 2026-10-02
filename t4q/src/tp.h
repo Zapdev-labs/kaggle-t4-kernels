@@ -49,6 +49,25 @@ struct SegArgs {  // extra fp32 rows (K = 5120) appended to a GEMV launch: y[i] 
     int nrows = 0;
 };
 
+// GEMV prologues (x is built per block in shared memory, after the first weight chunks are already in flight)
+enum ProKind { PRO_NONE = 0, PRO_ARNORM = 1, PRO_SILU = 2, PRO_GNORM = 3 };
+struct ProArgs {
+    // PRO_ARNORM: [wait flag >= epoch(idx)] x = h_in (+ own + rx); block 0 writes h_out = x and xn_out = norm(x) * nw
+    const float* h_in = nullptr;
+    float* h_out = nullptr;
+    const float* own = nullptr;     // already offset to the slot
+    const float* rx = nullptr;      // already offset to the slot
+    const unsigned* flag = nullptr; // already offset to the slot; nullptr = no all-reduce (layer 0)
+    StepState* st = nullptr;
+    int idx = 0;
+    const float* nw = nullptr;
+    float* xn_out = nullptr;
+    // PRO_SILU: x = silu(gu[i]) * gu[K + i]
+    const float* gu = nullptr;
+    // PRO_GNORM: x = rmsnorm128(o) * gw * silu(z)
+    const float *o = nullptr, *z = nullptr, *gw = nullptr;
+};
+
 struct Layer {
     bool attn = false;
     float *attn_norm = nullptr, *post_norm = nullptr;
@@ -75,7 +94,8 @@ struct Gpu {
     FW lm;
     uint8_t* embd = nullptr;  // raw Q4_0 token_embd rows
     // activations
-    float *h, *xn, *y, *yab, *o, *qa, *attn_ws, *logits;
+    float* hb[2];  // residual double buffer: after AR idx the residual is in hb[(idx + 1) & 1]
+    float *xn, *y, *yab, *o, *qa, *attn_ws, *logits;
     int8_t* xq;
     int2* xm;
     float* part;     // [2][5120] own AR partials
@@ -115,6 +135,7 @@ struct State {
     std::vector<const FW*> spec_fw;
     std::string selftest_json;
     std::string prof_json;
+    int max_blocks = 80;  // co-resident GEMV blocks (2 per SM)
     double ms_graph_capture = 0;
 };
 

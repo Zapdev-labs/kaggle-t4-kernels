@@ -1,4 +1,5 @@
 // TP decode kernels: fast GEMV with fused AR publish / fp32 segment rows, and the small fused kernels between GEMVs.
+#include <algorithm>
 #include <cfloat>
 #include <cstdio>
 #include <stdexcept>
@@ -81,31 +82,126 @@ __device__ __forceinline__ void quant_warp(float v, int8_t* xq_i, int2* xm_g) {
 __device__ __forceinline__ float h2f_u16(uint16_t b) { return __half2float(__ushort_as_half(b)); }
 
 // ------------------------------------------------------------------------------------------------ GEMV
-template <int FMT, int RPL, int M, int NCH, bool AR, bool SEG>
-__global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs ar, const SegArgs sg) {
-    constexpr int D = 2;
+// q8 quantization of one 32-group (one value per lane, element i) into the shared-memory x planes
+__device__ __forceinline__ void quant_smem(float v, int i, int8_t* s_lo, int8_t* s_hi, int2* s_mt) {
+    const int lane = threadIdx.x & 31;
+    const float amax = warp_max(fabsf(v));
+    const float d = amax / 127.f;
+    const int q = amax == 0.f ? 0 : (int)roundf(v / d);
+    const int g = i >> 5;
+    if (lane < 16) s_lo[g * 16 + lane] = (int8_t)q;
+    else s_hi[g * 16 + lane - 16] = (int8_t)q;
+    int s = q;
+#pragma unroll
+    for (int o = 8; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
+    const int s1 = __shfl_sync(0xffffffffu, s, 16);
+    if (lane == 0) s_mt[g] = make_int2(__float_as_int(d), (int)((unsigned)(s & 0xffff) | ((unsigned)s1 << 16)));
+}
+
+int g_max_blocks = 80;
+
+template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO>
+__global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs ar, const SegArgs sg, const ProArgs pa,
+                                                 int tpw) {
+    constexpr int D = 2, M = 1;
     constexpr int CVT = (FMT == FAST_P4 || FMT == FAST_Q8) ? 1 : 0;
-    const int lane = threadIdx.x & 31, h = lane >> 4, j = lane & 15;
-    const int warp = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
-    const int nwarps = gridDim.x * (blockDim.x >> 5);
     constexpr int NB = NCH * 16;
     constexpr int K = NCH * 512;
+    const int tid = threadIdx.x, lane = tid & 31, h = lane >> 4, j = lane & 15, wib = tid >> 5;
+    const int warp = blockIdx.x * 8 + wib;
     const int ntot = a.ntiles + (SEG ? sg.nrows : 0);
-    // AR: the launcher guarantees one tile per warp, so a block owns rows [blockIdx.x * 16 * RPL, +16 * RPL); they
-    // are staged here and sent to the peer as a few coalesced float4 PCIe writes (4-byte scattered remote stores
-    // cost ~60 us per 20 KB in M2 v1).
-    __shared__ float sy[AR ? 8 * 2 * RPL : 1];
+    const int tbeg = warp * tpw, tend = min(ntot, tbeg + tpw);
+    // AR: a block owns the contiguous rows of its 8 * tpw tiles (tpw <= 2); they are staged here and sent to the peer
+    // as coalesced float4 PCIe writes (4-byte scattered remote stores cost ~60 us per 20 KB in M2 v1).
+    __shared__ float sy[AR ? 8 * 2 * 2 * RPL : 1];
+    __shared__ __align__(16) int8_t s_lo[PRO ? NB * 16 : 16];
+    __shared__ __align__(16) int8_t s_hi[PRO ? NB * 16 : 16];
+    __shared__ int2 s_mt[PRO ? NB : 1];
+    __shared__ __align__(16) float s_xf[(PRO == PRO_ARNORM || PRO == PRO_GNORM) ? K : 4];
+    __shared__ float red[96];
+    __shared__ int s_flag;
 
-    for (int tile = warp; tile < ntot; tile += nwarps) {
+    WChunk<FMT, RPL> w[D];
+    const bool pre = PRO != PRO_NONE && tbeg < tend && tbeg < a.ntiles;
+    if (pre) {
+#pragma unroll
+        for (int c = 0; c < D; ++c)
+            if (c < NCH) load_chunk<FMT, RPL, NCH>(w[c], a, tbeg, c, lane);
+    }
+    if (PRO == PRO_ARNORM) {
+        static_assert(PRO != PRO_ARNORM || K == 5120, "ARNORM prologue needs K = 5120");
+        const bool add = pa.flag != nullptr;
+        if (add) {
+            if (tid == 0) {
+                s_flag = wait_flag(pa.flag, epoch_of(pa.st, pa.idx));
+                if (!s_flag) pa.st->err = 1000 + pa.idx;
+            }
+            __syncthreads();
+        }
+        float ss = 0.f;
+#pragma unroll 4
+        for (int k = 0; k < K / 256; k++) {
+            const int i = tid + 256 * k;
+            float x = pa.h_in[i];
+            if (add) {
+                x = x + (pa.own[i] + ld_vol_f32(pa.rx + i));
+                if (blockIdx.x == 0) pa.h_out[i] = x;
+            }
+            s_xf[i] = x;
+            ss += x * x;
+        }
+        ss = block_sum(ss, red);
+        const float scale = rsqrtf(ss / 5120.f + 1e-6f);
+#pragma unroll 4
+        for (int k = 0; k < K / 256; k++) {
+            const int i = tid + 256 * k;
+            const float y = (s_xf[i] * scale) * pa.nw[i];
+            s_xf[i] = y;
+            if (blockIdx.x == 0) pa.xn_out[i] = y;
+            quant_smem(y, i, s_lo, s_hi, s_mt);
+        }
+        __syncthreads();
+    } else if (PRO == PRO_SILU) {
+#pragma unroll 1
+        for (int k = 0; k < K / 256; k++) {
+            const int i = tid + 256 * k;
+            const float g = pa.gu[i], u = pa.gu[K + i];
+            quant_smem((g / (1.0f + expf(-g))) * u, i, s_lo, s_hi, s_mt);
+        }
+        __syncthreads();
+    } else if (PRO == PRO_GNORM) {
+        static_assert(PRO != PRO_GNORM || K == 3072, "GNORM prologue needs K = 3072");
+#pragma unroll
+        for (int k = 0; k < K / 256; k++) {
+            const int i = tid + 256 * k;
+            const float x = pa.o[i];
+            s_xf[i] = x;
+            const float sq = warp_sum(x * x);
+            if (lane == 0) red[k * 8 + wib] = sq;
+        }
+        __syncthreads();
+#pragma unroll
+        for (int k = 0; k < K / 256; k++) {
+            const int i = tid + 256 * k;
+            const int b = k * 8 + (wib >> 2) * 4;
+            const float tot = ((red[b] + red[b + 1]) + red[b + 2]) + red[b + 3];
+            const float scale = rsqrtf(tot / 128.0f + 1e-6f);
+            const float zz = pa.z[i];
+            quant_smem(((s_xf[i] * scale) * pa.gw[i & 127]) * (zz / (1.0f + expf(-zz))), i, s_lo, s_hi, s_mt);
+        }
+        __syncthreads();
+    }
+
+    for (int tile = tbeg; tile < tend; tile++) {
         if (SEG && tile >= a.ntiles) {
             const int row = tile - a.ntiles;
             const float4* w4 = (const float4*)(sg.w + (size_t)row * 5120);
-            const float4* x4 = (const float4*)sg.x;
+            const float4* x4 = PRO == PRO_ARNORM ? (const float4*)s_xf : (const float4*)sg.x;
             float acc = 0.f;
 #pragma unroll 4
             for (int i = lane; i < 1280; i += 32) {
-                const float4 w = __ldg(w4 + i), x = x4[i];
-                acc += w.x * x.x + w.y * x.y + w.z * x.z + w.w * x.w;
+                const float4 wv = __ldg(w4 + i), x = x4[i];
+                acc += wv.x * x.x + wv.y * x.y + wv.z * x.z + wv.w * x.w;
             }
             acc = warp_sum(acc);
             if (lane == 0) sg.y[row] = acc;
@@ -116,10 +212,11 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
         for (int r = 0; r < RPL; ++r)
 #pragma unroll
             for (int c = 0; c < M; ++c) acc[r][c] = 0.f;
-        WChunk<FMT, RPL> w[D];
+        if (!(pre && tile == tbeg)) {
 #pragma unroll
-        for (int c = 0; c < D; ++c)
-            if (c < NCH) load_chunk<FMT, RPL, NCH>(w[c], a, tile, c, lane);
+            for (int c = 0; c < D; ++c)
+                if (c < NCH) load_chunk<FMT, RPL, NCH>(w[c], a, tile, c, lane);
+        }
 #pragma unroll
         for (int c = 0; c < NCH; ++c) {
             WChunk<FMT, RPL> cur = w[c % D];
@@ -127,9 +224,18 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
             const int kb = c * 16 + j;
 #pragma unroll
             for (int col = 0; col < M; ++col) {
-                const int4* xp = (const int4*)(a.xq + (size_t)col * K + kb * 32);
-                const int4 xl = __ldg(xp), xh = __ldg(xp + 1);
-                const int2 mt = __ldg(a.xm + (size_t)col * NB + kb);
+                int4 xl, xh;
+                int2 mt;
+                if (PRO != PRO_NONE) {
+                    xl = ((const int4*)s_lo)[kb];
+                    xh = ((const int4*)s_hi)[kb];
+                    mt = s_mt[kb];
+                } else {
+                    const int4* xp = (const int4*)(a.xq + (size_t)col * K + kb * 32);
+                    xl = __ldg(xp);
+                    xh = __ldg(xp + 1);
+                    mt = __ldg(a.xm + (size_t)col * NB + kb);
+                }
                 const float xd = __int_as_float(mt.x);
                 const int s0 = (int)(short)(mt.y & 0xffff), s1 = mt.y >> 16;
                 const int moff = FMT == FAST_P4 ? 0x4B400000 - 8 * (s0 + s1) : 0x4B400000;
@@ -149,19 +255,24 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
                 const int row = tile * 2 * RPL + h * RPL + r;
                 if (j == 0 && row < a.N) {
                     a.y[(size_t)col * a.ldy + row] = v;
-                    if (AR) sy[(threadIdx.x >> 5) * 2 * RPL + h * RPL + r] = v;
+                    if (AR) sy[(tile - blockIdx.x * 8 * tpw) * 2 * RPL + h * RPL + r] = v;
                 }
             }
     }
     if (AR) {
         __syncthreads();
-        const int row0 = blockIdx.x * 16 * RPL + threadIdx.x * 4;
-        if (threadIdx.x < 4 * RPL && row0 < a.N) {
-            *(float4*)(ar.y_peer + row0) = *(const float4*)(sy + threadIdx.x * 4);
-            __threadfence_system();
+        const int nrow = 8 * tpw * 2 * RPL;
+        bool wrote = false;
+        for (int t = tid; t < nrow / 4; t += blockDim.x) {
+            const int row0 = blockIdx.x * nrow + t * 4;
+            if (row0 < a.N) {
+                *(float4*)(ar.y_peer + row0) = *(const float4*)(sy + t * 4);
+                wrote = true;
+            }
         }
+        if (wrote) __threadfence_system();
         __syncthreads();
-        if (threadIdx.x == 0) {
+        if (tid == 0) {
             const unsigned old = atomicAdd(ar.cnt, 1u);
             if (old == gridDim.x - 1) {
                 atomicExch(ar.cnt, 0u);
@@ -172,44 +283,61 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     }
 }
 
-template <int FMT, int RPL, int NCH, bool AR, bool SEG>
+template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO>
 void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t s, const ArArgs& ar,
-                 const SegArgs& sg) {
+                 const SegArgs& sg, const ProArgs& pa) {
     GemvArgs a = make_args(W.L, W.base, xq, xm, y, W.L.N);
     const int ntot = W.L.ntiles + (SEG ? sg.nrows : 0);
-    const int blocks = (ntot + 7) / 8;  // full grid: one tile per warp (required by the AR epilogue)
-    if (AR && (W.L.N % 4 || SEG)) throw std::runtime_error("AR gemv needs N % 4 == 0 and no segment");
-    k_gemv<FMT, RPL, 1, NCH, AR, SEG><<<blocks, 256, 0, s>>>(a, ar, sg);
+    const int target = std::min((ntot + 7) / 8, g_max_blocks);
+    const int tpw = (ntot + 8 * target - 1) / (8 * target);
+    const int blocks = (ntot + 8 * tpw - 1) / (8 * tpw);
+    if (AR && (W.L.N % 4 || SEG || tpw > 2)) throw std::runtime_error("AR gemv needs N % 4 == 0, no segment, tpw <= 2");
+    static bool attr[8] = {false};  // per device: prefer max shared memory so two prologue blocks fit per SM
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 8 && !attr[dev]) {
+        cudaFuncSetAttribute(k_gemv<FMT, RPL, NCH, AR, SEG, PRO>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+        attr[dev] = true;
+    }
+    k_gemv<FMT, RPL, NCH, AR, SEG, PRO><<<blocks, 256, 0, s>>>(a, ar, sg, pa, tpw);
 }
 
 }  // namespace
 
+void set_max_blocks(int n) { g_max_blocks = n; }
+
 void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t s, const ArArgs* ar,
-          const SegArgs* seg) {
+          const SegArgs* seg, const ProArgs* pro) {
     const ArArgs A = ar ? *ar : ArArgs{};
     const SegArgs S = seg ? *seg : SegArgs{};
+    const ProArgs P = pro ? *pro : ProArgs{};
     const int f = W.L.fmt, nch = W.L.nch, rpl = W.L.rpl;
     const bool isar = ar != nullptr, isseg = seg != nullptr;
-#define T4Q_G(FMT, RPL, NCH, AR_, SEG_)                                                         \
-    if (f == FMT && rpl == RPL && nch == NCH && isar == AR_ && isseg == SEG_) {                  \
-        launch_gemv<FMT, RPL, NCH, AR_, SEG_>(W, xq, xm, y, s, A, S);                           \
-        return;                                                                                 \
+    int pk = PRO_NONE;
+    if (pro) pk = pro->h_in ? PRO_ARNORM : pro->gu ? PRO_SILU : pro->o ? PRO_GNORM : PRO_NONE;
+#define T4Q_G(FMT, RPL, NCH, AR_, SEG_, PRO_)                                                     \
+    if (f == FMT && rpl == RPL && nch == NCH && isar == AR_ && isseg == SEG_ && pk == PRO_) {      \
+        launch_gemv<FMT, RPL, NCH, AR_, SEG_, PRO_>(W, xq, xm, y, s, A, S, P);                    \
+        return;                                                                                   \
     }
-    T4Q_G(FAST_P4, 4, 10, false, true)   // DeltaNet qkvz + alpha/beta fp32 rows
-    T4Q_G(FAST_P4, 4, 10, false, false)  // attn q|k|v, ffn gate|up
-    T4Q_G(FAST_K5, 2, 6, true, false)    // ssm_out (Q5_K), K-split, AR
-    T4Q_G(FAST_P4, 4, 6, true, false)    // attn_output, K-split, AR
-    T4Q_G(FAST_P4, 4, 17, true, false)   // ffn_down Q4_0, K-split, AR
-    T4Q_G(FAST_P4M, 4, 17, true, false)  // ffn_down Q4_1, K-split, AR
-    T4Q_G(FAST_K6, 2, 10, false, false)  // lm_head Q6_K
-    T4Q_G(FAST_P4, 4, 6, false, false)   // self-test variants without AR
-    T4Q_G(FAST_K5, 2, 6, false, false)
-    T4Q_G(FAST_P4, 4, 17, false, false)
-    T4Q_G(FAST_P4M, 4, 17, false, false)
+    T4Q_G(FAST_P4, 4, 10, false, true, PRO_ARNORM)   // DeltaNet qkvz + alpha/beta fp32 rows, AR + attn_norm
+    T4Q_G(FAST_P4, 4, 10, false, false, PRO_ARNORM)  // attn q|k|v (attn_norm), ffn gate|up (post_norm)
+    T4Q_G(FAST_K6, 2, 10, false, false, PRO_ARNORM)  // lm_head (output_norm)
+    T4Q_G(FAST_K5, 2, 6, true, false, PRO_GNORM)     // ssm_out (Q5_K) with gated norm prologue, AR publish
+    T4Q_G(FAST_P4, 4, 6, true, false, PRO_NONE)      // attn_output, AR publish
+    T4Q_G(FAST_P4, 4, 17, true, false, PRO_SILU)     // ffn_down Q4_0, silu prologue, AR publish
+    T4Q_G(FAST_P4M, 4, 17, true, false, PRO_SILU)    // ffn_down Q4_1
+    // self-test variants (x from global q8, no AR)
+    T4Q_G(FAST_P4, 4, 10, false, false, PRO_NONE)
+    T4Q_G(FAST_K6, 2, 10, false, false, PRO_NONE)
+    T4Q_G(FAST_P4, 4, 6, false, false, PRO_NONE)
+    T4Q_G(FAST_K5, 2, 6, false, false, PRO_NONE)
+    T4Q_G(FAST_P4, 4, 17, false, false, PRO_NONE)
+    T4Q_G(FAST_P4M, 4, 17, false, false, PRO_NONE)
 #undef T4Q_G
     throw std::runtime_error("tp::gemv: no instantiation for fmt " + std::to_string(f) + " rpl " + std::to_string(rpl) +
                              " nch " + std::to_string(nch) + " ar " + std::to_string(isar) + " seg " +
-                             std::to_string(isseg));
+                             std::to_string(isseg) + " pro " + std::to_string(pk));
 }
 
 // ------------------------------------------------------------------------------------------------ small kernels
