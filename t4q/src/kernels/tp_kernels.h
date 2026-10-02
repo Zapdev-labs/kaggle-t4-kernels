@@ -45,4 +45,11 @@ void attn_combine_q8(const float* ws, const float* ya, const StepState* st, int8
 void argmax_step(const float* logits, int n, int row0, float* apart, float* amb, const unsigned* aflag,
                  float* peer_amb, unsigned* peer_aflag, StepState* st, int* ring, cudaStream_t s);
 
+// persistent per-layer kernels (option mega); grid must be mega_capacity() (all blocks co-resident)
+int mega_capacity();
+void mega_dn(const MegaDN& m, int grid, cudaStream_t s);
+void mega_ffn(const MegaFFN& m, int down_fmt, int grid, cudaStream_t s);
+void mega_attn(const MegaAttn& m, int grid, cudaStream_t s);
+void mega_head(const MegaHead& m, int grid, cudaStream_t s);
+
 }  // namespace tp

@@ -468,8 +468,88 @@ struct Enq {
         mark(G, "ar_norm");
         return nullptr;
     }
+    // ---- persistent per-layer kernels (mega): rows go to the peer from the K-split GEMVs (arpub 2 semantics) and the
+    // next kernel's leader block publishes the flag
+    bool mega() const { return c->tps->mega && !c->dump_on; }
+    tp::MegaCommon mcommon(tp::Gpu& G, int idx, const float* nw, int xid) {
+        tp::MegaCommon m;
+        m.st = G.st;
+        m.bar = G.mbar;
+        m.xrdy = G.mbar + 2;
+        m.xid = xid;
+        m.in = arnorm(G, idx, nw);  // enqueues the pull kernel in fallback mode
+        if (m.in.add && c->tps->p2p) {
+            m.in.pub_peer_flag = G.peer_flag + (idx & 1);
+            m.in.pub_peer_rx = nullptr;
+        }
+        m.gxq = G.xq;
+        m.gxm = G.xm;
+        m.xn = G.xn;
+        return m;
+    }
+    static t4q::gemv::GemvArgs gargs(const tp::FW& W, float* y) {
+        return t4q::gemv::make_args(W.L, W.base, nullptr, nullptr, y, W.L.N);
+    }
+    void layer_mega(int g, int il, int part) {
+        tp::State& S = *c->tps;
+        tp::Gpu& G = S.G[g];
+        tp::Layer& L = G.L[il];
+        const int grid = S.mega_grid;
+        if (part == 0) {
+            const int idx = 2 * il;
+            if (!L.attn) {
+                tp::MegaDN m;
+                m.c = mcommon(G, idx - 1, L.attn_norm, il * 8);
+                m.qkvz = gargs(L.qkvz, G.y);
+                m.ab.w = L.ab; m.ab.x = nullptr; m.ab.y = G.yab; m.ab.nrows = 48;
+                m.ssm_out = gargs(L.ssm_out, G.part + (idx & 1) * D);
+                m.ring_w = L.conv_w; m.ssm_a = L.ssm_a; m.ssm_dt = L.ssm_dt; m.ssm_norm = L.ssm_norm;
+                m.ring = L.conv_ring; m.S = L.S; m.y = G.y; m.yab = G.yab; m.o = G.o;
+                m.y_peer = G.peer_rx + (idx & 1) * D;
+                tp::mega_dn(m, grid, G.s);
+                mark(G, "mega_dn");
+            } else {
+                tp::MegaAttn m;
+                m.c = mcommon(G, idx - 1, L.attn_norm, il * 8);
+                m.qkv = gargs(L.qkv_a, G.y);
+                m.wo = gargs(L.wo, G.part + (idx & 1) * D);
+                m.qw = L.q_norm; m.kw = L.k_norm; m.ya = G.y; m.qa = G.qa; m.ws = G.attn_ws;
+                m.kc = L.kc; m.vc = L.vc; m.max_ctx = S.max_ctx;
+                m.theta_scale = powf(hp::ROPE_BASE, -2.0f / hp::NROT);
+                m.y_peer = G.peer_rx + (idx & 1) * D;
+                tp::mega_attn(m, grid, G.s);
+                mark(G, "mega_attn");
+            }
+        } else {
+            const int idx = 2 * il + 1;
+            tp::MegaFFN m;
+            m.c = mcommon(G, idx - 1, L.post_norm, il * 8 + 2);
+            m.gateup = gargs(L.gateup, G.y);
+            m.down = gargs(L.down, G.part + (idx & 1) * D);
+            m.xq2 = G.xq2; m.xm2 = G.xm2;
+            m.y_peer = G.peer_rx + (idx & 1) * D;
+            tp::mega_ffn(m, L.down.L.fmt, grid, G.s);
+            mark(G, "mega_ffn");
+        }
+    }
+    void head_mega(int g) {
+        tp::State& S = *c->tps;
+        tp::Gpu& G = S.G[g];
+        tp::MegaHead m;
+        m.c = mcommon(G, 127, G.output_norm, 512);
+        m.lm = gargs(G.lm, G.logits);
+        m.logits = G.logits; m.apart = G.apart;
+        m.amb = S.p2p ? G.amb : G.hamb;
+        m.aflag = S.p2p ? G.flag + 2 : G.hflag + 2;
+        m.peer_amb = G.peer_amb; m.peer_aflag = G.peer_flag + 2;
+        m.row0 = 124160 * g;
+        m.ring = g == 0 ? S.d_ring : nullptr;
+        tp::mega_head(m, S.mega_grid, G.s);
+        mark(G, "mega_head");
+    }
     // part 0: [AR + attn_norm] mixer, publishes AR 2il; part 1: [AR + post_norm] FFN, publishes AR 2il+1
     void layer(int g, int il, int part) {
+        if (mega()) return layer_mega(g, il, part);
         tp::State& S = *c->tps;
         tp::Gpu& G = S.G[g];
         tp::Layer& L = G.L[il];
@@ -526,6 +606,7 @@ struct Enq {
         }
     }
     void head(int g) {
+        if (mega()) return head_mega(g);
         tp::State& S = *c->tps;
         tp::Gpu& G = S.G[g];
         const tp::ProArgs pa = arnorm(G, 127, G.output_norm);
@@ -692,6 +773,7 @@ void tp_load(t4q_ctx* c, const char* path) {
         G.xq2 = dmalloc<int8_t>(8704); G.xm2 = dmalloc<int2>(8704 / 32);
         G.part = dmalloc<float>(2 * D); G.rx = dmalloc<float>(2 * D);
         G.flag = dmalloc<unsigned>(8); G.cnt = dmalloc<unsigned>(8); G.xflag = dmalloc<unsigned>(8);
+        G.mbar = dmalloc<unsigned>(8);
         G.amb = dmalloc<float>(8); G.apart = dmalloc<float>(2 * 160);
         G.st = dmalloc<tp::StepState>(1);
         G.scratch = dmalloc<float>(5120 + 64);
@@ -867,8 +949,19 @@ int tp_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop, int 
 int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     tp::State& S = *c->tps;
     if (k == "graphs") { S.graphs = v != 0; return 0; }
-    if (k == "fuse" || k == "pf_kb" || k == "arpub") {  // kernel structure; graphs are re-captured on the next step
+    if (k == "fuse" || k == "pf_kb" || k == "arpub" || k == "mega") {  // graphs are re-captured on the next step
         sync_both(c);
+        if (k == "mega" && v) {
+            int cap = 1 << 30;
+            for (int g = 0; g < 2; g++) {
+                CK(cudaSetDevice(g));
+                cap = std::min(cap, tp::mega_capacity());
+            }
+            if (cap < 80) throw std::runtime_error("mega: co-resident capacity " + std::to_string(cap) + " < 80");
+            if (S.arpub != 2 || S.fuse != 0) throw std::runtime_error("mega needs arpub=2, fuse=0");
+            S.mega_grid = 80;
+        }
+        if (k == "mega") S.mega = v;
         if (k == "fuse" && v == 1) throw std::runtime_error("fuse=1 (silu/gnorm prologues) retired in M4 v8");
         if (k == "fuse") S.fuse = v;
         else if (k == "arpub") S.arpub = v;
@@ -945,9 +1038,9 @@ std::string tp_stats_json(t4q_ctx* c) {
     tp::State& S = *c->tps;
     char b[512];
     snprintf(b, sizeof b,
-             ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"arpub\": %d, \"pf_kb\": %d, \"graphs\": %d, "
+             ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"arpub\": %d, \"mega\": %d, \"pf_kb\": %d, \"graphs\": %d, "
              "\"graph_capture_ms\": %.1f",
-             (int)S.p2p, S.fuse, S.arpub, S.pf_kb, (int)S.graphs, S.ms_graph_capture);
+             (int)S.p2p, S.fuse, S.arpub, S.mega, S.pf_kb, (int)S.graphs, S.ms_graph_capture);
     std::string s = b;
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;
     if (!S.prof_json.empty()) s += ", \"profile\": " + S.prof_json;

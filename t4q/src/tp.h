@@ -90,6 +90,52 @@ struct ProArgs {
     int2* sq_xm = nullptr;
 };
 
+// persistent per-layer kernels (option mega): phases separated by grid barriers on a co-resident grid
+struct MegaCommon {
+    StepState* st = nullptr;
+    unsigned* bar = nullptr;   // [2] grid barrier counter + generation (local)
+    unsigned* xrdy = nullptr;  // x-ready flag written by the leader block (local)
+    int xid = 0;               // phase ordinal within the step for x-ready values (layer * 8 + k)
+    ProArgs in;                // AR-in + norm for the first GEMV (leader block 0); flag/publish as in PRO_LEADER
+    int8_t* gxq = nullptr;     // global x staging (q8)
+    int2* gxm = nullptr;
+    float* xn = nullptr;       // global fp32 normalized x
+};
+struct MegaDN {                // DeltaNet layer: [AR+norm] qkvz(+ab) | gdn | gated norm -> ssm_out (+rows to peer)
+    MegaCommon c;
+    t4q::gemv::GemvArgs qkvz, ssm_out;
+    SegArgs ab;
+    const float *ring_w, *ssm_a, *ssm_dt, *ssm_norm;
+    float *ring, *S, *y, *yab, *o;
+    float* y_peer;             // peer rx slot for ssm_out rows
+};
+struct MegaFFN {               // [AR+norm] gate|up (+silu q8 epilogue) | down (+rows to peer)
+    MegaCommon c;
+    t4q::gemv::GemvArgs gateup, down;
+    int8_t* xq2;
+    int2* xm2;
+    float* y_peer;
+};
+struct MegaAttn {              // [AR+norm] q|k|v | prep | split | combine -> attn_output (+rows to peer)
+    MegaCommon c;
+    t4q::gemv::GemvArgs qkv, wo;
+    const float *qw, *kw;
+    float *ya, *qa, *ws;
+    uint16_t *kc, *vc;
+    int max_ctx;
+    float theta_scale;
+    float* y_peer;
+};
+struct MegaHead {              // [AR+norm] lm_head | argmax partials | final + exchange + state update
+    MegaCommon c;
+    t4q::gemv::GemvArgs lm;
+    float *logits, *apart, *amb, *peer_amb;
+    const unsigned* aflag;
+    unsigned* peer_aflag;
+    int row0;
+    int* ring;
+};
+
 struct Layer {
     bool attn = false;
     float *attn_norm = nullptr, *post_norm = nullptr;
@@ -127,6 +173,7 @@ struct Gpu {
     unsigned* flag;  // [2] peer-written AR flags, [2..3] argmax flags
     unsigned* cnt;   // [4] block counters
     unsigned* xflag; // leader-prologue x-ready flag (local)
+    unsigned* mbar;  // [8] mega kernels: grid barrier counter/generation, x-ready flag
     float* amb;      // [2 slots][2] argmax mailbox (val, idx bits), peer-written
     float* apart;    // argmax partials [2][NB]
     StepState* st;
@@ -171,6 +218,8 @@ struct State {
     float* hscratch[2] = {nullptr, nullptr};  // host-mapped AR test targets (self-test timing without P2P)
     int fuse = 0;         // 0: separate ar_norm kernel; 2: AR + RMSNorm prologue redundantly in every GEMV block;
                           // 3: leader-block prologue (block 0 does AR + norm, the others prefetch and wait)
+    int mega = 0;         // 1: persistent per-layer kernels (MegaDN/FFN/Attn/Head) instead of per-op kernels
+    int mega_grid = 80;
     int arpub = 2;        // 1: the consumer kernel publishes this GPU's partial (plain K-split GEMVs; default);
                           // 0: the K-split GEMV epilogue publishes (M2-M4 v5). fuse != 0 forces 0.
     int pf_kb = 0;        // L2 prefetch of the next GEMV during small kernels (0 = off; no gain in M4 v4)
