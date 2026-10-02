@@ -42,6 +42,7 @@ void ar_norm_ll(const float* h, float* h_out, const float* own, const float2* rx
 void set_arn(int v);
 // spin-wait backoff (ns) for flag waits on the current device
 void set_spin_ns(int ns);
+void set_attn2(int v);  // 1: split attention v2 (reduce-scatter scores, separate softmax and P.V)
 // phase-timing buffer (u64[128], nullptr = off) for the current device
 void set_dbg(unsigned long long* p);
 // gated RMSNorm (o, z) -> q8 for ssm_out

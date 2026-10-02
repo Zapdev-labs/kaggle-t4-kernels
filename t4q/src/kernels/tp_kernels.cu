@@ -935,6 +935,17 @@ __device__ __forceinline__ void d_gdn(const float* __restrict__ y, const float* 
     }
     // gate inputs (independent of the conv phase: issue early)
     const float yb = __ldcg(yab + 24 + vl), ya_ = __ldcg(yab + vl), dtv = ssm_dt[vl], av = ssm_a[vl];
+    // v-channel conv inputs (warp 0 computes them after the q/k phase)
+    const int chv = 2048 + vl * 128 + sl * 32 + (tid & 31);
+    float vx = 0.f, vr0 = 0.f, vr1 = 0.f, vr2 = 0.f;
+    float4 vw = make_float4(0.f, 0.f, 0.f, 0.f);
+    if (tid < 32) {
+        vx = __ldcg(y + chv);
+        vr0 = ring[p0 * 5120 + chv];
+        vr1 = ring[p1 * 5120 + chv];
+        vr2 = ring[p2 * 5120 + chv];
+        vw = __ldg((const float4*)(cw + (size_t)chv * 4));
+    }
     // q (tid < 128) or k (tid >= 128) channel of local k head kl
     {
         const int ch = tid < 128 ? kl * 128 + tid : 1024 + kl * 128 + (tid - 128);
@@ -958,16 +969,13 @@ __device__ __forceinline__ void d_gdn(const float* __restrict__ y, const float* 
     }
     DBG_PH(48, 0)
     if (tid < 32) {
-        const int ch = 2048 + vl * 128 + sl * 32 + tid;
-        const float x = __ldcg(y + ch);
-        const float* wc = cw + (size_t)ch * 4;
         float sum = 0.f;
-        sum += ring[p0 * 5120 + ch] * wc[0];
-        sum += ring[p1 * 5120 + ch] * wc[1];
-        sum += ring[p2 * 5120 + ch] * wc[2];
-        sum += x * wc[3];
+        sum += vr0 * vw.x;
+        sum += vr1 * vw.y;
+        sum += vr2 * vw.z;
+        sum += vx * vw.w;
         sv[tid] = sum / (1.0f + expf(-sum));
-        ring[pw * 5120 + ch] = x;
+        ring[pw * 5120 + chv] = vx;
     }
     __syncthreads();
     DBG_PH(48, 1)
@@ -1209,6 +1217,155 @@ __device__ __forceinline__ void d_attn_split(const float* qa, const __half* kc, 
 __global__ void __launch_bounds__(256, 2) k_attn_split(const float* qa, const __half* kc, const __half* vc, float* ws,
                                                        int max_ctx, const StepState* st) { d_attn_split(qa, kc, vc, ws, max_ctx, st, blockIdx.x, blockIdx.y); }
 
+// Split-K decode attention v2 (option attn2, default since M4 round 2): per block (kv head j, chunk of positions)
+//   scores: warp per group of 4 positions, lanes hold 8 dims; the 6 heads x 4 positions partial dots (32 slots with
+//           2 pad heads) are reduce-scattered across the warp in 31 shuffles (instead of a 5-shuffle sum per value)
+//   softmax: warp per head over the chunk (max, exp, sum) -> ws m, l
+//   P.V: warp per position subset, lanes hold 8 dims, all 6 heads share each V row; cross-warp sum via smem
+// ws layout and the combine kernel are unchanged. Chunk <= ATT2_MAXCH positions (max_ctx 4096 / NSPLIT 40 -> 103).
+constexpr int ATT2_MAXCH = 128;
+// one reduce-scatter step: lanes with bit W set keep slots [W, 2W), the others [0, W); v[0..W) holds the result
+template <int W>
+__device__ __forceinline__ void rs_step(float* v, int lane) {
+    const bool up = (lane & W) != 0;
+#pragma unroll
+    for (int i = 0; i < W; i++) {
+        const float send = up ? v[i] : v[i + W];
+        const float keep = up ? v[i + W] : v[i];
+        v[i] = keep + __shfl_xor_sync(0xffffffffu, send, W);
+    }
+}
+__global__ void __launch_bounds__(256, 2) k_attn_split2(const float* qa, const __half* kc, const __half* vc, float* ws,
+                                                        int max_ctx, const StepState* st) {
+    __shared__ float sS[8][ATT2_MAXCH];  // scores, then probabilities (heads 6, 7 unused)
+    __shared__ float sacc[8][256];
+    __shared__ float s_m[6], s_l[6];
+    const int j = blockIdx.x, sidx = blockIdx.y;
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    DBG_T0
+    const int n_kv = st->pos + 1;
+    const int chunk = (n_kv + NSPLIT - 1) / NSPLIT;
+    const int t0 = sidx * chunk, t1 = min(n_kv, t0 + chunk);
+    const int n = max(0, t1 - t0);
+    if (chunk > ATT2_MAXCH) {  // max_ctx > 5120: unsupported chunk (the engine checks max_ctx at load)
+        if (tid == 0) ((StepState*)st)->err = 8000;
+        return;
+    }
+    const __half* K = kc + ((size_t)j * max_ctx + t0) * 256;
+    const __half* Vv = vc + ((size_t)j * max_ctx + t0) * 256;
+    // q for the 6 heads: 8 dims per lane (registers)
+    float q[6][8];
+#pragma unroll
+    for (int h = 0; h < 6; h++) {
+        const float4* qp = (const float4*)(qa + (j * 6 + h) * 256 + lane * 8);
+        const float4 a = __ldcg(qp), b = __ldcg(qp + 1);
+        q[h][0] = a.x; q[h][1] = a.y; q[h][2] = a.z; q[h][3] = a.w;
+        q[h][4] = b.x; q[h][5] = b.y; q[h][6] = b.z; q[h][7] = b.w;
+    }
+    DBG_PH(0, 0)
+    // ---- scores
+    for (int g4 = warp * 4; g4 < n; g4 += 32) {
+        uint4 kr[4];
+#pragma unroll
+        for (int u = 0; u < 4; u++)
+            kr[u] = (g4 + u < n) ? __ldcg((const uint4*)(K + (size_t)(g4 + u) * 256 + lane * 8)) : make_uint4(0, 0, 0, 0);
+        float v[32];
+#pragma unroll
+        for (int u = 0; u < 4; u++) {
+            float k[8];
+            const __half2* kh = (const __half2*)&kr[u];
+#pragma unroll
+            for (int i = 0; i < 4; i++) {
+                const float2 f = __half22float2(kh[i]);
+                k[2 * i] = f.x; k[2 * i + 1] = f.y;
+            }
+#pragma unroll
+            for (int h = 0; h < 8; h++) {
+                float d = 0.f;
+                if (h < 6) {
+#pragma unroll
+                    for (int i = 0; i < 8; i++) d += q[h][i] * k[i];
+                }
+                v[h * 4 + u] = d;
+            }
+        }
+        // reduce-scatter: lane L ends with the full sum of slot L (head L >> 2, position g4 + (L & 3))
+        rs_step<16>(v, lane);
+        rs_step<8>(v, lane);
+        rs_step<4>(v, lane);
+        rs_step<2>(v, lane);
+        rs_step<1>(v, lane);
+        const int h = lane >> 2, u = lane & 3;
+        if (h < 6 && g4 + u < n) sS[h][g4 + u] = v[0] * (1.0f / 16.0f);
+    }
+    __syncthreads();
+    DBG_PH(0, 1)
+    // ---- softmax per head (warps 0..5)
+    if (warp < 6) {
+        float m = -FLT_MAX;
+        for (int t = lane; t < n; t += 32) m = fmaxf(m, sS[warp][t]);
+        m = warp_max(m);
+        float l = 0.f;
+        for (int t = lane; t < n; t += 32) {
+            const float p = expf(sS[warp][t] - m);
+            sS[warp][t] = p;
+            l += p;
+        }
+        l = warp_sum(l);
+        if (lane == 0) { s_m[warp] = m; s_l[warp] = l; }
+    }
+    __syncthreads();
+    // ---- P.V
+    float acc[6][8];
+#pragma unroll
+    for (int h = 0; h < 6; h++)
+#pragma unroll
+        for (int i = 0; i < 8; i++) acc[h][i] = 0.f;
+    for (int t = warp; t < n; t += 32) {
+        uint4 vr[4];
+#pragma unroll
+        for (int u = 0; u < 4; u++)
+            if (t + 8 * u < n) vr[u] = __ldcg((const uint4*)(Vv + (size_t)(t + 8 * u) * 256 + lane * 8));
+#pragma unroll
+        for (int u = 0; u < 4; u++) {
+            if (t + 8 * u >= n) break;
+            float v[8];
+            const __half2* vh = (const __half2*)&vr[u];
+#pragma unroll
+            for (int i = 0; i < 4; i++) {
+                const float2 f = __half22float2(vh[i]);
+                v[2 * i] = f.x; v[2 * i + 1] = f.y;
+            }
+#pragma unroll
+            for (int h = 0; h < 6; h++) {
+                const float p = sS[h][t + 8 * u];
+#pragma unroll
+                for (int i = 0; i < 8; i++) acc[h][i] += p * v[i];
+            }
+        }
+    }
+    DBG_PH(0, 2)
+    // ---- cross-warp sum, write the split record per head
+#pragma unroll
+    for (int h = 0; h < 6; h++) {
+#pragma unroll
+        for (int i = 0; i < 8; i++) sacc[warp][lane * 8 + i] = acc[h][i];
+        __syncthreads();
+        float a = 0.f;
+#pragma unroll
+        for (int w = 0; w < 8; w++) a += sacc[w][tid];
+        float* out = ws + ((size_t)(j * NSPLIT + sidx) * 6 + h) * 258;
+        out[2 + tid] = a;
+        if (tid == 0) {
+            out[0] = n > 0 ? s_m[h] : -FLT_MAX;
+            out[1] = n > 0 ? s_l[h] : 0.f;
+        }
+        __syncthreads();
+    }
+    DBG_PH(0, 3)
+    DBG_N(0)
+}
+
 // Fused attention (option attnf, default since M4 round 2): q/k RMSNorm + RoPE + KV append, split-K flash decode
 // and the split merge + sigmoid gate + q8 in one kernel. grid (2 kv heads, NSPLIT), 256 threads, 2 blocks/SM.
 //   phase 1: warps 0-5 build the 6 q heads of kv head j in smem (warp per head); in the block whose chunk holds pos,
@@ -1434,18 +1591,40 @@ __device__ __forceinline__ void d_attn_combine_q8(const float* ws, const float* 
     const int n_kv = st->pos + 1;
     const int chunk = (n_kv + NSPLIT - 1) / NSPLIT;
     const int nsp = (n_kv + chunk - 1) / chunk;  // splits with at least one position
-    float M = -FLT_MAX;
-#pragma unroll 8
-    for (int s = 0; s < nsp; s++) M = fmaxf(M, __ldcg(ws + ((size_t)(j * NSPLIT + s) * 6 + h6) * 258));
-    DBG_PH(16, 0)
-    float num = 0.f, den = 0.f;
-#pragma unroll 8
-    for (int s = 0; s < nsp; s++) {
-        const float* p = ws + ((size_t)(j * NSPLIT + s) * 6 + h6) * 258;
-        const float wgt = expf(__ldcg(p) - M);
-        num += wgt * __ldcg(p + 2 + d);
-        den += wgt * __ldcg(p + 1);
+    // warp 0: split weights exp(m_s - M) and the denominator, in parallel over the splits (lane s, s + 32)
+    __shared__ float s_w[NSPLIT];
+    __shared__ float s_den;
+    if (d < 32) {
+        float mv[2] = {-FLT_MAX, -FLT_MAX}, lv[2] = {0.f, 0.f};
+#pragma unroll
+        for (int u = 0; u < 2; u++) {
+            const int s = d + 32 * u;
+            if (s < nsp) {
+                const float* p = ws + ((size_t)(j * NSPLIT + s) * 6 + h6) * 258;
+                mv[u] = __ldcg(p);
+                lv[u] = __ldcg(p + 1);
+            }
+        }
+        const float M = warp_max(fmaxf(mv[0], mv[1]));
+        float den = 0.f;
+#pragma unroll
+        for (int u = 0; u < 2; u++) {
+            const int s = d + 32 * u;
+            if (s < nsp) {
+                const float w = expf(mv[u] - M);
+                s_w[s] = w;
+                den += w * lv[u];
+            }
+        }
+        den = warp_sum(den);
+        if (d == 0) s_den = den;
     }
+    __syncthreads();
+    DBG_PH(16, 0)
+    float num = 0.f;
+#pragma unroll 8
+    for (int s = 0; s < nsp; s++) num += s_w[s] * __ldcg(ws + ((size_t)(j * NSPLIT + s) * 6 + h6) * 258 + 2 + d);
+    const float den = s_den;
     DBG_PH(16, 1)
     const float att = num / den;
     const float g = __ldcg(ya + hl * 512 + 256 + d);
@@ -1648,8 +1827,14 @@ void attn_prep(const float* ya, const float* qw, const float* kw, float* qa, uin
     k_attn_prep<<<14, 256, 0, s>>>(ya, qw, kw, qa, (__half*)kc, (__half*)vc, max_ctx, st, theta_scale);
 }
 
+int g_attn2 = 1;
+void set_attn2(int v) { g_attn2 = v; }
 void attn_split(const float* qa, const uint16_t* kc, const uint16_t* vc, float* ws, int max_ctx, const StepState* st,
                 cudaStream_t s) {
+    if (g_attn2) {
+        k_attn_split2<<<dim3(2, NSPLIT), 256, 0, s>>>(qa, (const __half*)kc, (const __half*)vc, ws, max_ctx, st);
+        return;
+    }
     k_attn_split<<<dim3(2, NSPLIT), 256, 0, s>>>(qa, (const __half*)kc, (const __half*)vc, ws, max_ctx, st);
 }
 

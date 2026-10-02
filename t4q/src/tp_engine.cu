@@ -940,6 +940,7 @@ void tp_load(t4q_ctx* c, const char* path) {
     c->tps = new tp::State();
     tp::State& S = *c->tps;
     S.max_ctx = c->max_ctx = c->params.max_ctx > 0 ? c->params.max_ctx : 4096;
+    if ((S.max_ctx + tp::NSPLIT - 1) / tp::NSPLIT > 128) throw std::runtime_error("max_ctx > 5120 not supported (attention split)");
     int ndev = 0;
     CK(cudaGetDeviceCount(&ndev));
     if (ndev < 2) throw std::runtime_error("need 2 GPUs");
@@ -1035,13 +1036,14 @@ void tp_load(t4q_ctx* c, const char* path) {
     selftest(c);
     // AR transport: rows written to the peer from the K-split GEMV blocks (arpub 2) cost ~3 us per GEMV on some boxes
     // and 15-30 us on others (slow P2P writes, M4 v17/v18). Measure on ssm_out and pick the consumer-side copy
-    // (arpub 1: one coalesced 20 KB copy in ar_norm) when the rows are slow.
-    if (S.p2p) {
+    // (arpub 1: one coalesced 20 KB copy in ar_norm) when the rows are slow (or without P2P, where the rows go to
+    // host-mapped memory: M4 v19 no-P2P box 29.14 tok/s with arpub 1 vs 27.21 with arpub 2).
+    {
         double plain = -1, rows = -1;
         for (size_t k = 0; k < S.specs.size(); k++) {
             const tp::FW& W = *S.spec_fw[k];
             if (S.specs[k].second.what.find("ssm_out") == std::string::npos) continue;
-            float* remote = S.G[1 - S.specs[k].first].scratch;
+            float* remote = S.p2p ? S.G[1 - S.specs[k].first].scratch : S.hscratch[1 - S.specs[k].first];
             tp::Gpu& G = S.G[S.specs[k].first];
             CK(cudaSetDevice(S.specs[k].first));
             cudaEvent_t e0, e1;
@@ -1191,9 +1193,10 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
         sync_both(c);
         return 0;
     }
-    if (k == "arn" || k == "p4u") {  // host-side launch choice: graphs are re-captured
+    if (k == "arn" || k == "p4u" || k == "attn2") {  // host-side launch choice: graphs are re-captured
         sync_both(c);
         if (k == "arn") { tp::set_arn(v); S.arn = v; }
+        else if (k == "attn2") { tp::set_attn2(v); S.attn2 = v; }
         else { tp::set_p4u(v); S.p4u = v; }
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
@@ -1355,10 +1358,10 @@ std::string tp_stats_json(t4q_ctx* c) {
     char b[512];
     snprintf(b, sizeof b,
              ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"arpub\": %d, \"mega\": %d, \"pf_kb\": %d, \"graphs\": %d, "
-             "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"attnf\": %d, \"p4u\": %d, \"cm\": %d, \"tail\": %d, \"arpub_auto\": %d, \"ar_rows_cost_us\": %.1f, "
+             "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"attnf\": %d, \"p4u\": %d, \"cm\": %d, \"tail\": %d, \"arpub_auto\": %d, \"ar_rows_cost_us\": %.1f, \"attn2\": %d, "
              "\"graph_capture_ms\": %.1f",
              (int)S.p2p, S.fuse, S.arpub, S.mega, S.pf_kb, (int)S.graphs, S.ll, S.gdnf, S.spin_ns, S.arn, S.attnf,
-             S.p4u, S.G[0].lm.L.cm, S.tail, S.arpub_auto, S.ar_rows_cost_us,
+             S.p4u, S.G[0].lm.L.cm, S.tail, S.arpub_auto, S.ar_rows_cost_us, S.attn2,
              S.ms_graph_capture);
     std::string s = b;
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;

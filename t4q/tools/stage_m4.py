@@ -35,10 +35,10 @@ RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
 GGUF = "Qwen3.8-27B-Q4_0.gguf"
-CONFIGS = "arpub=-1,gdnf=1,attnf=0,p4u=1;arpub=1,gdnf=1,attnf=0,p4u=1;arpub=2,gdnf=1,attnf=0,p4u=1"
+CONFIGS = "arpub=-1,gdnf=1,attnf=0,p4u=1,attn2=1;arpub=-1,gdnf=1,attnf=0,p4u=1,attn2=0;arpub=1,gdnf=1,attnf=0,p4u=1,attn2=1;arpub=2,gdnf=1,attnf=0,p4u=1,attn2=1"
 TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584", "--configs", CONFIGS, "--rounds", "2",
            "--trace", "24", "--trace_dir", str(OUT / "traces")]
-VARIANT_CONFIGS = "arpub=-1,gdnf=1,attnf=0,p4u=1"
+VARIANT_CONFIGS = "arpub=-1,gdnf=1,attnf=0,p4u=1,attn2=1"
 
 
 def el():
