@@ -274,6 +274,8 @@ struct State {
     int pf_on = 1;        // 1: t4q_prefill uses the batched path for n >= 2 (0: decode steps)
     int pf_ub = 512;      // ubatch tokens
     int pf_i4 = 0;        // 1: int4 tensor-core path (m8n8k32, split int8 activations) for P4/P4M GEMMs
+    int pf_fa = 1;        // 1: tensor-core flash attention for prefill (0: SIMT online-softmax kernel)
+    int pf_nsub = 2;      // sub-batches per ubatch (AR copy of one overlaps the other's compute); 1 = off
     int pf_prof = 0;      // 1: per-op event profile of GPU0 (ms per op class) in stats "pf_profile"
     std::string pf_json;
     double pf_last_batch_s = 0, pf_last_total_s = 0;

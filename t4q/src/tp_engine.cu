@@ -1265,6 +1265,8 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     if (k == "pf_ub") { if (v < 1 || v > 4096) throw std::runtime_error("pf_ub out of range"); S.pf_ub = v; return 0; }
     if (k == "pf_i4") { S.pf_i4 = v; return 0; }
     if (k == "pf_prof") { S.pf_prof = v; return 0; }
+    if (k == "pf_nsub") { S.pf_nsub = v; return 0; }
+    if (k == "pf_fa") { S.pf_fa = v; return 0; }
     if (k == "spin_ns") {
         S.spin_ns = v;
         for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); tp::set_spin_ns(v); }
