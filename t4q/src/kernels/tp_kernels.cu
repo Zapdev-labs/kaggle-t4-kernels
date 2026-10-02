@@ -257,6 +257,7 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     } else if (PRO == PRO_LEADER) {
         static_assert(PRO != PRO_LEADER || K == 5120, "LEADER prologue needs K = 5120");
         const unsigned ep = epoch_of(pa.st, pa.idx);
+        const unsigned xep = ep + 1u;  // x-ready value: never 0 (idx -1 at step 0 has epoch 0 = the initial flag)
         if (blockIdx.x == 0) {
             const bool add = pa.add != 0;
             if (pa.pub_peer_flag) publish_partial(pa.own, pa.pub_peer_rx, pa.pub_peer_flag, ep);
@@ -320,10 +321,10 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
             }
             __threadfence();
             __syncthreads();
-            if (tid == 0) asm volatile("st.volatile.global.u32 [%0], %1;" ::"l"(pa.xflag), "r"(ep) : "memory");
+            if (tid == 0) asm volatile("st.volatile.global.u32 [%0], %1;" ::"l"(pa.xflag), "r"(xep) : "memory");
         } else {
             if (tid == 0) {
-                s_flag = wait_flag(pa.xflag, ep);
+                s_flag = wait_flag(pa.xflag, xep);
                 if (!s_flag) pa.st->err = 4000 + pa.idx;
             }
             __syncthreads();
@@ -915,8 +916,10 @@ __global__ void __launch_bounds__(256) k_attn_combine_q8(const float* ws, const 
     const int chunk = (n_kv + NSPLIT - 1) / NSPLIT;
     const int nsp = (n_kv + chunk - 1) / chunk;  // splits with at least one position
     float M = -FLT_MAX;
+#pragma unroll 8
     for (int s = 0; s < nsp; s++) M = fmaxf(M, ws[((size_t)(j * NSPLIT + s) * 6 + h6) * 258]);
     float num = 0.f, den = 0.f;
+#pragma unroll 8
     for (int s = 0; s < nsp; s++) {
         const float* p = ws + ((size_t)(j * NSPLIT + s) * 6 + h6) * 258;
         const float wgt = expf(p[0] - M);

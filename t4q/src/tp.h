@@ -169,9 +169,9 @@ struct State {
     int max_blocks = 80;  // co-resident GEMV blocks (2 per SM)
     bool p2p = true;      // false: host-mapped mailbox fallback
     float* hscratch[2] = {nullptr, nullptr};  // host-mapped AR test targets (self-test timing without P2P)
-    int fuse = 3;         // 0: separate ar_norm kernel; 2: AR + RMSNorm prologue redundantly in every GEMV block;
+    int fuse = 0;         // 0: separate ar_norm kernel; 2: AR + RMSNorm prologue redundantly in every GEMV block;
                           // 3: leader-block prologue (block 0 does AR + norm, the others prefetch and wait)
-    int arpub = 1;        // 1: the consumer kernel publishes this GPU's partial (plain K-split GEMVs; default);
+    int arpub = 2;        // 1: the consumer kernel publishes this GPU's partial (plain K-split GEMVs; default);
                           // 0: the K-split GEMV epilogue publishes (M2-M4 v5). fuse != 0 forces 0.
     int pf_kb = 0;        // L2 prefetch of the next GEMV during small kernels (0 = off; no gain in M4 v4)
     double ms_graph_capture = 0;
