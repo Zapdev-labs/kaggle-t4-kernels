@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <cstdlib>
 #include <random>
 
 #include "kernels/tp_kernels.h"
@@ -326,17 +327,33 @@ struct Enq {
         if (idx < 0) {
             p.h_in = G.hb[0];
         } else {
+            p.add = 1;
             p.h_in = G.hb[idx & 1];
             p.h_out = G.hb[(idx + 1) & 1];
             p.own = G.part + (idx & 1) * D;
             p.rx = G.rx + (idx & 1) * D;
-            p.flag = G.flag + (idx & 1);
+            if (c->tps->p2p) {
+                p.flag = G.flag + (idx & 1);
+            } else {  // fallback: a pull kernel waits on the host-mapped flag and copies the payload into rx first
+                tp::pull(G.hflag + (idx & 1), G.hrx + (idx & 1) * D, G.rx + (idx & 1) * D, G.st, idx, G.s);
+                mark(G, "pull");
+            }
         }
         p.st = G.st;
         p.idx = idx;
         p.nw = nw;
         p.xn_out = G.xn;
         return p;
+    }
+    // unfused path: the ARNORM prologue as its own kernel (q8 x to G.xq/G.xm, fp32 to G.xn); returns nullptr so the
+    // GEMV reads x from global memory
+    const tp::ProArgs* pre(tp::Gpu& G, const tp::ProArgs& p) {
+        if (c->tps->fuse) return &p;
+        // in fallback mode arnorm() already enqueued the pull and cleared p.flag
+        tp::ar_norm(p.h_in, p.h_out, p.add ? G.part : nullptr, G.rx, p.flag ? G.flag : nullptr, G.st, p.idx, p.nw,
+                    G.xn, G.xq, G.xm, G.s);
+        mark(G, "ar_norm");
+        return nullptr;
     }
     // part 0: [AR + attn_norm] mixer, publishes AR 2il; part 1: [AR + post_norm] FFN, publishes AR 2il+1
     void layer(int g, int il, int part) {
@@ -350,18 +367,22 @@ struct Enq {
             if (!L.attn) {
                 tp::SegArgs sg;
                 sg.w = L.ab; sg.x = G.xn; sg.y = G.yab; sg.nrows = 48;
-                tp::gemv(L.qkvz, G.xq, G.xm, G.y, s, nullptr, &sg, &pa);
-                mark(G, "gemv_qkvz+arnorm");
+                tp::gemv(L.qkvz, G.xq, G.xm, G.y, s, nullptr, &sg, pre(G, pa));
+                mark(G, "gemv_qkvz");
                 tp::gdn(G.y, G.yab, L.conv_ring, L.conv_w, L.ssm_a, L.ssm_dt, L.S, G.o, G.st, s);
                 mark(G, "gdn");
                 tp::ProArgs pg;
                 pg.o = G.o; pg.z = G.y + 5120; pg.gw = L.ssm_norm;
+                if (!S.fuse) {
+                    tp::gnorm_q8(G.o, G.y + 5120, L.ssm_norm, G.xq, G.xm, s);
+                    mark(G, "gnorm_q8");
+                }
                 tp::ArArgs a = ar(G, idx);
-                tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, &a, nullptr, &pg);
-                mark(G, "gemv_ssm_out+gnorm");
+                tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, &a, nullptr, S.fuse ? &pg : nullptr);
+                mark(G, "gemv_ssm_out");
             } else {
-                tp::gemv(L.qkv_a, G.xq, G.xm, G.y, s, nullptr, nullptr, &pa);
-                mark(G, "gemv_attn_qkv+arnorm");
+                tp::gemv(L.qkv_a, G.xq, G.xm, G.y, s, nullptr, nullptr, pre(G, pa));
+                mark(G, "gemv_attn_qkv");
                 tp::attn_prep(G.y, L.q_norm, L.k_norm, G.qa, L.kc, L.vc, S.max_ctx, G.st,
                               powf(hp::ROPE_BASE, -2.0f / hp::NROT), s);
                 mark(G, "attn_prep");
@@ -376,22 +397,27 @@ struct Enq {
         } else {
             const int idx = 2 * il + 1;
             const tp::ProArgs pa = arnorm(G, 2 * il, L.post_norm);
-            tp::gemv(L.gateup, G.xq, G.xm, G.y, s, nullptr, nullptr, &pa);
-            mark(G, "gemv_gateup+arnorm");
+            tp::gemv(L.gateup, G.xq, G.xm, G.y, s, nullptr, nullptr, pre(G, pa));
+            mark(G, "gemv_gateup");
             tp::ProArgs ps;
             ps.gu = G.y;
+            if (!S.fuse) {
+                tp::silu_q8(G.y, 8704, G.xq, G.xm, s);
+                mark(G, "silu_q8");
+            }
             tp::ArArgs a = ar(G, idx);
-            tp::gemv(L.down, G.xq, G.xm, G.part + (idx & 1) * D, s, &a, nullptr, &ps);
-            mark(G, "gemv_down+silu");
+            tp::gemv(L.down, G.xq, G.xm, G.part + (idx & 1) * D, s, &a, nullptr, S.fuse ? &ps : nullptr);
+            mark(G, "gemv_down");
         }
     }
     void head(int g) {
         tp::State& S = *c->tps;
         tp::Gpu& G = S.G[g];
         const tp::ProArgs pa = arnorm(G, 127, G.output_norm);
-        tp::gemv(G.lm, G.xq, G.xm, G.logits, G.s, nullptr, nullptr, &pa);
-        mark(G, "gemv_lm_head+arnorm");
-        tp::argmax_step(G.logits, 124160, 124160 * g, G.apart, G.amb, G.flag + 2, G.peer_amb, G.peer_flag + 2, G.st,
+        tp::gemv(G.lm, G.xq, G.xm, G.logits, G.s, nullptr, nullptr, pre(G, pa));
+        mark(G, "gemv_lm_head");
+        tp::argmax_step(G.logits, 124160, 124160 * g, G.apart, S.p2p ? G.amb : G.hamb,
+                        S.p2p ? G.flag + 2 : G.hflag + 2, G.peer_amb, G.peer_flag + 2, G.st,
                         g == 0 ? S.d_ring : nullptr, G.s);
         mark(G, "argmax");
     }
@@ -531,14 +557,17 @@ void tp_load(t4q_ctx* c, const char* path) {
     int a01 = 0, a10 = 0;
     CK(cudaDeviceCanAccessPeer(&a01, 0, 1));
     CK(cudaDeviceCanAccessPeer(&a10, 1, 0));
-    if (!a01 || !a10) throw std::runtime_error("P2P not available (fallbacks not implemented)");
+    S.p2p = a01 && a10 && getenv("T4Q_NO_P2P") == nullptr;
+    if (!S.p2p && c->params.verbose) fprintf(stderr, "[t4q-tp] no P2P: host-mapped mailbox fallback\n");
     for (int g = 0; g < 2; g++) {
         tp::Gpu& G = S.G[g];
         G.g = g;
         CK(cudaSetDevice(g));
-        cudaError_t e = cudaDeviceEnablePeerAccess(1 - g, 0);
-        if (e != cudaSuccess && e != cudaErrorPeerAccessAlreadyEnabled) CK(e);
-        cudaGetLastError();
+        if (S.p2p) {
+            cudaError_t e = cudaDeviceEnablePeerAccess(1 - g, 0);
+            if (e != cudaSuccess && e != cudaErrorPeerAccessAlreadyEnabled) CK(e);
+            cudaGetLastError();
+        }
         CK(cudaStreamCreateWithFlags(&G.s, cudaStreamNonBlocking));
         G.hb[0] = dmalloc<float>(D); G.hb[1] = dmalloc<float>(D); G.xn = dmalloc<float>(D); G.y = dmalloc<float>(17408); G.yab = dmalloc<float>(64);
         G.o = dmalloc<float>(3072); G.qa = dmalloc<float>(12 * 256);
@@ -552,9 +581,20 @@ void tp_load(t4q_ctx* c, const char* path) {
         G.prompt = dmalloc<int>(S.max_ctx);
     }
     for (int g = 0; g < 2; g++) {
-        S.G[g].peer_rx = S.G[1 - g].rx;
-        S.G[g].peer_flag = S.G[1 - g].flag;
-        S.G[g].peer_amb = S.G[1 - g].amb;
+        tp::Gpu& G = S.G[g];
+        CK(cudaHostAlloc(&G.hrx, 2 * D * 4, cudaHostAllocMapped | cudaHostAllocPortable));
+        CK(cudaHostAlloc(&G.hflag, 8 * 4, cudaHostAllocMapped | cudaHostAllocPortable));
+        CK(cudaHostAlloc(&G.hamb, 4 * 4, cudaHostAllocMapped | cudaHostAllocPortable));
+        memset(G.hrx, 0, 2 * D * 4);
+        memset(G.hflag, 0, 8 * 4);
+        memset(G.hamb, 0, 4 * 4);
+    }
+    for (int g = 0; g < 2; g++) {
+        tp::Gpu& G = S.G[g];
+        tp::Gpu& P = S.G[1 - g];
+        G.peer_rx = S.p2p ? P.rx : P.hrx;
+        G.peer_flag = S.p2p ? P.flag : P.hflag;
+        G.peer_amb = S.p2p ? P.amb : P.hamb;
     }
     {
         int nsm = 40;
@@ -708,6 +748,16 @@ int tp_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop, int 
 int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     tp::State& S = *c->tps;
     if (k == "graphs") { S.graphs = v != 0; return 0; }
+    if (k == "fuse") {  // switch kernel structure; graphs are re-captured on the next step
+        sync_both(c);
+        S.fuse = v != 0;
+        for (int g = 0; g < 2; g++) {
+            CK(cudaSetDevice(g));
+            if (S.G[g].gexec) { cudaGraphExecDestroy(S.G[g].gexec); S.G[g].gexec = nullptr; }
+            if (S.G[g].graph) { cudaGraphDestroy(S.G[g].graph); S.G[g].graph = nullptr; }
+        }
+        return 0;
+    }
     if (k == "profile") {  // run one eager step with per-kernel events (state advances by one token)
         for (int g = 0; g < 2; g++) {
             for (auto e : S.G[g].ev) cudaEventDestroy(e);
@@ -749,7 +799,8 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
 std::string tp_stats_json(t4q_ctx* c) {
     tp::State& S = *c->tps;
     char b[512];
-    snprintf(b, sizeof b, ", \"tp\": 1, \"graphs\": %d, \"graph_capture_ms\": %.1f", (int)S.graphs, S.ms_graph_capture);
+    snprintf(b, sizeof b, ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"graphs\": %d, \"graph_capture_ms\": %.1f",
+             (int)S.p2p, (int)S.fuse, (int)S.graphs, S.ms_graph_capture);
     std::string s = b;
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;
     if (!S.prof_json.empty()) s += ", \"profile\": " + S.prof_json;

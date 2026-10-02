@@ -304,7 +304,8 @@ def main():
         summ = {k: val.get(k) for k in ("load_s", "vram_used_mib", "correct", "gate_detail", "best_decode_tok_s",
                                          "depth_decode_tok_s", "gate_30", "V1", "V4_graphs_vs_eager_logits_bitident",
                                          "V4_graphs_vs_eager_greedy_identical", "V1_error", "V4_error",
-                                         "profile_at_depth", "final_stats")}
+                                         "profile_at_depth_fuse1", "profile_at_depth_fuse0", "final_stats",
+                                         "V3_fuse0", "V3_fuse0_pass")}
         summ["selftest_worst"] = (val.get("selftest") or {}).get("worst")
         summ["bench"] = val.get("bench")
         for mode in ("eager", "graphs"):
@@ -313,7 +314,21 @@ def main():
             if "V3" in M:
                 sm["V3"] = {k: {kk: vv for kk, vv in v.items() if not kk.endswith("_text")} for k, v in M["V3"].items()}
             summ[mode] = sm
+        summ["p2p"] = val.get("p2p")
         result("summary", summ)
+        # host-mapped mailbox fallback check (forced on a P2P box): greedy V3 + short bench
+        if val.get("p2p") and DEADLINE - el() > 420:
+            vout2 = OUT / "results_tp_nop2p.json"
+            rc, o = stream([sys.executable, "-u", str(t4q / "tests" / "tp_check.py"), "--model", model, "--work",
+                            str(WORK), "--oracle", str(ORC), "--out", str(vout2), "--lib",
+                            str(t4q / "build" / "libt4q.so"), "--modes", "graphs", "--sections", "v3", "--gen", "128",
+                            "--depth", "0"], "tp_check_nop2p.log", timeout=DEADLINE - el() - 60,
+                           env=dict(os.environ, T4Q_NO_P2P="1"))
+            v2_ = json.loads(vout2.read_text()) if vout2.exists() else {}
+            result("nop2p", {"rc": rc, "p2p": v2_.get("p2p"), "V3_pass": v2_.get("graphs", {}).get("V3_pass"),
+                             "V3": {k: v.get("first_divergence") for k, v in v2_.get("graphs", {}).get("V3", {}).items()},
+                             "bench": {k: v.get("decode_tok_s") for k, v in v2_.get("bench", {}).items()
+                                       if isinstance(v, dict)}, "tail": o[-1500:] if rc else ""})
     except Exception:  # noqa: BLE001
         import traceback
         result("fatal", traceback.format_exc()[-3000:])

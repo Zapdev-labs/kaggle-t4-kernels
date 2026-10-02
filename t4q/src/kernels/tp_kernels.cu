@@ -82,6 +82,36 @@ __device__ __forceinline__ void quant_warp(float v, int8_t* xq_i, int2* xm_g) {
 __device__ __forceinline__ float h2f_u16(uint16_t b) { return __half2float(__ushort_as_half(b)); }
 
 // ------------------------------------------------------------------------------------------------ GEMV
+__device__ __forceinline__ float4 ld_vol_f4(const float4* p) {
+    float4 v;
+    asm volatile("ld.volatile.global.v4.f32 {%0,%1,%2,%3}, [%4];" : "=f"(v.x), "=f"(v.y), "=f"(v.z), "=f"(v.w) : "l"(p));
+    return v;
+}
+// q8 quantization of one 32-group held by one thread (d = amax/127, q = round(v/d)) into the shared-memory x planes
+__device__ __forceinline__ void quant_group(const float* v, int g, int8_t* s_lo, int8_t* s_hi, int2* s_mt) {
+    float amax = 0.f;
+#pragma unroll
+    for (int e = 0; e < 32; e++) amax = fmaxf(amax, fabsf(v[e]));
+    const float d = amax / 127.f;
+    int qw[8];
+    int s0 = 0, s1 = 0;
+#pragma unroll
+    for (int w = 0; w < 8; w++) {
+        unsigned word = 0;
+#pragma unroll
+        for (int b = 0; b < 4; b++) {
+            const int q = amax == 0.f ? 0 : (int)roundf(v[4 * w + b] / d);
+            word |= (unsigned)(q & 0xff) << (8 * b);
+            if (w < 4) s0 += q;
+            else s1 += q;
+        }
+        qw[w] = (int)word;
+    }
+    ((int4*)s_lo)[g] = make_int4(qw[0], qw[1], qw[2], qw[3]);
+    ((int4*)s_hi)[g] = make_int4(qw[4], qw[5], qw[6], qw[7]);
+    s_mt[g] = make_int2(__float_as_int(d), (int)((unsigned)(s0 & 0xffff) | ((unsigned)s1 << 16)));
+}
+
 // q8 quantization of one 32-group (one value per lane, element i) into the shared-memory x planes
 __device__ __forceinline__ void quant_smem(float v, int i, int8_t* s_lo, int8_t* s_hi, int2* s_mt) {
     const int lane = threadIdx.x & 31;
@@ -118,7 +148,7 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     __shared__ __align__(16) int8_t s_hi[PRO ? NB * 16 : 16];
     __shared__ int2 s_mt[PRO ? NB : 1];
     __shared__ __align__(16) float s_xf[(PRO == PRO_ARNORM || PRO == PRO_GNORM) ? K : 4];
-    __shared__ float red[96];
+    __shared__ float red[128];
     __shared__ int s_flag;
 
     WChunk<FMT, RPL> w[D];
@@ -130,64 +160,118 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     }
     if (PRO == PRO_ARNORM) {
         static_assert(PRO != PRO_ARNORM || K == 5120, "ARNORM prologue needs K = 5120");
-        const bool add = pa.flag != nullptr;
-        if (add) {
+        const bool add = pa.add != 0;
+        if (pa.flag) {
             if (tid == 0) {
                 s_flag = wait_flag(pa.flag, epoch_of(pa.st, pa.idx));
                 if (!s_flag) pa.st->err = 1000 + pa.idx;
             }
             __syncthreads();
         }
+        float4* sx4 = (float4*)s_xf;
         float ss = 0.f;
-#pragma unroll 4
-        for (int k = 0; k < K / 256; k++) {
-            const int i = tid + 256 * k;
-            float x = pa.h_in[i];
-            if (add) {
-                x = x + (pa.own[i] + ld_vol_f32(pa.rx + i));
-                if (blockIdx.x == 0) pa.h_out[i] = x;
+        float4 xv[5];
+#pragma unroll
+        for (int k = 0; k < 5; k++) xv[k] = ((const float4*)pa.h_in)[tid + 256 * k];
+        if (add) {
+            float4 ov[5], rv[5];
+#pragma unroll
+            for (int k = 0; k < 5; k++) {
+                ov[k] = ((const float4*)pa.own)[tid + 256 * k];
+                rv[k] = ld_vol_f4((const float4*)pa.rx + tid + 256 * k);
             }
-            s_xf[i] = x;
-            ss += x * x;
+#pragma unroll
+            for (int k = 0; k < 5; k++) {
+                xv[k].x = xv[k].x + (ov[k].x + rv[k].x);
+                xv[k].y = xv[k].y + (ov[k].y + rv[k].y);
+                xv[k].z = xv[k].z + (ov[k].z + rv[k].z);
+                xv[k].w = xv[k].w + (ov[k].w + rv[k].w);
+                if (blockIdx.x == 0) ((float4*)pa.h_out)[tid + 256 * k] = xv[k];
+            }
         }
-        ss = block_sum(ss, red);
+#pragma unroll
+        for (int k = 0; k < 5; k++) {
+            sx4[tid + 256 * k] = xv[k];
+            ss += xv[k].x * xv[k].x + xv[k].y * xv[k].y + xv[k].z * xv[k].z + xv[k].w * xv[k].w;
+        }
+        ss = block_sum(ss, red);  // its barriers also publish s_xf
         const float scale = rsqrtf(ss / 5120.f + 1e-6f);
-#pragma unroll 4
-        for (int k = 0; k < K / 256; k++) {
-            const int i = tid + 256 * k;
-            const float y = (s_xf[i] * scale) * pa.nw[i];
-            s_xf[i] = y;
-            if (blockIdx.x == 0) pa.xn_out[i] = y;
-            quant_smem(y, i, s_lo, s_hi, s_mt);
+        if (tid < NB) {
+            float v[32];
+            const float4* w4 = (const float4*)pa.nw + tid * 8;
+#pragma unroll
+            for (int e = 0; e < 8; e++) {
+                const int ee = e;
+                const float4 x = sx4[tid * 8 + ee], wv = __ldg(w4 + ee);
+                v[4 * ee] = (x.x * scale) * wv.x;
+                v[4 * ee + 1] = (x.y * scale) * wv.y;
+                v[4 * ee + 2] = (x.z * scale) * wv.z;
+                v[4 * ee + 3] = (x.w * scale) * wv.w;
+            }
+            quant_group(v, tid, s_lo, s_hi, s_mt);
+            if (SEG || blockIdx.x == 0) {
+#pragma unroll
+                for (int e = 0; e < 8; e++) {
+                    const int ee = e;
+                    const float4 y = make_float4(v[4 * ee], v[4 * ee + 1], v[4 * ee + 2], v[4 * ee + 3]);
+                    if (SEG) sx4[tid * 8 + ee] = y;
+                    if (blockIdx.x == 0) ((float4*)pa.xn_out)[tid * 8 + ee] = y;
+                }
+            }
         }
         __syncthreads();
     } else if (PRO == PRO_SILU) {
-#pragma unroll 1
-        for (int k = 0; k < K / 256; k++) {
-            const int i = tid + 256 * k;
-            const float g = pa.gu[i], u = pa.gu[K + i];
-            quant_smem((g / (1.0f + expf(-g))) * u, i, s_lo, s_hi, s_mt);
+        for (int g = tid; g < NB; g += blockDim.x) {
+            float v[32];
+            const float4* g4 = (const float4*)pa.gu + g * 8;
+            const float4* u4 = (const float4*)(pa.gu + K) + g * 8;
+#pragma unroll
+            for (int hh = 0; hh < 2; hh++) {
+                float4 gv[4], uv[4];
+#pragma unroll
+                for (int e = 0; e < 4; e++) { gv[e] = g4[hh * 4 + e]; uv[e] = u4[hh * 4 + e]; }
+#pragma unroll
+                for (int e = 0; e < 4; e++) {
+                    const float* gg = (const float*)&gv[e];
+                    const float* uu = (const float*)&uv[e];
+#pragma unroll
+                    for (int q = 0; q < 4; q++) v[16 * hh + 4 * e + q] = (gg[q] / (1.0f + expf(-gg[q]))) * uu[q];
+                }
+            }
+            quant_group(v, g, s_lo, s_hi, s_mt);
         }
         __syncthreads();
     } else if (PRO == PRO_GNORM) {
         static_assert(PRO != PRO_GNORM || K == 3072, "GNORM prologue needs K = 3072");
+        float ov[32];
+        if (tid < NB) {
+            const float4* o4 = (const float4*)pa.o + tid * 8;
+            float sq = 0.f;
 #pragma unroll
-        for (int k = 0; k < K / 256; k++) {
-            const int i = tid + 256 * k;
-            const float x = pa.o[i];
-            s_xf[i] = x;
-            const float sq = warp_sum(x * x);
-            if (lane == 0) red[k * 8 + wib] = sq;
+            for (int e = 0; e < 8; e++) {
+                const float4 x = o4[e];
+                ov[4 * e] = x.x; ov[4 * e + 1] = x.y; ov[4 * e + 2] = x.z; ov[4 * e + 3] = x.w;
+                sq += x.x * x.x + x.y * x.y + x.z * x.z + x.w * x.w;
+            }
+            red[tid] = sq;
         }
         __syncthreads();
-#pragma unroll
-        for (int k = 0; k < K / 256; k++) {
-            const int i = tid + 256 * k;
-            const int b = k * 8 + (wib >> 2) * 4;
-            const float tot = ((red[b] + red[b + 1]) + red[b + 2]) + red[b + 3];
+        if (tid < NB) {
+            const int hb = tid & ~3;
+            const float tot = ((red[hb] + red[hb + 1]) + red[hb + 2]) + red[hb + 3];
             const float scale = rsqrtf(tot / 128.0f + 1e-6f);
-            const float zz = pa.z[i];
-            quant_smem(((s_xf[i] * scale) * pa.gw[i & 127]) * (zz / (1.0f + expf(-zz))), i, s_lo, s_hi, s_mt);
+            const float4* z4 = (const float4*)pa.z + tid * 8;
+            const float4* w4 = (const float4*)pa.gw + (tid & 3) * 8;
+#pragma unroll
+            for (int e = 0; e < 8; e++) {
+                const float4 zz = z4[e], wv = __ldg(w4 + e);
+                const float* zp = (const float*)&zz;
+                const float* wp = (const float*)&wv;
+#pragma unroll
+                for (int q = 0; q < 4; q++)
+                    ov[4 * e + q] = ((ov[4 * e + q] * scale) * wp[q]) * (zp[q] / (1.0f + expf(-zp[q])));
+            }
+            quant_group(ov, tid, s_lo, s_hi, s_mt);
         }
         __syncthreads();
     }
@@ -288,7 +372,8 @@ void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaSt
                  const SegArgs& sg, const ProArgs& pa) {
     GemvArgs a = make_args(W.L, W.base, xq, xm, y, W.L.N);
     const int ntot = W.L.ntiles + (SEG ? sg.nrows : 0);
-    const int target = std::min((ntot + 7) / 8, g_max_blocks);
+    // prologue kernels: co-resident grid (the prologue runs once per block); plain kernels: full grid (M0 policy)
+    const int target = PRO != PRO_NONE ? std::min((ntot + 7) / 8, g_max_blocks) : (ntot + 7) / 8;
     const int tpw = (ntot + 8 * target - 1) / (8 * target);
     const int blocks = (ntot + 8 * tpw - 1) / (8 * tpw);
     if (AR && (W.L.N % 4 || SEG || tpw > 2)) throw std::runtime_error("AR gemv needs N % 4 == 0, no segment, tpw <= 2");
@@ -327,6 +412,11 @@ void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t 
     T4Q_G(FAST_P4, 4, 6, true, false, PRO_NONE)      // attn_output, AR publish
     T4Q_G(FAST_P4, 4, 17, true, false, PRO_SILU)     // ffn_down Q4_0, silu prologue, AR publish
     T4Q_G(FAST_P4M, 4, 17, true, false, PRO_SILU)    // ffn_down Q4_1
+    // unfused path (separate ar_norm / gnorm_q8 / silu_q8 kernels; option fuse=0)
+    T4Q_G(FAST_P4, 4, 10, false, true, PRO_NONE)
+    T4Q_G(FAST_K5, 2, 6, true, false, PRO_NONE)
+    T4Q_G(FAST_P4, 4, 17, true, false, PRO_NONE)
+    T4Q_G(FAST_P4M, 4, 17, true, false, PRO_NONE)
     // self-test variants (x from global q8, no AR)
     T4Q_G(FAST_P4, 4, 10, false, false, PRO_NONE)
     T4Q_G(FAST_K6, 2, 10, false, false, PRO_NONE)
@@ -356,9 +446,9 @@ __global__ void k_embed(const uint8_t* __restrict__ embd, const StepState* st, c
 }
 
 template <bool WAIT>
-__global__ void __launch_bounds__(1024) k_ar_norm(float* h, const float* own, const float* rx, const unsigned* flag,
-                                                  StepState* st, int idx, const float* __restrict__ w, float* xn,
-                                                  int8_t* xq, int2* xm) {
+__global__ void __launch_bounds__(1024) k_ar_norm(const float* h, float* h_out, const float* own, const float* rx,
+                                                  const unsigned* flag, StepState* st, int idx,
+                                                  const float* __restrict__ w, float* xn, int8_t* xq, int2* xm) {
     __shared__ float red[32];
     __shared__ int s_ok;
     const int tid = threadIdx.x;
@@ -376,9 +466,9 @@ __global__ void __launch_bounds__(1024) k_ar_norm(float* h, const float* own, co
     for (int k = 0; k < 5; k++) {
         const int i = tid + 1024 * k;
         float x = h[i];
-        if (WAIT) {
+        if (own) {
             x = x + (own[slot * 5120 + i] + ld_vol_f32(rx + slot * 5120 + i));
-            h[i] = x;
+            h_out[i] = x;
         }
         v[k] = x;
         ss += x * x;
@@ -713,16 +803,37 @@ __global__ void k_argmax_final(const float* apart, int row0, float* amb, const u
     st->step = step + 1u;
 }
 
+__global__ void __launch_bounds__(640) k_pull(const unsigned* hflag, const float* hrx, float* rx, StepState* st,
+                                              int idx) {
+    __shared__ int ok;
+    if (threadIdx.x == 0) {
+        ok = wait_flag(hflag, epoch_of(st, idx));
+        if (!ok) st->err = 3000 + idx;
+    }
+    __syncthreads();
+    float4 v;
+    const float* p = hrx + threadIdx.x * 8;
+    asm volatile("ld.volatile.global.v4.f32 {%0,%1,%2,%3}, [%4];" : "=f"(v.x), "=f"(v.y), "=f"(v.z), "=f"(v.w) : "l"(p));
+    float4 u;
+    asm volatile("ld.volatile.global.v4.f32 {%0,%1,%2,%3}, [%4];" : "=f"(u.x), "=f"(u.y), "=f"(u.z), "=f"(u.w) : "l"(p + 4));
+    ((float4*)rx)[threadIdx.x * 2] = v;
+    ((float4*)rx)[threadIdx.x * 2 + 1] = u;
+}
+
 }  // namespace
+
+void pull(const unsigned* hflag, const float* hrx, float* rx, StepState* st, int idx, cudaStream_t s) {
+    k_pull<<<1, 640, 0, s>>>(hflag, hrx, rx, st, idx);
+}
 
 void embed(const uint8_t* embd, StepState* st, const int* prompt, float* h, cudaStream_t s) {
     k_embed<<<20, 256, 0, s>>>(embd, st, prompt, h);
 }
 
-void ar_norm(float* h, const float* own, const float* rx, const unsigned* flag, const StepState* st, int idx,
-             const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s) {
-    if (flag) k_ar_norm<true><<<1, 1024, 0, s>>>(h, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm);
-    else k_ar_norm<false><<<1, 1024, 0, s>>>(h, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm);
+void ar_norm(const float* h, float* h_out, const float* own, const float* rx, const unsigned* flag,
+             const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s) {
+    if (flag) k_ar_norm<true><<<1, 1024, 0, s>>>(h, h_out, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm);
+    else k_ar_norm<false><<<1, 1024, 0, s>>>(h, h_out, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm);
 }
 
 void gdn(const float* y, const float* yab, float* ring, const float* conv_w, const float* ssm_a, const float* ssm_dt,

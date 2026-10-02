@@ -57,7 +57,8 @@ struct ProArgs {
     float* h_out = nullptr;
     const float* own = nullptr;     // already offset to the slot
     const float* rx = nullptr;      // already offset to the slot
-    const unsigned* flag = nullptr; // already offset to the slot; nullptr = no all-reduce (layer 0)
+    const unsigned* flag = nullptr; // already offset to the slot; nullptr = no wait (layer 0, or pulled already)
+    int add = 0;                    // add own + rx (0 for layer 0)
     StepState* st = nullptr;
     int idx = 0;
     const float* nw = nullptr;
@@ -110,6 +111,10 @@ struct Gpu {
     float* peer_rx = nullptr;
     unsigned* peer_flag = nullptr;
     float* peer_amb = nullptr;
+    // host-mapped mailbox (fallback when the GPUs have no P2P): the peer writes here, a pull kernel copies to rx
+    float* hrx = nullptr;       // [2][5120]
+    unsigned* hflag = nullptr;  // [8]: [0..1] AR, [2..3] argmax
+    float* hamb = nullptr;      // [4]
     // graphs
     cudaGraph_t graph = nullptr;
     cudaGraphExec_t gexec = nullptr;
@@ -136,6 +141,8 @@ struct State {
     std::string selftest_json;
     std::string prof_json;
     int max_blocks = 80;  // co-resident GEMV blocks (2 per SM)
+    bool p2p = true;      // false: host-mapped mailbox fallback
+    bool fuse = true;     // fused GEMV prologues (false: separate ar_norm / gnorm_q8 / silu_q8 kernels)
     double ms_graph_capture = 0;
 };
 
