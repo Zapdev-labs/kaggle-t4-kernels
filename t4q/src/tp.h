@@ -40,6 +40,7 @@ struct ArArgs {
     unsigned* peer_flag = nullptr;  // peer's flag[slot]
     const StepState* st = nullptr;
     int idx = 0;                    // AR index within the step
+    int fence = 2;                  // per-block fence before counting: 2 = system (correct), 1 = gpu, 0 = none (tests)
 };
 
 struct SegArgs {  // extra fp32 rows (K = 5120) appended to a GEMV launch: y[i] = w[i] . x
@@ -123,6 +124,7 @@ struct Gpu {
     float* hrx = nullptr;       // [2][5120]
     unsigned* hflag = nullptr;  // [8]: [0..1] AR, [2..3] argmax
     float* hamb = nullptr;      // [4]
+    float* scratch = nullptr;   // [5120 + 64] AR test target (self-test timing), local VRAM
     // graphs
     cudaGraph_t graph = nullptr;
     cudaGraphExec_t gexec = nullptr;
@@ -150,8 +152,10 @@ struct State {
     std::string prof_json;
     int max_blocks = 80;  // co-resident GEMV blocks (2 per SM)
     bool p2p = true;      // false: host-mapped mailbox fallback
-    bool fuse = false;    // fused GEMV prologues (false: separate ar_norm / gnorm_q8 / silu_q8 kernels; faster in M4 v3)
-    int pf_kb = 2048;     // L2 prefetch of the next GEMV during small kernels (0 = off)
+    float* hscratch[2] = {nullptr, nullptr};  // host-mapped AR test targets (self-test timing without P2P)
+    int fuse = 0;         // 0: separate ar_norm / gnorm_q8 / silu_q8 kernels (fastest in M4 v3); 1: all prologues fused;
+                          // 2: only the AR + RMSNorm prologue fused
+    int pf_kb = 0;        // L2 prefetch of the next GEMV during small kernels (0 = off; no gain in M4 v4)
     double ms_graph_capture = 0;
 };
 

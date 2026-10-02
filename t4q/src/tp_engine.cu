@@ -278,14 +278,38 @@ void selftest(t4q_ctx* c) {
         CK(cudaEventSynchronize(e1));
         float ms = 0;
         CK(cudaEventElapsedTime(&ms, e0, e1));
+        const double us = 1e3 * ms / NIT, gbs = W.L.bytes / (us * 1e3);
+        // K-split weights: cost of the AR publish epilogue (remote float4 rows + fence + counter + flag)
+        std::string arj;
+        if (sp.what.find("ssm_out") != std::string::npos || sp.what.find("ffn_down") != std::string::npos ||
+            sp.what.find("attn_output") != std::string::npos) {
+            float* remote = S.p2p ? S.G[1 - g].scratch : S.hscratch[1 - g];
+            const struct { const char* nm; float* dst; int fence; } V[4] = {
+                {"remote_sys", remote, 2}, {"remote_gpu", remote, 1}, {"remote_nofence", remote, 0},
+                {"local_sys", G.scratch, 2}};
+            for (auto& v : V) {
+                tp::ArArgs a;
+                a.y_peer = v.dst; a.cnt = G.cnt; a.peer_flag = (unsigned*)(v.dst + 5120); a.st = G.st; a.idx = 0;
+                a.fence = v.fence;
+                for (int it = 0; it < 3; it++) tp::gemv(W, G.xq, G.xm, G.logits, G.s, &a);
+                CK(cudaEventRecord(e0, G.s));
+                for (int it = 0; it < NIT; it++) tp::gemv(W, G.xq, G.xm, G.logits, G.s, &a);
+                CK(cudaEventRecord(e1, G.s));
+                CK(cudaEventSynchronize(e1));
+                float ms2 = 0;
+                CK(cudaEventElapsedTime(&ms2, e0, e1));
+                char bb[96];
+                snprintf(bb, sizeof bb, ",\"ar_%s_us\":%.1f", v.nm, 1e3 * ms2 / NIT);
+                arj += bb;
+            }
+        }
         cudaEventDestroy(e0);
         cudaEventDestroy(e1);
-        const double us = 1e3 * ms / NIT, gbs = W.L.bytes / (us * 1e3);
-        char b[320];
+        char b[640];
         snprintf(b, sizeof b,
                  "%s{\"w\":\"%s\",\"fmt\":\"%s\",\"N\":%d,\"K\":%d,\"max_err_over_rms\":%.3e,\"us\":%.1f,"
-                 "\"GBps\":%.1f}",
-                 k ? "," : "", sp.what.c_str(), fmt_name(W.L.fmt), N, K, rel, us, gbs);
+                 "\"GBps\":%.1f%s}",
+                 k ? "," : "", sp.what.c_str(), fmt_name(W.L.fmt), N, K, rel, us, gbs, arj.c_str());
         js += b;
     }
     char b[128];
@@ -366,7 +390,7 @@ struct Enq {
     // unfused path: the ARNORM prologue as its own kernel (q8 x to G.xq/G.xm, fp32 to G.xn); returns nullptr so the
     // GEMV reads x from global memory. Its extra blocks prefetch the next GEMV (nxt) into L2.
     const tp::ProArgs* pre(tp::Gpu& G, const tp::ProArgs& p, const tp::FW& nxt) {
-        if (c->tps->fuse) return &p;
+        if (c->tps->fuse) return &p;  // fuse 1 and 2 both fuse the AR + norm prologue
         // in fallback mode arnorm() already enqueued the pull and cleared p.flag
         const tp::Pf pf = pf_for(nxt);
         tp::ar_norm(p.h_in, p.h_out, p.add ? G.part : nullptr, G.rx, p.flag ? G.flag : nullptr, G.st, p.idx, p.nw,
@@ -392,13 +416,13 @@ struct Enq {
                 mark(G, "gdn");
                 tp::ProArgs pg;
                 pg.o = G.o; pg.z = G.y + 5120; pg.gw = L.ssm_norm;
-                if (!S.fuse) {
+                if (S.fuse != 1) {
                     const tp::Pf pf = pf_for(L.ssm_out);
                     tp::gnorm_q8(G.o, G.y + 5120, L.ssm_norm, G.xq, G.xm, s, &pf);
                     mark(G, "gnorm_q8");
                 }
                 tp::ArArgs a = ar(G, idx);
-                tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, &a, nullptr, S.fuse ? &pg : nullptr);
+                tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, &a, nullptr, S.fuse == 1 ? &pg : nullptr);
                 mark(G, "gemv_ssm_out");
             } else {
                 tp::gemv(L.qkv_a, G.xq, G.xm, G.y, s, nullptr, nullptr, pre(G, pa, L.qkv_a));
@@ -422,13 +446,13 @@ struct Enq {
             mark(G, "gemv_gateup");
             tp::ProArgs ps;
             ps.gu = G.y;
-            if (!S.fuse) {
+            if (S.fuse != 1) {
                 const tp::Pf pf = pf_for(L.down);
                 tp::silu_q8(G.y, 8704, G.xq, G.xm, s, &pf);
                 mark(G, "silu_q8");
             }
             tp::ArArgs a = ar(G, idx);
-            tp::gemv(L.down, G.xq, G.xm, G.part + (idx & 1) * D, s, &a, nullptr, S.fuse ? &ps : nullptr);
+            tp::gemv(L.down, G.xq, G.xm, G.part + (idx & 1) * D, s, &a, nullptr, S.fuse == 1 ? &ps : nullptr);
             mark(G, "gemv_down");
         }
     }
@@ -600,6 +624,7 @@ void tp_load(t4q_ctx* c, const char* path) {
         G.flag = dmalloc<unsigned>(8); G.cnt = dmalloc<unsigned>(8);
         G.amb = dmalloc<float>(8); G.apart = dmalloc<float>(2 * 160);
         G.st = dmalloc<tp::StepState>(1);
+        G.scratch = dmalloc<float>(5120 + 64);
         G.prompt = dmalloc<int>(S.max_ctx);
     }
     for (int g = 0; g < 2; g++) {
@@ -610,6 +635,7 @@ void tp_load(t4q_ctx* c, const char* path) {
         memset(G.hrx, 0, 2 * D * 4);
         memset(G.hflag, 0, 8 * 4);
         memset(G.hamb, 0, 4 * 4);
+        CK(cudaHostAlloc(&S.hscratch[g], (5120 + 64) * 4, cudaHostAllocMapped | cudaHostAllocPortable));
     }
     for (int g = 0; g < 2; g++) {
         tp::Gpu& G = S.G[g];
@@ -772,7 +798,7 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     if (k == "graphs") { S.graphs = v != 0; return 0; }
     if (k == "fuse" || k == "pf_kb") {  // switch kernel structure; graphs are re-captured on the next step
         sync_both(c);
-        if (k == "fuse") S.fuse = v != 0;
+        if (k == "fuse") S.fuse = v;
         else S.pf_kb = v;
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
@@ -787,10 +813,33 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
             S.G[g].ev.clear();
             S.G[g].ev_name.clear();
         }
-        eager_step(c, true);
+        if (!S.graphs) {
+            eager_step(c, true);
+        } else {  // profile the real graph: capture a copy with event-record nodes after every kernel
+            cudaGraph_t gr[2];
+            cudaGraphExec_t ge[2];
+            for (int g = 0; g < 2; g++) {
+                CK(cudaSetDevice(g));
+                CK(cudaStreamBeginCapture(S.G[g].s, cudaStreamCaptureModeRelaxed));
+                Enq q{c, true};
+                q.gpu_step(g);
+                CK(cudaStreamEndCapture(S.G[g].s, &gr[g]));
+                CK(cudaGraphInstantiate(&ge[g], gr[g], 0));
+            }
+            for (int g = 0; g < 2; g++) {
+                CK(cudaSetDevice(g));
+                CK(cudaGraphLaunch(ge[g], S.G[g].s));
+            }
+            sync_both(c);
+            for (int g = 0; g < 2; g++) {
+                CK(cudaSetDevice(g));
+                cudaGraphExecDestroy(ge[g]);
+                cudaGraphDestroy(gr[g]);
+            }
+        }
         c->pos++;
         c->steps++;
-        std::string js = "{";
+        std::string js = S.graphs ? "{\"mode\": \"graph\", " : "{\"mode\": \"eager\", ";
         for (int g = 0; g < 2; g++) {
             tp::Gpu& G = S.G[g];
             std::map<std::string, std::pair<double, int>> agg;
@@ -824,7 +873,7 @@ std::string tp_stats_json(t4q_ctx* c) {
     char b[512];
     snprintf(b, sizeof b,
              ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"pf_kb\": %d, \"graphs\": %d, \"graph_capture_ms\": %.1f",
-             (int)S.p2p, (int)S.fuse, S.pf_kb, (int)S.graphs, S.ms_graph_capture);
+             (int)S.p2p, S.fuse, S.pf_kb, (int)S.graphs, S.ms_graph_capture);
     std::string s = b;
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;
     if (!S.prof_json.empty()) s += ", \"profile\": " + S.prof_json;

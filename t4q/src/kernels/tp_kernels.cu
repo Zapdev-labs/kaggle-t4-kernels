@@ -370,7 +370,10 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
                 wrote = true;
             }
         }
-        if (wrote) __threadfence_system();
+        if (wrote) {
+            if (ar.fence == 2) __threadfence_system();
+            else if (ar.fence == 1) __threadfence();
+        }
         __syncthreads();
         if (tid == 0) {
             const unsigned old = atomicAdd(ar.cnt, 1u);
