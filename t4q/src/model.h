@@ -88,3 +88,5 @@ void free_model(t4q_ctx* c);
 // engine.cu
 void engine_step(t4q_ctx* c, int token);   // one token at c->pos; leaves logits in c->h_logits; pos++
 void engine_reset(t4q_ctx* c);
+// debug/validation: run one layer at `pos` on a host residual input (uses and updates that layer's state)
+void engine_layer(t4q_ctx* c, int il, int pos, const float* h_in, float* h_out);

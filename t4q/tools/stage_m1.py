@@ -34,6 +34,7 @@ RESULTS = {"stage": "m1"}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
 GGUF = "Qwen3.8-27B-Q4_0.gguf"
+SECTIONS = "v0,v1,v2,v3"  # validate.py sections; a debug run may cut this down
 
 
 def el():
@@ -220,9 +221,10 @@ def prepare_inputs(t4q):
         jobs.append(f"gen gen_{name} {WORK / (name + '.i32')} 128")
     ids["D"] = ids["P0"][:12]
     ids["D"].tofile(WORK / "D.i32")
-    layers = "0,1,2,3,4,7,31,32,35,62,63"
+    layers = ",".join(str(i) for i in range(64))
     man["dump"] = {"name": "D", "ids": "D.i32", "layers": layers}
     jobs.append(f"dump D {WORK / 'D.i32'} {layers}")
+    jobs.append(f"dumpb D {WORK / 'D.i32'} {layers}")
     (WORK / "manifest.json").write_text(json.dumps(man, indent=1))
     (WORK / "jobs.txt").write_text("\n".join(jobs) + "\n")
     result("inputs", {k: int(len(v)) for k, v in ids.items()} | {"tokenizer": tok.kind,
@@ -266,13 +268,16 @@ def main():
         remaining = DEADLINE - el() - 60
         rc, o = stream([sys.executable, "-u", str(t4q / "tests" / "validate.py"), "--model", model, "--work", str(WORK),
                         "--oracle", str(ORC), "--out", str(vout), "--lib", str(t4q / "build" / "libt4q.so")],
-                       "validate.log", timeout=max(300, remaining))
+                       "validate.log", timeout=max(300, remaining),
+                       env=dict(os.environ, T4Q_VALIDATE_SECTIONS=os.environ.get("T4Q_VALIDATE_SECTIONS", SECTIONS)))
         val = json.loads(vout.read_text()) if vout.exists() else {}
         result("validate", {"rc": rc, "secs": round(time.time() - t), "tail": o[-3000:] if rc else ""})
-        summ = {k: val.get(k) for k in ("load_s", "V0_pass", "V0_repack", "gate_M1", "final_stats", "V0_error")}
+        summ = {k: val.get(k) for k in ("load_s", "V0_pass", "V0_repack", "gate_M1", "gate_detail", "final_stats",
+                                         "V0_error")}
         for mode in ("q8", "fp32"):
             M = val.get(mode, {})
-            sm = {k: M.get(k) for k in ("V1_pass", "V1_worst_ratio_by_key", "V2_tbt_pass", "V2_batch_pass",
+            sm = {k: M.get(k) for k in ("V1_tf_summary", "V1_pass", "V1_floor_pass", "V1_worst_ratio_vs_floor_by_key",
+                                        "V1_worst_ratio_by_key", "V2_tbt_pass", "V2_batch_pass",
                                         "V2_kl_over_floor", "V3_pass")}
             if "V2" in M:
                 sm["V2_ALL"] = {k: M["V2"].get(k) for k in ("ALL_vs_batch", "ALL_vs_tbt", "ALL_floor", "t4q_ms_per_step")}

@@ -79,6 +79,13 @@ int t4q_generate(t4q_ctx* c, int32_t* out, int max_new, const t4q_sampling* smp,
     API_CATCH(-1)
 }
 
+int t4q_layer_forward(t4q_ctx* c, int il, int pos, const float* h_in, float* h_out) {
+    API_TRY
+    engine_layer(c, il, pos, h_in, h_out);
+    return 0;
+    API_CATCH(-1)
+}
+
 int t4q_set_option(t4q_ctx* c, const char* key, int value) {
     const std::string k(key);
     if (k == "act_q8") { c->act_q8 = value != 0; return 0; }

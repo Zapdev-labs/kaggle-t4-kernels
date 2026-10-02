@@ -44,18 +44,23 @@ static int g_tag = -1;
 static std::set<int> g_layers;
 static std::map<std::pair<std::string, int>, Rec> g_recs;
 
+static const std::set<std::string> kNames = {
+    "attn_norm", "linear_attn_qkv_mixed", "z", "beta_sigmoid", "gate", "conv_output_silu", "q_conv_predelta",
+    "k_conv_predelta", "v_conv_predelta", "attn_output", "final_output", "linear_attn_out", "Qcur_full", "Qcur",
+    "Kcur", "Vcur", "attn_pregate", "attn_gated", "attn_residual", "attn_post_norm", "ffn_out", "l_out"};
+
 static bool wanted(const char* name) {
     std::string n(name);
-    if (n == "result_norm" || n == "result_output" || n == "h_nextn" || n == "model.input_embed") return true;
+    if (n == "result_norm" || n == "result_output" || n == "model.input_embed") return true;
     size_t d = n.rfind('-');
     if (d == std::string::npos || d + 1 >= n.size()) return false;
     for (size_t i = d + 1; i < n.size(); i++) if (n[i] < '0' || n[i] > '9') return false;
-    return g_layers.count(atoi(n.c_str() + d + 1)) > 0;
+    return kNames.count(n.substr(0, d)) > 0 && g_layers.count(atoi(n.c_str() + d + 1)) > 0;
 }
 
 static bool cb_eval(struct ggml_tensor* t, bool ask, void*) {
     if (g_tag < 0) return false;
-    if (ask) return wanted(t->name) && (t->type == GGML_TYPE_F32 || t->type == GGML_TYPE_F16) && ggml_nelements(t) <= 2000000;
+    if (ask) return wanted(t->name) && (t->type == GGML_TYPE_F32 || t->type == GGML_TYPE_F16) && ggml_nelements(t) <= 3000000;
     if (!wanted(t->name)) return true;
     const size_t nb = ggml_nbytes(t);
     std::vector<uint8_t> raw(nb);
@@ -210,6 +215,33 @@ int main(int argc, char** argv) {
             }
             fclose(f);
             printf("ORACLE dump %s records=%u\n", name.c_str(), cnt);
+        } else if (kind == "dumpb") {
+            // same capture as "dump" but the whole id file is one batch (MMQ / chunked GDN path); tag 100
+            std::vector<int32_t> ids = read_ids(file);
+            g_layers.clear();
+            std::stringstream ls(arg);
+            std::string x;
+            while (std::getline(ls, x, ',')) g_layers.insert(atoi(x.c_str()));
+            g_recs.clear();
+            clear(ctx);
+            g_tag = 100;
+            if (decode(ctx, ids, 0, true)) { fprintf(stderr, "ORACLE_ERROR dumpb decode failed\n"); return 1; }
+            g_tag = -1;
+            FILE* f = fopen((out + "/" + name + ".dumpb.bin").c_str(), "wb");
+            uint32_t cnt = (uint32_t)g_recs.size();
+            fwrite("T4QD", 1, 4, f);
+            fwrite(&cnt, 4, 1, f);
+            for (auto& kv : g_recs) {
+                const Rec& r = kv.second;
+                uint32_t nl = (uint32_t)r.name.size();
+                fwrite(&nl, 4, 1, f);
+                fwrite(r.name.data(), 1, nl, f);
+                fwrite(&r.tag, 4, 1, f);
+                fwrite(r.ne, 8, 4, f);
+                fwrite(r.data.data(), 4, r.data.size(), f);
+            }
+            fclose(f);
+            printf("ORACLE dumpb %s records=%u\n", name.c_str(), cnt);
         } else if (kind == "tok") {
             std::ifstream tf(file, std::ios::binary);
             std::string text((std::istreambuf_iterator<char>(tf)), std::istreambuf_iterator<char>());

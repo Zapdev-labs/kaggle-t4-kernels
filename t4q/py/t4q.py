@@ -33,6 +33,7 @@ class T4Q:
         L.t4q_dump.argtypes = [C.c_void_p, C.c_char_p, C.c_int, C.POINTER(C.c_float), C.c_size_t]
         L.t4q_set_dump.argtypes = [C.c_void_p, C.c_int]
         L.t4q_set_option.argtypes = [C.c_void_p, C.c_char_p, C.c_int]
+        L.t4q_layer_forward.argtypes = [C.c_void_p, C.c_int, C.c_int, C.POINTER(C.c_float), C.POINTER(C.c_float)]
         L.t4q_dump_keys.argtypes = [C.c_void_p, C.c_char_p, C.c_int]
         L.t4q_stats.argtypes = [C.c_void_p, C.c_char_p, C.c_int]
         L.t4q_reset.argtypes = [C.c_void_p]
@@ -76,6 +77,13 @@ class T4Q:
         n = self._err(self.lib.t4q_generate(self.ctx, out.ctypes.data_as(C.POINTER(C.c_int32)), max_new, C.byref(smp),
                                             st.ctypes.data_as(C.POINTER(C.c_int32)), len(stop)), "t4q_generate")
         return out[:n]
+
+    def layer_forward(self, il, pos, h):
+        h = np.ascontiguousarray(h, dtype=np.float32)
+        out = np.empty_like(h)
+        self._err(self.lib.t4q_layer_forward(self.ctx, il, pos, h.ctypes.data_as(C.POINTER(C.c_float)),
+                                             out.ctypes.data_as(C.POINTER(C.c_float))), "t4q_layer_forward")
+        return out
 
     def set_option(self, key, value):
         self._err(self.lib.t4q_set_option(self.ctx, key.encode(), int(value)), "t4q_set_option")

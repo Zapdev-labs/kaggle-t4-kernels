@@ -149,6 +149,22 @@ void engine_step(t4q_ctx* c, int token) {
     c->step_s += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
 
+void engine_layer(t4q_ctx* c, int il, int pos, const float* h_in, float* h_out) {
+    if (il < 0 || il >= NL) throw std::runtime_error("bad layer");
+    if (pos < 0 || pos >= c->max_ctx) throw std::runtime_error("bad pos");
+    if (c->dump_on) c->dumps.clear();
+    Layer& L = c->layers[il];
+    Scratch& s = c->sc[L.gpu];
+    const int saved = c->pos;
+    c->pos = pos;
+    CK(cudaSetDevice(L.gpu));
+    CK(cudaMemcpyAsync(s.h, h_in, D * 4, cudaMemcpyHostToDevice, c->st[L.gpu]));
+    run_layer(c, L);
+    CK(cudaMemcpyAsync(h_out, s.h, D * 4, cudaMemcpyDeviceToHost, c->st[L.gpu]));
+    CK(cudaStreamSynchronize(c->st[L.gpu]));
+    c->pos = saved;
+}
+
 void engine_reset(t4q_ctx* c) {
     for (int il = 0; il < NL; il++) {
         Layer& L = c->layers[il];
