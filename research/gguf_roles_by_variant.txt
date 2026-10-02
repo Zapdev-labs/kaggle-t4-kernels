@@ -1,0 +1,327 @@
+=== Q4_0: total 16.045 GB; per-token decode weight read (main 64 layers + output head, excl embd gather & MTP) 15.065 GB; token_embd 0.715 GB; MTP blk.64 0.265 GB
+  attn:attn_k.weight                         {'Q4_0': 16}  47.2 MB
+  attn:attn_k_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_norm.weight                      {'F32': 16}  0.3 MB
+  attn:attn_output.weight                    {'Q4_0': 16}  283.1 MB
+  attn:attn_q.weight                         {'Q4_0': 16}  566.2 MB
+  attn:attn_q_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_v.weight                         {'Q4_0': 16}  47.2 MB
+  attn:ffn_down.weight                       {'Q4_1': 2, 'Q4_0': 14}  813.3 MB
+  attn:ffn_gate.weight                       {'Q4_0': 16}  802.2 MB
+  attn:ffn_up.weight                         {'Q4_0': 16}  802.2 MB
+  attn:post_attention_norm.weight            {'F32': 16}  0.3 MB
+  dn:attn_gate.weight                        {'Q4_0': 48}  849.3 MB
+  dn:attn_norm.weight                        {'F32': 48}  1.0 MB
+  dn:attn_qkv.weight                         {'Q4_0': 48}  1415.6 MB
+  dn:ffn_down.weight                         {'Q4_1': 6, 'Q4_0': 42}  2439.9 MB
+  dn:ffn_gate.weight                         {'Q4_0': 48}  2406.5 MB
+  dn:ffn_up.weight                           {'Q4_0': 48}  2406.5 MB
+  dn:post_attention_norm.weight              {'F32': 48}  1.0 MB
+  dn:ssm_a                                   {'F32': 48}  0.0 MB
+  dn:ssm_alpha.weight                        {'F32': 48}  47.2 MB
+  dn:ssm_beta.weight                         {'F32': 48}  47.2 MB
+  dn:ssm_conv1d.weight                       {'F32': 48}  7.9 MB
+  dn:ssm_dt.bias                             {'F32': 48}  0.0 MB
+  dn:ssm_norm.weight                         {'F32': 48}  0.0 MB
+  dn:ssm_out.weight                          {'Q5_K': 48}  1038.1 MB
+  mtp:attn_k.weight                          {'Q4_0': 1}  2.9 MB
+  mtp:attn_k_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_norm.weight                       {'F32': 1}  0.0 MB
+  mtp:attn_output.weight                     {'Q4_0': 1}  17.7 MB
+  mtp:attn_q.weight                          {'Q4_0': 1}  35.4 MB
+  mtp:attn_q_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_v.weight                          {'Q4_0': 1}  2.9 MB
+  mtp:ffn_down.weight                        {'Q4_0': 1}  50.1 MB
+  mtp:ffn_gate.weight                        {'Q4_0': 1}  50.1 MB
+  mtp:ffn_up.weight                          {'Q4_0': 1}  50.1 MB
+  mtp:nextn.eh_proj.weight                   {'Q8_0': 1}  55.7 MB
+  mtp:nextn.enorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.hnorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.shared_head_norm.weight          {'F32': 1}  0.0 MB
+  mtp:post_attention_norm.weight             {'F32': 1}  0.0 MB
+  output.weight                              {'Q6_K': 1}  1042.9 MB
+  output_norm.weight                         {'F32': 1}  0.0 MB
+  token_embd.weight                          {'Q4_0': 1}  715.2 MB
+=== UD-Q4_K_M: total 16.453 GB; per-token decode weight read (main 64 layers + output head, excl embd gather & MTP) 15.387 GB; token_embd 0.715 GB; MTP blk.64 0.351 GB
+  attn:attn_k.weight                         {'Q4_K': 1, 'Q5_K': 5, 'Q6_K': 9, 'Q8_0': 1}  65.2 MB
+  attn:attn_k_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_norm.weight                      {'F32': 16}  0.3 MB
+  attn:attn_output.weight                    {'Q6_K': 4, 'Q5_K': 11, 'IQ4_XS': 1}  357.8 MB
+  attn:attn_q.weight                         {'Q5_K': 2, 'Q4_K': 6, 'IQ4_XS': 8}  566.2 MB
+  attn:attn_q_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_v.weight                         {'Q5_K': 6, 'Q8_0': 7, 'Q6_K': 3}  73.5 MB
+  attn:ffn_down.weight                       {'IQ4_NL': 1, 'IQ4_XS': 6, 'IQ3_S': 1, 'Q4_K': 1, 'Q5_K': 6, 'Q6_K': 1}  863.4 MB
+  attn:ffn_gate.weight                       {'Q4_K': 3, 'IQ4_XS': 7, 'IQ3_S': 1, 'Q3_K': 1, 'IQ4_NL': 1, 'Q5_K': 3}  792.4 MB
+  attn:ffn_up.weight                         {'Q4_K': 5, 'IQ4_XS': 7, 'IQ4_NL': 1, 'Q5_K': 2, 'Q6_K': 1}  827.9 MB
+  attn:post_attention_norm.weight            {'F32': 16}  0.3 MB
+  dn:attn_gate.weight                        {'Q5_K': 12, 'Q4_K': 24, 'IQ4_XS': 12}  884.7 MB
+  dn:attn_norm.weight                        {'F32': 48}  1.0 MB
+  dn:attn_qkv.weight                         {'Q5_K': 12, 'Q4_K': 29, 'IQ4_NL': 1, 'IQ4_XS': 6}  1484.4 MB
+  dn:ffn_down.weight                         {'IQ4_XS': 18, 'IQ4_NL': 2, 'Q4_K': 9, 'Q3_K': 1, 'IQ3_S': 2, 'Q5_K': 16}  2499.1 MB
+  dn:ffn_gate.weight                         {'IQ4_XS': 24, 'Q4_K': 11, 'Q3_K': 3, 'Q5_K': 9, 'IQ4_NL': 1}  2404.4 MB
+  dn:ffn_up.weight                           {'Q3_K': 2, 'IQ4_XS': 23, 'Q4_K': 9, 'Q5_K': 14}  2474.7 MB
+  dn:post_attention_norm.weight              {'F32': 48}  1.0 MB
+  dn:ssm_a                                   {'F32': 48}  0.0 MB
+  dn:ssm_alpha.weight                        {'Q8_0': 48}  12.5 MB
+  dn:ssm_beta.weight                         {'Q8_0': 48}  12.5 MB
+  dn:ssm_conv1d.weight                       {'F32': 48}  7.9 MB
+  dn:ssm_dt.bias                             {'F32': 48}  0.0 MB
+  dn:ssm_norm.weight                         {'F32': 48}  0.0 MB
+  dn:ssm_out.weight                          {'Q5_K': 33, 'Q6_K': 5, 'IQ4_XS': 5, 'Q4_K': 5}  1014.7 MB
+  mtp:attn_k.weight                          {'Q8_0': 1}  5.6 MB
+  mtp:attn_k_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_norm.weight                       {'F32': 1}  0.0 MB
+  mtp:attn_output.weight                     {'Q6_K': 1}  25.8 MB
+  mtp:attn_q.weight                          {'Q6_K': 1}  51.6 MB
+  mtp:attn_q_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_v.weight                          {'Q8_0': 1}  5.6 MB
+  mtp:ffn_down.weight                        {'Q6_K': 1}  73.1 MB
+  mtp:ffn_gate.weight                        {'Q6_K': 1}  73.1 MB
+  mtp:ffn_up.weight                          {'Q6_K': 1}  73.1 MB
+  mtp:nextn.eh_proj.weight                   {'Q6_K': 1}  43.0 MB
+  mtp:nextn.enorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.hnorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.shared_head_norm.weight          {'F32': 1}  0.0 MB
+  mtp:post_attention_norm.weight             {'F32': 1}  0.0 MB
+  output.weight                              {'Q6_K': 1}  1042.9 MB
+  output_norm.weight                         {'F32': 1}  0.0 MB
+  token_embd.weight                          {'Q4_K': 1}  715.2 MB
+=== UD-IQ4_XS: total 14.242 GB; per-token decode weight read (main 64 layers + output head, excl embd gather & MTP) 13.345 GB; token_embd 0.546 GB; MTP blk.64 0.351 GB
+  attn:attn_k.weight                         {'Q4_K': 6, 'Q5_K': 10}  53.7 MB
+  attn:attn_k_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_norm.weight                      {'F32': 16}  0.3 MB
+  attn:attn_output.weight                    {'Q5_K': 5, 'IQ4_XS': 7, 'Q4_K': 4}  295.9 MB
+  attn:attn_q.weight                         {'IQ4_NL': 1, 'Q4_K': 2, 'IQ3_XXS': 2, 'Q2_K': 1, 'IQ4_XS': 9, 'IQ3_S': 1}  502.8 MB
+  attn:attn_q_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_v.weight                         {'Q5_K': 13, 'Q4_K': 1, 'Q6_K': 2}  58.4 MB
+  attn:ffn_down.weight                       {'IQ4_XS': 10, 'IQ3_XXS': 1, 'IQ2_S': 1, 'IQ3_S': 1, 'Q5_K': 3}  758.3 MB
+  attn:ffn_gate.weight                       {'Q3_K': 1, 'IQ4_XS': 7, 'IQ3_XXS': 3, 'IQ3_S': 3, 'Q5_K': 2}  709.6 MB
+  attn:ffn_up.weight                         {'IQ3_S': 4, 'IQ2_S': 1, 'IQ4_XS': 8, 'Q4_K': 1, 'Q5_K': 2}  733.2 MB
+  attn:post_attention_norm.weight            {'F32': 16}  0.3 MB
+  dn:attn_gate.weight                        {'IQ4_XS': 32, 'Q4_K': 14, 'IQ3_S': 1, 'Q3_K': 1}  809.5 MB
+  dn:attn_norm.weight                        {'F32': 48}  1.0 MB
+  dn:attn_qkv.weight                         {'IQ4_XS': 29, 'Q4_K': 11, 'IQ3_S': 7, 'IQ3_XXS': 1}  1309.9 MB
+  dn:ffn_down.weight                         {'IQ3_XXS': 4, 'IQ3_S': 8, 'IQ4_XS': 29, 'Q4_K': 3, 'Q3_K': 1, 'Q5_K': 3}  2188.5 MB
+  dn:ffn_gate.weight                         {'IQ2_XS': 2, 'IQ3_S': 13, 'Q3_K': 2, 'IQ3_XXS': 4, 'IQ2_S': 2, 'IQ4_XS': 23, 'Q5_K': 2}  2031.2 MB
+  dn:ffn_up.weight                           {'IQ2_S': 3, 'Q3_K': 2, 'IQ3_S': 8, 'IQ4_XS': 28, 'IQ3_XXS': 2, 'Q4_K': 3, 'Q5_K': 2}  2135.6 MB
+  dn:post_attention_norm.weight              {'F32': 48}  1.0 MB
+  dn:ssm_a                                   {'F32': 48}  0.0 MB
+  dn:ssm_alpha.weight                        {'Q8_0': 48}  12.5 MB
+  dn:ssm_beta.weight                         {'Q8_0': 48}  12.5 MB
+  dn:ssm_conv1d.weight                       {'F32': 48}  7.9 MB
+  dn:ssm_dt.bias                             {'F32': 48}  0.0 MB
+  dn:ssm_norm.weight                         {'F32': 48}  0.0 MB
+  dn:ssm_out.weight                          {'Q5_K': 8, 'Q4_K': 10, 'IQ4_XS': 29, 'Q3_K': 1}  848.1 MB
+  mtp:attn_k.weight                          {'Q8_0': 1}  5.6 MB
+  mtp:attn_k_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_norm.weight                       {'F32': 1}  0.0 MB
+  mtp:attn_output.weight                     {'Q6_K': 1}  25.8 MB
+  mtp:attn_q.weight                          {'Q6_K': 1}  51.6 MB
+  mtp:attn_q_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_v.weight                          {'Q8_0': 1}  5.6 MB
+  mtp:ffn_down.weight                        {'Q6_K': 1}  73.1 MB
+  mtp:ffn_gate.weight                        {'Q6_K': 1}  73.1 MB
+  mtp:ffn_up.weight                          {'Q6_K': 1}  73.1 MB
+  mtp:nextn.eh_proj.weight                   {'Q6_K': 1}  43.0 MB
+  mtp:nextn.enorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.hnorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.shared_head_norm.weight          {'F32': 1}  0.0 MB
+  mtp:post_attention_norm.weight             {'F32': 1}  0.0 MB
+  output.weight                              {'Q5_K': 1}  874.1 MB
+  output_norm.weight                         {'F32': 1}  0.0 MB
+  token_embd.weight                          {'Q3_K': 1}  546.3 MB
+=== UD-Q4_K_XL: total 17.548 GB; per-token decode weight read (main 64 layers + output head, excl embd gather & MTP) 16.482 GB; token_embd 0.715 GB; MTP blk.64 0.351 GB
+  attn:attn_k.weight                         {'Q4_K': 1, 'Q5_K': 2, 'Q6_K': 12, 'Q8_0': 1}  67.3 MB
+  attn:attn_k_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_norm.weight                      {'F32': 16}  0.3 MB
+  attn:attn_output.weight                    {'Q6_K': 8, 'Q5_K': 7, 'IQ4_XS': 1}  374.5 MB
+  attn:attn_q.weight                         {'Q5_K': 8, 'Q4_K': 6, 'IQ4_XS': 2}  625.2 MB
+  attn:attn_q_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_v.weight                         {'Q5_K': 3, 'Q8_0': 10, 'Q6_K': 3}  79.4 MB
+  attn:ffn_down.weight                       {'Q5_K': 8, 'IQ4_XS': 6, 'Q6_K': 2}  920.5 MB
+  attn:ffn_gate.weight                       {'Q4_K': 4, 'IQ4_XS': 5, 'Q5_K': 4, 'IQ4_NL': 1, 'Q6_K': 2}  878.8 MB
+  attn:ffn_up.weight                         {'Q5_K': 8, 'IQ4_XS': 4, 'Q4_K': 2, 'Q6_K': 2}  926.1 MB
+  attn:post_attention_norm.weight            {'F32': 16}  0.3 MB
+  dn:attn_gate.weight                        {'Q5_K': 31, 'Q4_K': 13, 'IQ4_XS': 3, 'Q6_K': 1}  976.4 MB
+  dn:attn_norm.weight                        {'F32': 48}  1.0 MB
+  dn:attn_qkv.weight                         {'Q5_K': 21, 'Q4_K': 23, 'Q6_K': 1, 'IQ4_NL': 1, 'IQ4_XS': 2}  1563.4 MB
+  dn:ffn_down.weight                         {'IQ4_XS': 10, 'IQ4_NL': 2, 'Q5_K': 27, 'Q4_K': 5, 'IQ3_S': 1, 'Q6_K': 3}  2736.5 MB
+  dn:ffn_gate.weight                         {'IQ4_XS': 20, 'Q4_K': 9, 'Q3_K': 1, 'IQ4_NL': 1, 'Q5_K': 15, 'Q6_K': 2}  2552.0 MB
+  dn:ffn_up.weight                           {'Q3_K': 2, 'IQ4_XS': 17, 'Q4_K': 4, 'Q5_K': 24, 'IQ4_NL': 1}  2602.8 MB
+  dn:post_attention_norm.weight              {'F32': 48}  1.0 MB
+  dn:ssm_a                                   {'F32': 48}  0.0 MB
+  dn:ssm_alpha.weight                        {'Q8_0': 48}  12.5 MB
+  dn:ssm_beta.weight                         {'Q8_0': 48}  12.5 MB
+  dn:ssm_conv1d.weight                       {'F32': 48}  7.9 MB
+  dn:ssm_dt.bias                             {'F32': 48}  0.0 MB
+  dn:ssm_norm.weight                         {'F32': 48}  0.0 MB
+  dn:ssm_out.weight                          {'Q8_0': 1, 'Q6_K': 13, 'Q5_K': 33, 'Q4_K': 1}  1100.3 MB
+  mtp:attn_k.weight                          {'Q8_0': 1}  5.6 MB
+  mtp:attn_k_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_norm.weight                       {'F32': 1}  0.0 MB
+  mtp:attn_output.weight                     {'Q6_K': 1}  25.8 MB
+  mtp:attn_q.weight                          {'Q6_K': 1}  51.6 MB
+  mtp:attn_q_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_v.weight                          {'Q8_0': 1}  5.6 MB
+  mtp:ffn_down.weight                        {'Q6_K': 1}  73.1 MB
+  mtp:ffn_gate.weight                        {'Q6_K': 1}  73.1 MB
+  mtp:ffn_up.weight                          {'Q6_K': 1}  73.1 MB
+  mtp:nextn.eh_proj.weight                   {'Q6_K': 1}  43.0 MB
+  mtp:nextn.enorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.hnorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.shared_head_norm.weight          {'F32': 1}  0.0 MB
+  mtp:post_attention_norm.weight             {'F32': 1}  0.0 MB
+  output.weight                              {'Q6_K': 1}  1042.9 MB
+  output_norm.weight                         {'F32': 1}  0.0 MB
+  token_embd.weight                          {'Q4_K': 1}  715.2 MB
+=== UD-Q4_K_S: total 15.347 GB; per-token decode weight read (main 64 layers + output head, excl embd gather & MTP) 14.450 GB; token_embd 0.546 GB; MTP blk.64 0.351 GB
+  attn:attn_k.weight                         {'Q4_K': 3, 'Q5_K': 9, 'Q6_K': 4}  58.5 MB
+  attn:attn_k_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_norm.weight                      {'F32': 16}  0.3 MB
+  attn:attn_output.weight                    {'Q5_K': 11, 'IQ4_NL': 1, 'Q4_K': 2, 'IQ4_XS': 2}  324.4 MB
+  attn:attn_q.weight                         {'IQ4_NL': 1, 'Q4_K': 4, 'IQ4_XS': 11}  544.6 MB
+  attn:attn_q_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_v.weight                         {'Q5_K': 9, 'Q4_K': 1, 'Q6_K': 5, 'Q8_0': 1}  62.5 MB
+  attn:ffn_down.weight                       {'IQ4_NL': 1, 'IQ4_XS': 9, 'IQ3_S': 1, 'Q4_K': 1, 'Q5_K': 4}  809.8 MB
+  attn:ffn_gate.weight                       {'Q4_K': 1, 'IQ4_XS': 10, 'IQ3_S': 1, 'IQ3_XXS': 1, 'Q3_K': 1, 'Q5_K': 2}  756.9 MB
+  attn:ffn_up.weight                         {'Q4_K': 3, 'IQ3_S': 3, 'IQ4_XS': 7, 'IQ4_NL': 1, 'Q5_K': 1, 'Q6_K': 1}  781.3 MB
+  attn:post_attention_norm.weight            {'F32': 16}  0.3 MB
+  dn:attn_gate.weight                        {'Q5_K': 3, 'Q4_K': 20, 'IQ4_XS': 25}  836.6 MB
+  dn:attn_norm.weight                        {'F32': 48}  1.0 MB
+  dn:attn_qkv.weight                         {'IQ4_XS': 21, 'Q4_K': 25, 'IQ4_NL': 2}  1381.2 MB
+  dn:ffn_down.weight                         {'IQ4_XS': 20, 'Q4_K': 11, 'IQ3_S': 5, 'Q3_K': 1, 'IQ3_XXS': 1, 'Q5_K': 10}  2375.1 MB
+  dn:ffn_gate.weight                         {'IQ2_XS': 1, 'IQ3_S': 4, 'IQ4_XS': 25, 'Q4_K': 6, 'IQ3_XXS': 2, 'Q3_K': 5, 'Q5_K': 5}  2229.6 MB
+  dn:ffn_up.weight                           {'IQ2_S': 1, 'Q3_K': 5, 'IQ4_XS': 27, 'Q4_K': 7, 'IQ3_S': 1, 'IQ3_XXS': 1, 'Q5_K': 6}  2289.5 MB
+  dn:post_attention_norm.weight              {'F32': 48}  1.0 MB
+  dn:ssm_a                                   {'F32': 48}  0.0 MB
+  dn:ssm_alpha.weight                        {'Q8_0': 48}  12.5 MB
+  dn:ssm_beta.weight                         {'Q8_0': 48}  12.5 MB
+  dn:ssm_conv1d.weight                       {'F32': 48}  7.9 MB
+  dn:ssm_dt.bias                             {'F32': 48}  0.0 MB
+  dn:ssm_norm.weight                         {'F32': 48}  0.0 MB
+  dn:ssm_out.weight                          {'Q5_K': 20, 'Q6_K': 1, 'IQ4_NL': 1, 'IQ4_XS': 15, 'Q4_K': 11}  921.4 MB
+  mtp:attn_k.weight                          {'Q8_0': 1}  5.6 MB
+  mtp:attn_k_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_norm.weight                       {'F32': 1}  0.0 MB
+  mtp:attn_output.weight                     {'Q6_K': 1}  25.8 MB
+  mtp:attn_q.weight                          {'Q6_K': 1}  51.6 MB
+  mtp:attn_q_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_v.weight                          {'Q8_0': 1}  5.6 MB
+  mtp:ffn_down.weight                        {'Q6_K': 1}  73.1 MB
+  mtp:ffn_gate.weight                        {'Q6_K': 1}  73.1 MB
+  mtp:ffn_up.weight                          {'Q6_K': 1}  73.1 MB
+  mtp:nextn.eh_proj.weight                   {'Q6_K': 1}  43.0 MB
+  mtp:nextn.enorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.hnorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.shared_head_norm.weight          {'F32': 1}  0.0 MB
+  mtp:post_attention_norm.weight             {'F32': 1}  0.0 MB
+  output.weight                              {'Q6_K': 1}  1042.9 MB
+  output_norm.weight                         {'F32': 1}  0.0 MB
+  token_embd.weight                          {'Q3_K': 1}  546.3 MB
+=== UD-Q5_K_M: total 19.761 GB; per-token decode weight read (main 64 layers + output head, excl embd gather & MTP) 18.694 GB; token_embd 0.715 GB; MTP blk.64 0.351 GB
+  attn:attn_k.weight                         {'Q6_K': 6, 'Q5_K': 1, 'Q8_0': 9}  79.5 MB
+  attn:attn_k_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_norm.weight                      {'F32': 16}  0.3 MB
+  attn:attn_output.weight                    {'Q6_K': 13, 'Q5_K': 2, 'Q8_0': 1}  412.1 MB
+  attn:attn_q.weight                         {'Q6_K': 4, 'Q5_K': 11, 'Q4_K': 1}  717.6 MB
+  attn:attn_q_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_v.weight                         {'Q5_K': 2, 'Q8_0': 13, 'Q6_K': 1}  83.9 MB
+  attn:ffn_down.weight                       {'Q6_K': 6, 'Q5_K': 8, 'IQ4_XS': 2}  1023.6 MB
+  attn:ffn_gate.weight                       {'Q5_K': 10, 'IQ4_XS': 3, 'Q6_K': 3}  974.2 MB
+  attn:ffn_up.weight                         {'Q6_K': 8, 'Q5_K': 6, 'IQ4_XS': 1, 'Q4_K': 1}  1050.1 MB
+  attn:post_attention_norm.weight            {'F32': 16}  0.3 MB
+  dn:attn_gate.weight                        {'Q5_K': 25, 'Q4_K': 1, 'Q6_K': 17, 'IQ4_XS': 3, 'Q8_0': 2}  1114.0 MB
+  dn:attn_norm.weight                        {'F32': 48}  1.0 MB
+  dn:attn_qkv.weight                         {'Q5_K': 29, 'Q4_K': 3, 'Q6_K': 16}  1821.9 MB
+  dn:ffn_down.weight                         {'Q5_K': 22, 'Q6_K': 23, 'Q4_K': 3}  3180.1 MB
+  dn:ffn_gate.weight                         {'IQ4_XS': 5, 'Q4_K': 2, 'Q5_K': 30, 'IQ4_NL': 1, 'Q6_K': 10}  2956.6 MB
+  dn:ffn_up.weight                           {'Q5_K': 29, 'IQ4_XS': 5, 'IQ4_NL': 1, 'Q6_K': 13}  3014.4 MB
+  dn:post_attention_norm.weight              {'F32': 48}  1.0 MB
+  dn:ssm_a                                   {'F32': 48}  0.0 MB
+  dn:ssm_alpha.weight                        {'Q8_0': 48}  12.5 MB
+  dn:ssm_beta.weight                         {'Q8_0': 48}  12.5 MB
+  dn:ssm_conv1d.weight                       {'F32': 48}  7.9 MB
+  dn:ssm_dt.bias                             {'F32': 48}  0.0 MB
+  dn:ssm_norm.weight                         {'F32': 48}  0.0 MB
+  dn:ssm_out.weight                          {'Q8_0': 1, 'Q6_K': 33, 'Q5_K': 14}  1187.8 MB
+  mtp:attn_k.weight                          {'Q8_0': 1}  5.6 MB
+  mtp:attn_k_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_norm.weight                       {'F32': 1}  0.0 MB
+  mtp:attn_output.weight                     {'Q6_K': 1}  25.8 MB
+  mtp:attn_q.weight                          {'Q6_K': 1}  51.6 MB
+  mtp:attn_q_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_v.weight                          {'Q8_0': 1}  5.6 MB
+  mtp:ffn_down.weight                        {'Q6_K': 1}  73.1 MB
+  mtp:ffn_gate.weight                        {'Q6_K': 1}  73.1 MB
+  mtp:ffn_up.weight                          {'Q6_K': 1}  73.1 MB
+  mtp:nextn.eh_proj.weight                   {'Q6_K': 1}  43.0 MB
+  mtp:nextn.enorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.hnorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.shared_head_norm.weight          {'F32': 1}  0.0 MB
+  mtp:post_attention_norm.weight             {'F32': 1}  0.0 MB
+  output.weight                              {'Q6_K': 1}  1042.9 MB
+  output_norm.weight                         {'F32': 1}  0.0 MB
+  token_embd.weight                          {'Q4_K': 1}  715.2 MB
+=== Q8_0: total 29.036 GB; per-token decode weight read (main 64 layers + output head, excl embd gather & MTP) 27.234 GB; token_embd 1.351 GB; MTP blk.64 0.451 GB
+  attn:attn_k.weight                         {'Q8_0': 16}  89.1 MB
+  attn:attn_k_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_norm.weight                      {'F32': 16}  0.3 MB
+  attn:attn_output.weight                    {'Q8_0': 16}  534.8 MB
+  attn:attn_q.weight                         {'Q8_0': 16}  1069.5 MB
+  attn:attn_q_norm.weight                    {'F32': 16}  0.0 MB
+  attn:attn_v.weight                         {'Q8_0': 16}  89.1 MB
+  attn:ffn_down.weight                       {'Q8_0': 16}  1515.2 MB
+  attn:ffn_gate.weight                       {'Q8_0': 16}  1515.2 MB
+  attn:ffn_up.weight                         {'Q8_0': 16}  1515.2 MB
+  attn:post_attention_norm.weight            {'F32': 16}  0.3 MB
+  dn:attn_gate.weight                        {'Q8_0': 48}  1604.3 MB
+  dn:attn_norm.weight                        {'F32': 48}  1.0 MB
+  dn:attn_qkv.weight                         {'Q8_0': 48}  2673.9 MB
+  dn:ffn_down.weight                         {'Q8_0': 48}  4545.6 MB
+  dn:ffn_gate.weight                         {'Q8_0': 48}  4545.6 MB
+  dn:ffn_up.weight                           {'Q8_0': 48}  4545.6 MB
+  dn:post_attention_norm.weight              {'F32': 48}  1.0 MB
+  dn:ssm_a                                   {'F32': 48}  0.0 MB
+  dn:ssm_alpha.weight                        {'Q8_0': 48}  12.5 MB
+  dn:ssm_beta.weight                         {'Q8_0': 48}  12.5 MB
+  dn:ssm_conv1d.weight                       {'F32': 48}  7.9 MB
+  dn:ssm_dt.bias                             {'F32': 48}  0.0 MB
+  dn:ssm_norm.weight                         {'F32': 48}  0.0 MB
+  dn:ssm_out.weight                          {'Q8_0': 48}  1604.3 MB
+  mtp:attn_k.weight                          {'Q8_0': 1}  5.6 MB
+  mtp:attn_k_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_norm.weight                       {'F32': 1}  0.0 MB
+  mtp:attn_output.weight                     {'Q8_0': 1}  33.4 MB
+  mtp:attn_q.weight                          {'Q8_0': 1}  66.8 MB
+  mtp:attn_q_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_v.weight                          {'Q8_0': 1}  5.6 MB
+  mtp:ffn_down.weight                        {'Q8_0': 1}  94.7 MB
+  mtp:ffn_gate.weight                        {'Q8_0': 1}  94.7 MB
+  mtp:ffn_up.weight                          {'Q8_0': 1}  94.7 MB
+  mtp:nextn.eh_proj.weight                   {'Q8_0': 1}  55.7 MB
+  mtp:nextn.enorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.hnorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.shared_head_norm.weight          {'F32': 1}  0.0 MB
+  mtp:post_attention_norm.weight             {'F32': 1}  0.0 MB
+  output.weight                              {'Q8_0': 1}  1350.9 MB
+  output_norm.weight                         {'F32': 1}  0.0 MB
+  token_embd.weight                          {'Q8_0': 1}  1350.9 MB
+=== MTP-Q4_0: total 1.359 GB; per-token decode weight read (main 64 layers + output head, excl embd gather & MTP) 0.546 GB; token_embd 0.546 GB; MTP blk.64 0.266 GB
+  mtp:attn_k.weight                          {'Q6_K': 1}  4.3 MB
+  mtp:attn_k_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_norm.weight                       {'F32': 1}  0.0 MB
+  mtp:attn_output.weight                     {'Q6_K': 1}  25.8 MB
+  mtp:attn_q.weight                          {'Q6_K': 1}  51.6 MB
+  mtp:attn_q_norm.weight                     {'F32': 1}  0.0 MB
+  mtp:attn_v.weight                          {'Q6_K': 1}  4.3 MB
+  mtp:ffn_down.weight                        {'Q4_K': 1}  50.1 MB
+  mtp:ffn_gate.weight                        {'Q4_K': 1}  50.1 MB
+  mtp:ffn_up.weight                          {'Q4_K': 1}  50.1 MB
+  mtp:nextn.eh_proj.weight                   {'Q4_K': 1}  29.5 MB
+  mtp:nextn.enorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.hnorm.weight                     {'F32': 1}  0.0 MB
+  mtp:nextn.shared_head_norm.weight          {'F32': 1}  0.0 MB
+  mtp:post_attention_norm.weight             {'F32': 1}  0.0 MB
+  output.weight                              {'Q3_K': 1}  546.3 MB
+  output_norm.weight                         {'F32': 1}  0.0 MB
+  token_embd.weight                          {'Q3_K': 1}  546.3 MB

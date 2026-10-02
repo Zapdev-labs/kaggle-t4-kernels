@@ -1,0 +1,4 @@
+kaggle/*/out*/
+*.gguf
+*.tgz
+__pycache__/

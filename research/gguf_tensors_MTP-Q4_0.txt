@@ -1,0 +1,79 @@
+# https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/MTP/mtp-Qwen3.8-27B-Q4_0.gguf
+# gguf version 3, n_tensors 18, n_kv 50, alignment 32
+# header(kv+tensor infos) ends at 10945401, tensor data starts at 10945408, file size 1369590656
+## KV metadata
+general.architecture = 'qwen35'
+general.type = 'model'
+general.sampling.top_k = 20
+general.sampling.top_p = 0.949999988079071
+general.sampling.temp = 1.0
+general.name = 'Qwen3.8-27B'
+general.basename = 'Qwen3.8-27B'
+general.description = 'Renewal of the beloved Qwen model, delivering unmatched intelligence density.'
+general.quantized_by = 'Unsloth'
+general.size_label = '27B'
+general.license = 'apache-2.0'
+general.repo_url = 'https://huggingface.co/unsloth'
+general.base_model.count = 1
+general.base_model.0.name = 'Qwen3.8 27B'
+general.base_model.0.organization = 'Qwen'
+general.base_model.0.repo_url = 'https://huggingface.co/Qwen/Qwen3.8-27B'
+general.tags = array<type 8>[1] first=['unsloth']
+qwen35.block_count = 65
+qwen35.context_length = 262144
+qwen35.embedding_length = 5120
+qwen35.feed_forward_length = 17408
+qwen35.attention.head_count = 24
+qwen35.attention.head_count_kv = 4
+qwen35.rope.dimension_sections = array<type 5>[4] first=[11, 11, 10, 0]
+qwen35.rope.freq_base = 10000000.0
+qwen35.attention.layer_norm_rms_epsilon = 9.999999974752427e-07
+qwen35.attention.key_length = 256
+qwen35.attention.value_length = 256
+qwen35.nextn_predict_layers = 1
+qwen35.ssm.conv_kernel = 4
+qwen35.ssm.state_size = 128
+qwen35.ssm.group_count = 16
+qwen35.ssm.time_step_rank = 48
+qwen35.ssm.inner_size = 6144
+qwen35.full_attention_interval = 4
+qwen35.rope.dimension_count = 64
+tokenizer.ggml.model = 'gpt2'
+tokenizer.ggml.pre = 'qwen35'
+tokenizer.ggml.tokens = array<type 8>[248320] first=['!', '"', '#', '$', '%', '&', "'", '(']
+tokenizer.ggml.token_type = array<type 5>[248320] first=[1, 1, 1, 1, 1, 1, 1, 1]
+tokenizer.ggml.merges = array<type 8>[247587] first=['Ġ Ġ', 'ĠĠ ĠĠ', 'i n', 'Ġ t', 'ĠĠĠĠ ĠĠĠĠ', 'e r', 'ĠĠ Ġ', 'o n']
+tokenizer.ggml.eos_token_id = 248046
+tokenizer.ggml.padding_token_id = 248055
+tokenizer.ggml.bos_token_id = 248044
+tokenizer.chat_template = '{%- set image_count = namespace(value=0) %}\n{%- set video_count = namespace(value=0) %}\n{%- macro render_content(content, do_vision_count, is_system_content=false) %}\n    {%- if content is string %}\n        {{- content }}\n    {%- elif content is iterable and content is not mapping %}\n        {%- for item in content %}\n            {%- if \'image\' in item or \'imag
+general.quantization_version = 2
+general.file_type = 14
+quantize.imatrix.file = 'runs/imatrix_v3w/final/imatrix.gguf'
+quantize.imatrix.entries_count = 496
+quantize.imatrix.chunks_count = 1251
+## Tensors: name | type | shape(ne0,ne1,..) | offset_rel | bytes
+output.weight | Q3_K | [5120, 248320] | 0 | 546304000
+output_norm.weight | F32 | [5120] | 546304000 | 20480
+token_embd.weight | Q3_K | [5120, 248320] | 546324480 | 546304000
+blk.64.attn_k.weight | Q6_K | [5120, 1024] | 1092628480 | 4300800
+blk.64.attn_k_norm.weight | F32 | [256] | 1096929280 | 1024
+blk.64.attn_norm.weight | F32 | [5120] | 1096930304 | 20480
+blk.64.attn_output.weight | Q6_K | [6144, 5120] | 1096950784 | 25804800
+blk.64.attn_q.weight | Q6_K | [5120, 12288] | 1122755584 | 51609600
+blk.64.attn_q_norm.weight | F32 | [256] | 1174365184 | 1024
+blk.64.attn_v.weight | Q6_K | [5120, 1024] | 1174366208 | 4300800
+blk.64.ffn_down.weight | Q4_K | [17408, 5120] | 1178667008 | 50135040
+blk.64.ffn_gate.weight | Q4_K | [5120, 17408] | 1228802048 | 50135040
+blk.64.ffn_up.weight | Q4_K | [5120, 17408] | 1278937088 | 50135040
+blk.64.nextn.eh_proj.weight | Q4_K | [10240, 5120] | 1329072128 | 29491200
+blk.64.nextn.enorm.weight | F32 | [5120] | 1358563328 | 20480
+blk.64.nextn.hnorm.weight | F32 | [5120] | 1358583808 | 20480
+blk.64.nextn.shared_head_norm.weight | F32 | [5120] | 1358604288 | 20480
+blk.64.post_attention_norm.weight | F32 | [5120] | 1358624768 | 20480
+## Summary by type: type count bytes GiB
+Q3_K 2 1092608000 1.018
+F32 8 124928 0.000
+Q6_K 4 86016000 0.080
+Q4_K 4 179896320 0.168
+total tensor bytes 1358645248 (1.265 GiB); data_start+tensor_bytes=1369590656 vs file 1369590656

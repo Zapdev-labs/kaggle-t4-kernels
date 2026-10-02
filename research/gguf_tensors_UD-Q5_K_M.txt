@@ -1,0 +1,930 @@
+# https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q5_K_M.gguf
+# gguf version 3, n_tensors 866, n_kv 50, alignment 32
+# header(kv+tensor infos) ends at 10996621, tensor data starts at 10996640, file size 19771509664
+## KV metadata
+general.architecture = 'qwen35'
+general.type = 'model'
+general.sampling.top_k = 20
+general.sampling.top_p = 0.949999988079071
+general.sampling.temp = 1.0
+general.name = 'Qwen3.8-27B'
+general.basename = 'Qwen3.8-27B'
+general.description = 'Renewal of the beloved Qwen model, delivering unmatched intelligence density.'
+general.quantized_by = 'Unsloth'
+general.size_label = '27B'
+general.license = 'apache-2.0'
+general.repo_url = 'https://huggingface.co/unsloth'
+general.base_model.count = 1
+general.base_model.0.name = 'Qwen3.8 27B'
+general.base_model.0.organization = 'Qwen'
+general.base_model.0.repo_url = 'https://huggingface.co/Qwen/Qwen3.8-27B'
+general.tags = array<type 8>[1] first=['unsloth']
+qwen35.block_count = 65
+qwen35.context_length = 262144
+qwen35.embedding_length = 5120
+qwen35.feed_forward_length = 17408
+qwen35.attention.head_count = 24
+qwen35.attention.head_count_kv = 4
+qwen35.rope.dimension_sections = array<type 5>[4] first=[11, 11, 10, 0]
+qwen35.rope.freq_base = 10000000.0
+qwen35.attention.layer_norm_rms_epsilon = 9.999999974752427e-07
+qwen35.attention.key_length = 256
+qwen35.attention.value_length = 256
+qwen35.nextn_predict_layers = 1
+qwen35.ssm.conv_kernel = 4
+qwen35.ssm.state_size = 128
+qwen35.ssm.group_count = 16
+qwen35.ssm.time_step_rank = 48
+qwen35.ssm.inner_size = 6144
+qwen35.full_attention_interval = 4
+qwen35.rope.dimension_count = 64
+tokenizer.ggml.model = 'gpt2'
+tokenizer.ggml.pre = 'qwen35'
+tokenizer.ggml.tokens = array<type 8>[248320] first=['!', '"', '#', '$', '%', '&', "'", '(']
+tokenizer.ggml.token_type = array<type 5>[248320] first=[1, 1, 1, 1, 1, 1, 1, 1]
+tokenizer.ggml.merges = array<type 8>[247587] first=['Ġ Ġ', 'ĠĠ ĠĠ', 'i n', 'Ġ t', 'ĠĠĠĠ ĠĠĠĠ', 'e r', 'ĠĠ Ġ', 'o n']
+tokenizer.ggml.eos_token_id = 248046
+tokenizer.ggml.padding_token_id = 248055
+tokenizer.ggml.bos_token_id = 248044
+general.quantization_version = 2
+general.file_type = 17
+quantize.imatrix.file = 'Qwen3.8-27B-GGUF/imatrix_unsloth.gguf'
+quantize.imatrix.entries_count = 496
+quantize.imatrix.chunks_count = 1251
+tokenizer.chat_template = '{%- set image_count = namespace(value=0) %}\n{%- set video_count = namespace(value=0) %}\n{%- macro render_content(content, do_vision_count, is_system_content=false) %}\n    {%- if content is string %}\n        {{- content }}\n    {%- elif content is iterable and content is not mapping %}\n        {%- for item in content %}\n            {%- if \'image\' in item or \'imag
+## Tensors: name | type | shape(ne0,ne1,..) | offset_rel | bytes
+output.weight | Q6_K | [5120, 248320] | 0 | 1042944000
+output_norm.weight | F32 | [5120] | 1042944000 | 20480
+token_embd.weight | Q4_K | [5120, 248320] | 1042964480 | 715161600
+blk.0.attn_gate.weight | Q5_K | [5120, 6144] | 1758126080 | 21626880
+blk.0.attn_norm.weight | F32 | [5120] | 1779752960 | 20480
+blk.0.attn_qkv.weight | Q5_K | [5120, 10240] | 1779773440 | 36044800
+blk.0.ffn_down.weight | Q5_K | [17408, 5120] | 1815818240 | 61276160
+blk.0.ffn_gate.weight | IQ4_XS | [5120, 17408] | 1877094400 | 47349760
+blk.0.ffn_up.weight | Q5_K | [5120, 17408] | 1924444160 | 61276160
+blk.0.post_attention_norm.weight | F32 | [5120] | 1985720320 | 20480
+blk.0.ssm_a | F32 | [48] | 1985740800 | 192
+blk.0.ssm_alpha.weight | Q8_0 | [5120, 48] | 1985740992 | 261120
+blk.0.ssm_beta.weight | Q8_0 | [5120, 48] | 1986002112 | 261120
+blk.0.ssm_conv1d.weight | F32 | [4, 10240] | 1986263232 | 163840
+blk.0.ssm_dt.bias | F32 | [48] | 1986427072 | 192
+blk.0.ssm_norm.weight | F32 | [128] | 1986427264 | 512
+blk.0.ssm_out.weight | Q8_0 | [6144, 5120] | 1986427776 | 33423360
+blk.1.attn_gate.weight | Q4_K | [5120, 6144] | 2019851136 | 17694720
+blk.1.attn_norm.weight | F32 | [5120] | 2037545856 | 20480
+blk.1.attn_qkv.weight | Q4_K | [5120, 10240] | 2037566336 | 29491200
+blk.1.ffn_down.weight | Q6_K | [17408, 5120] | 2067057536 | 73113600
+blk.1.ffn_gate.weight | Q4_K | [5120, 17408] | 2140171136 | 50135040
+blk.1.ffn_up.weight | IQ4_XS | [5120, 17408] | 2190306176 | 47349760
+blk.1.post_attention_norm.weight | F32 | [5120] | 2237655936 | 20480
+blk.1.ssm_a | F32 | [48] | 2237676416 | 192
+blk.1.ssm_alpha.weight | Q8_0 | [5120, 48] | 2237676608 | 261120
+blk.1.ssm_beta.weight | Q8_0 | [5120, 48] | 2237937728 | 261120
+blk.1.ssm_conv1d.weight | F32 | [4, 10240] | 2238198848 | 163840
+blk.1.ssm_dt.bias | F32 | [48] | 2238362688 | 192
+blk.1.ssm_norm.weight | F32 | [128] | 2238362880 | 512
+blk.1.ssm_out.weight | Q6_K | [6144, 5120] | 2238363392 | 25804800
+blk.2.attn_gate.weight | Q6_K | [5120, 6144] | 2264168192 | 25804800
+blk.2.attn_norm.weight | F32 | [5120] | 2289972992 | 20480
+blk.2.attn_qkv.weight | Q6_K | [5120, 10240] | 2289993472 | 43008000
+blk.2.ffn_down.weight | Q6_K | [17408, 5120] | 2333001472 | 73113600
+blk.2.ffn_gate.weight | Q5_K | [5120, 17408] | 2406115072 | 61276160
+blk.2.ffn_up.weight | IQ4_NL | [5120, 17408] | 2467391232 | 50135040
+blk.2.post_attention_norm.weight | F32 | [5120] | 2517526272 | 20480
+blk.2.ssm_a | F32 | [48] | 2517546752 | 192
+blk.2.ssm_alpha.weight | Q8_0 | [5120, 48] | 2517546944 | 261120
+blk.2.ssm_beta.weight | Q8_0 | [5120, 48] | 2517808064 | 261120
+blk.2.ssm_conv1d.weight | F32 | [4, 10240] | 2518069184 | 163840
+blk.2.ssm_dt.bias | F32 | [48] | 2518233024 | 192
+blk.2.ssm_norm.weight | F32 | [128] | 2518233216 | 512
+blk.2.ssm_out.weight | Q6_K | [6144, 5120] | 2518233728 | 25804800
+blk.3.attn_k.weight | Q6_K | [5120, 1024] | 2544038528 | 4300800
+blk.3.attn_k_norm.weight | F32 | [256] | 2548339328 | 1024
+blk.3.attn_norm.weight | F32 | [5120] | 2548340352 | 20480
+blk.3.attn_output.weight | Q6_K | [6144, 5120] | 2548360832 | 25804800
+blk.3.attn_q.weight | Q6_K | [5120, 12288] | 2574165632 | 51609600
+blk.3.attn_q_norm.weight | F32 | [256] | 2625775232 | 1024
+blk.3.attn_v.weight | Q5_K | [5120, 1024] | 2625776256 | 3604480
+blk.3.ffn_down.weight | Q6_K | [17408, 5120] | 2629380736 | 73113600
+blk.3.ffn_gate.weight | Q5_K | [5120, 17408] | 2702494336 | 61276160
+blk.3.ffn_up.weight | Q6_K | [5120, 17408] | 2763770496 | 73113600
+blk.3.post_attention_norm.weight | F32 | [5120] | 2836884096 | 20480
+blk.4.attn_gate.weight | Q6_K | [5120, 6144] | 2836904576 | 25804800
+blk.4.attn_norm.weight | F32 | [5120] | 2862709376 | 20480
+blk.4.attn_qkv.weight | Q6_K | [5120, 10240] | 2862729856 | 43008000
+blk.4.ffn_down.weight | Q6_K | [17408, 5120] | 2905737856 | 73113600
+blk.4.ffn_gate.weight | Q5_K | [5120, 17408] | 2978851456 | 61276160
+blk.4.ffn_up.weight | Q6_K | [5120, 17408] | 3040127616 | 73113600
+blk.4.post_attention_norm.weight | F32 | [5120] | 3113241216 | 20480
+blk.4.ssm_a | F32 | [48] | 3113261696 | 192
+blk.4.ssm_alpha.weight | Q8_0 | [5120, 48] | 3113261888 | 261120
+blk.4.ssm_beta.weight | Q8_0 | [5120, 48] | 3113523008 | 261120
+blk.4.ssm_conv1d.weight | F32 | [4, 10240] | 3113784128 | 163840
+blk.4.ssm_dt.bias | F32 | [48] | 3113947968 | 192
+blk.4.ssm_norm.weight | F32 | [128] | 3113948160 | 512
+blk.4.ssm_out.weight | Q5_K | [6144, 5120] | 3113948672 | 21626880
+blk.5.attn_gate.weight | Q6_K | [5120, 6144] | 3135575552 | 25804800
+blk.5.attn_norm.weight | F32 | [5120] | 3161380352 | 20480
+blk.5.attn_qkv.weight | Q5_K | [5120, 10240] | 3161400832 | 36044800
+blk.5.ffn_down.weight | Q5_K | [17408, 5120] | 3197445632 | 61276160
+blk.5.ffn_gate.weight | Q5_K | [5120, 17408] | 3258721792 | 61276160
+blk.5.ffn_up.weight | Q6_K | [5120, 17408] | 3319997952 | 73113600
+blk.5.post_attention_norm.weight | F32 | [5120] | 3393111552 | 20480
+blk.5.ssm_a | F32 | [48] | 3393132032 | 192
+blk.5.ssm_alpha.weight | Q8_0 | [5120, 48] | 3393132224 | 261120
+blk.5.ssm_beta.weight | Q8_0 | [5120, 48] | 3393393344 | 261120
+blk.5.ssm_conv1d.weight | F32 | [4, 10240] | 3393654464 | 163840
+blk.5.ssm_dt.bias | F32 | [48] | 3393818304 | 192
+blk.5.ssm_norm.weight | F32 | [128] | 3393818496 | 512
+blk.5.ssm_out.weight | Q6_K | [6144, 5120] | 3393819008 | 25804800
+blk.6.attn_gate.weight | Q6_K | [5120, 6144] | 3419623808 | 25804800
+blk.6.attn_norm.weight | F32 | [5120] | 3445428608 | 20480
+blk.6.attn_qkv.weight | Q6_K | [5120, 10240] | 3445449088 | 43008000
+blk.6.ffn_down.weight | Q5_K | [17408, 5120] | 3488457088 | 61276160
+blk.6.ffn_gate.weight | Q5_K | [5120, 17408] | 3549733248 | 61276160
+blk.6.ffn_up.weight | Q5_K | [5120, 17408] | 3611009408 | 61276160
+blk.6.post_attention_norm.weight | F32 | [5120] | 3672285568 | 20480
+blk.6.ssm_a | F32 | [48] | 3672306048 | 192
+blk.6.ssm_alpha.weight | Q8_0 | [5120, 48] | 3672306240 | 261120
+blk.6.ssm_beta.weight | Q8_0 | [5120, 48] | 3672567360 | 261120
+blk.6.ssm_conv1d.weight | F32 | [4, 10240] | 3672828480 | 163840
+blk.6.ssm_dt.bias | F32 | [48] | 3672992320 | 192
+blk.6.ssm_norm.weight | F32 | [128] | 3672992512 | 512
+blk.6.ssm_out.weight | Q6_K | [6144, 5120] | 3672993024 | 25804800
+blk.7.attn_k.weight | Q5_K | [5120, 1024] | 3698797824 | 3604480
+blk.7.attn_k_norm.weight | F32 | [256] | 3702402304 | 1024
+blk.7.attn_norm.weight | F32 | [5120] | 3702403328 | 20480
+blk.7.attn_output.weight | Q5_K | [6144, 5120] | 3702423808 | 21626880
+blk.7.attn_q.weight | Q5_K | [5120, 12288] | 3724050688 | 43253760
+blk.7.attn_q_norm.weight | F32 | [256] | 3767304448 | 1024
+blk.7.attn_v.weight | Q5_K | [5120, 1024] | 3767305472 | 3604480
+blk.7.ffn_down.weight | Q5_K | [17408, 5120] | 3770909952 | 61276160
+blk.7.ffn_gate.weight | Q5_K | [5120, 17408] | 3832186112 | 61276160
+blk.7.ffn_up.weight | Q5_K | [5120, 17408] | 3893462272 | 61276160
+blk.7.post_attention_norm.weight | F32 | [5120] | 3954738432 | 20480
+blk.8.attn_gate.weight | Q5_K | [5120, 6144] | 3954758912 | 21626880
+blk.8.attn_norm.weight | F32 | [5120] | 3976385792 | 20480
+blk.8.attn_qkv.weight | Q6_K | [5120, 10240] | 3976406272 | 43008000
+blk.8.ffn_down.weight | Q5_K | [17408, 5120] | 4019414272 | 61276160
+blk.8.ffn_gate.weight | Q5_K | [5120, 17408] | 4080690432 | 61276160
+blk.8.ffn_up.weight | Q5_K | [5120, 17408] | 4141966592 | 61276160
+blk.8.post_attention_norm.weight | F32 | [5120] | 4203242752 | 20480
+blk.8.ssm_a | F32 | [48] | 4203263232 | 192
+blk.8.ssm_alpha.weight | Q8_0 | [5120, 48] | 4203263424 | 261120
+blk.8.ssm_beta.weight | Q8_0 | [5120, 48] | 4203524544 | 261120
+blk.8.ssm_conv1d.weight | F32 | [4, 10240] | 4203785664 | 163840
+blk.8.ssm_dt.bias | F32 | [48] | 4203949504 | 192
+blk.8.ssm_norm.weight | F32 | [128] | 4203949696 | 512
+blk.8.ssm_out.weight | Q5_K | [6144, 5120] | 4203950208 | 21626880
+blk.9.attn_gate.weight | Q5_K | [5120, 6144] | 4225577088 | 21626880
+blk.9.attn_norm.weight | F32 | [5120] | 4247203968 | 20480
+blk.9.attn_qkv.weight | Q5_K | [5120, 10240] | 4247224448 | 36044800
+blk.9.ffn_down.weight | Q5_K | [17408, 5120] | 4283269248 | 61276160
+blk.9.ffn_gate.weight | Q5_K | [5120, 17408] | 4344545408 | 61276160
+blk.9.ffn_up.weight | Q5_K | [5120, 17408] | 4405821568 | 61276160
+blk.9.post_attention_norm.weight | F32 | [5120] | 4467097728 | 20480
+blk.9.ssm_a | F32 | [48] | 4467118208 | 192
+blk.9.ssm_alpha.weight | Q8_0 | [5120, 48] | 4467118400 | 261120
+blk.9.ssm_beta.weight | Q8_0 | [5120, 48] | 4467379520 | 261120
+blk.9.ssm_conv1d.weight | F32 | [4, 10240] | 4467640640 | 163840
+blk.9.ssm_dt.bias | F32 | [48] | 4467804480 | 192
+blk.9.ssm_norm.weight | F32 | [128] | 4467804672 | 512
+blk.9.ssm_out.weight | Q5_K | [6144, 5120] | 4467805184 | 21626880
+blk.10.attn_gate.weight | Q5_K | [5120, 6144] | 4489432064 | 21626880
+blk.10.attn_norm.weight | F32 | [5120] | 4511058944 | 20480
+blk.10.attn_qkv.weight | Q5_K | [5120, 10240] | 4511079424 | 36044800
+blk.10.ffn_down.weight | Q5_K | [17408, 5120] | 4547124224 | 61276160
+blk.10.ffn_gate.weight | Q4_K | [5120, 17408] | 4608400384 | 50135040
+blk.10.ffn_up.weight | Q5_K | [5120, 17408] | 4658535424 | 61276160
+blk.10.post_attention_norm.weight | F32 | [5120] | 4719811584 | 20480
+blk.10.ssm_a | F32 | [48] | 4719832064 | 192
+blk.10.ssm_alpha.weight | Q8_0 | [5120, 48] | 4719832256 | 261120
+blk.10.ssm_beta.weight | Q8_0 | [5120, 48] | 4720093376 | 261120
+blk.10.ssm_conv1d.weight | F32 | [4, 10240] | 4720354496 | 163840
+blk.10.ssm_dt.bias | F32 | [48] | 4720518336 | 192
+blk.10.ssm_norm.weight | F32 | [128] | 4720518528 | 512
+blk.10.ssm_out.weight | Q6_K | [6144, 5120] | 4720519040 | 25804800
+blk.11.attn_k.weight | Q8_0 | [5120, 1024] | 4746323840 | 5570560
+blk.11.attn_k_norm.weight | F32 | [256] | 4751894400 | 1024
+blk.11.attn_norm.weight | F32 | [5120] | 4751895424 | 20480
+blk.11.attn_output.weight | Q5_K | [6144, 5120] | 4751915904 | 21626880
+blk.11.attn_q.weight | Q5_K | [5120, 12288] | 4773542784 | 43253760
+blk.11.attn_q_norm.weight | F32 | [256] | 4816796544 | 1024
+blk.11.attn_v.weight | Q8_0 | [5120, 1024] | 4816797568 | 5570560
+blk.11.ffn_down.weight | IQ4_XS | [17408, 5120] | 4822368128 | 47349760
+blk.11.ffn_gate.weight | IQ4_XS | [5120, 17408] | 4869717888 | 47349760
+blk.11.ffn_up.weight | Q5_K | [5120, 17408] | 4917067648 | 61276160
+blk.11.post_attention_norm.weight | F32 | [5120] | 4978343808 | 20480
+blk.12.attn_gate.weight | Q5_K | [5120, 6144] | 4978364288 | 21626880
+blk.12.attn_norm.weight | F32 | [5120] | 4999991168 | 20480
+blk.12.attn_qkv.weight | Q5_K | [5120, 10240] | 5000011648 | 36044800
+blk.12.ffn_down.weight | Q5_K | [17408, 5120] | 5036056448 | 61276160
+blk.12.ffn_gate.weight | IQ4_XS | [5120, 17408] | 5097332608 | 47349760
+blk.12.ffn_up.weight | Q5_K | [5120, 17408] | 5144682368 | 61276160
+blk.12.post_attention_norm.weight | F32 | [5120] | 5205958528 | 20480
+blk.12.ssm_a | F32 | [48] | 5205979008 | 192
+blk.12.ssm_alpha.weight | Q8_0 | [5120, 48] | 5205979200 | 261120
+blk.12.ssm_beta.weight | Q8_0 | [5120, 48] | 5206240320 | 261120
+blk.12.ssm_conv1d.weight | F32 | [4, 10240] | 5206501440 | 163840
+blk.12.ssm_dt.bias | F32 | [48] | 5206665280 | 192
+blk.12.ssm_norm.weight | F32 | [128] | 5206665472 | 512
+blk.12.ssm_out.weight | Q6_K | [6144, 5120] | 5206665984 | 25804800
+blk.13.attn_gate.weight | Q5_K | [5120, 6144] | 5232470784 | 21626880
+blk.13.attn_norm.weight | F32 | [5120] | 5254097664 | 20480
+blk.13.attn_qkv.weight | Q4_K | [5120, 10240] | 5254118144 | 29491200
+blk.13.ffn_down.weight | Q5_K | [17408, 5120] | 5283609344 | 61276160
+blk.13.ffn_gate.weight | Q5_K | [5120, 17408] | 5344885504 | 61276160
+blk.13.ffn_up.weight | IQ4_XS | [5120, 17408] | 5406161664 | 47349760
+blk.13.post_attention_norm.weight | F32 | [5120] | 5453511424 | 20480
+blk.13.ssm_a | F32 | [48] | 5453531904 | 192
+blk.13.ssm_alpha.weight | Q8_0 | [5120, 48] | 5453532096 | 261120
+blk.13.ssm_beta.weight | Q8_0 | [5120, 48] | 5453793216 | 261120
+blk.13.ssm_conv1d.weight | F32 | [4, 10240] | 5454054336 | 163840
+blk.13.ssm_dt.bias | F32 | [48] | 5454218176 | 192
+blk.13.ssm_norm.weight | F32 | [128] | 5454218368 | 512
+blk.13.ssm_out.weight | Q5_K | [6144, 5120] | 5454218880 | 21626880
+blk.14.attn_gate.weight | Q5_K | [5120, 6144] | 5475845760 | 21626880
+blk.14.attn_norm.weight | F32 | [5120] | 5497472640 | 20480
+blk.14.attn_qkv.weight | Q5_K | [5120, 10240] | 5497493120 | 36044800
+blk.14.ffn_down.weight | Q4_K | [17408, 5120] | 5533537920 | 50135040
+blk.14.ffn_gate.weight | IQ4_XS | [5120, 17408] | 5583672960 | 47349760
+blk.14.ffn_up.weight | IQ4_XS | [5120, 17408] | 5631022720 | 47349760
+blk.14.post_attention_norm.weight | F32 | [5120] | 5678372480 | 20480
+blk.14.ssm_a | F32 | [48] | 5678392960 | 192
+blk.14.ssm_alpha.weight | Q8_0 | [5120, 48] | 5678393152 | 261120
+blk.14.ssm_beta.weight | Q8_0 | [5120, 48] | 5678654272 | 261120
+blk.14.ssm_conv1d.weight | F32 | [4, 10240] | 5678915392 | 163840
+blk.14.ssm_dt.bias | F32 | [48] | 5679079232 | 192
+blk.14.ssm_norm.weight | F32 | [128] | 5679079424 | 512
+blk.14.ssm_out.weight | Q6_K | [6144, 5120] | 5679079936 | 25804800
+blk.15.attn_k.weight | Q6_K | [5120, 1024] | 5704884736 | 4300800
+blk.15.attn_k_norm.weight | F32 | [256] | 5709185536 | 1024
+blk.15.attn_norm.weight | F32 | [5120] | 5709186560 | 20480
+blk.15.attn_output.weight | Q6_K | [6144, 5120] | 5709207040 | 25804800
+blk.15.attn_q.weight | Q4_K | [5120, 12288] | 5735011840 | 35389440
+blk.15.attn_q_norm.weight | F32 | [256] | 5770401280 | 1024
+blk.15.attn_v.weight | Q8_0 | [5120, 1024] | 5770402304 | 5570560
+blk.15.ffn_down.weight | IQ4_XS | [17408, 5120] | 5775972864 | 47349760
+blk.15.ffn_gate.weight | IQ4_XS | [5120, 17408] | 5823322624 | 47349760
+blk.15.ffn_up.weight | IQ4_XS | [5120, 17408] | 5870672384 | 47349760
+blk.15.post_attention_norm.weight | F32 | [5120] | 5918022144 | 20480
+blk.16.attn_gate.weight | Q5_K | [5120, 6144] | 5918042624 | 21626880
+blk.16.attn_norm.weight | F32 | [5120] | 5939669504 | 20480
+blk.16.attn_qkv.weight | Q6_K | [5120, 10240] | 5939689984 | 43008000
+blk.16.ffn_down.weight | Q4_K | [17408, 5120] | 5982697984 | 50135040
+blk.16.ffn_gate.weight | IQ4_XS | [5120, 17408] | 6032833024 | 47349760
+blk.16.ffn_up.weight | IQ4_XS | [5120, 17408] | 6080182784 | 47349760
+blk.16.post_attention_norm.weight | F32 | [5120] | 6127532544 | 20480
+blk.16.ssm_a | F32 | [48] | 6127553024 | 192
+blk.16.ssm_alpha.weight | Q8_0 | [5120, 48] | 6127553216 | 261120
+blk.16.ssm_beta.weight | Q8_0 | [5120, 48] | 6127814336 | 261120
+blk.16.ssm_conv1d.weight | F32 | [4, 10240] | 6128075456 | 163840
+blk.16.ssm_dt.bias | F32 | [48] | 6128239296 | 192
+blk.16.ssm_norm.weight | F32 | [128] | 6128239488 | 512
+blk.16.ssm_out.weight | Q6_K | [6144, 5120] | 6128240000 | 25804800
+blk.17.attn_gate.weight | IQ4_XS | [5120, 6144] | 6154044800 | 16711680
+blk.17.attn_norm.weight | F32 | [5120] | 6170756480 | 20480
+blk.17.attn_qkv.weight | Q5_K | [5120, 10240] | 6170776960 | 36044800
+blk.17.ffn_down.weight | Q4_K | [17408, 5120] | 6206821760 | 50135040
+blk.17.ffn_gate.weight | IQ4_NL | [5120, 17408] | 6256956800 | 50135040
+blk.17.ffn_up.weight | IQ4_XS | [5120, 17408] | 6307091840 | 47349760
+blk.17.post_attention_norm.weight | F32 | [5120] | 6354441600 | 20480
+blk.17.ssm_a | F32 | [48] | 6354462080 | 192
+blk.17.ssm_alpha.weight | Q8_0 | [5120, 48] | 6354462272 | 261120
+blk.17.ssm_beta.weight | Q8_0 | [5120, 48] | 6354723392 | 261120
+blk.17.ssm_conv1d.weight | F32 | [4, 10240] | 6354984512 | 163840
+blk.17.ssm_dt.bias | F32 | [48] | 6355148352 | 192
+blk.17.ssm_norm.weight | F32 | [128] | 6355148544 | 512
+blk.17.ssm_out.weight | Q5_K | [6144, 5120] | 6355149056 | 21626880
+blk.18.attn_gate.weight | Q5_K | [5120, 6144] | 6376775936 | 21626880
+blk.18.attn_norm.weight | F32 | [5120] | 6398402816 | 20480
+blk.18.attn_qkv.weight | Q6_K | [5120, 10240] | 6398423296 | 43008000
+blk.18.ffn_down.weight | Q5_K | [17408, 5120] | 6441431296 | 61276160
+blk.18.ffn_gate.weight | IQ4_XS | [5120, 17408] | 6502707456 | 47349760
+blk.18.ffn_up.weight | Q5_K | [5120, 17408] | 6550057216 | 61276160
+blk.18.post_attention_norm.weight | F32 | [5120] | 6611333376 | 20480
+blk.18.ssm_a | F32 | [48] | 6611353856 | 192
+blk.18.ssm_alpha.weight | Q8_0 | [5120, 48] | 6611354048 | 261120
+blk.18.ssm_beta.weight | Q8_0 | [5120, 48] | 6611615168 | 261120
+blk.18.ssm_conv1d.weight | F32 | [4, 10240] | 6611876288 | 163840
+blk.18.ssm_dt.bias | F32 | [48] | 6612040128 | 192
+blk.18.ssm_norm.weight | F32 | [128] | 6612040320 | 512
+blk.18.ssm_out.weight | Q5_K | [6144, 5120] | 6612040832 | 21626880
+blk.19.attn_k.weight | Q8_0 | [5120, 1024] | 6633667712 | 5570560
+blk.19.attn_k_norm.weight | F32 | [256] | 6639238272 | 1024
+blk.19.attn_norm.weight | F32 | [5120] | 6639239296 | 20480
+blk.19.attn_output.weight | Q6_K | [6144, 5120] | 6639259776 | 25804800
+blk.19.attn_q.weight | Q5_K | [5120, 12288] | 6665064576 | 43253760
+blk.19.attn_q_norm.weight | F32 | [256] | 6708318336 | 1024
+blk.19.attn_v.weight | Q8_0 | [5120, 1024] | 6708319360 | 5570560
+blk.19.ffn_down.weight | Q5_K | [17408, 5120] | 6713889920 | 61276160
+blk.19.ffn_gate.weight | IQ4_XS | [5120, 17408] | 6775166080 | 47349760
+blk.19.ffn_up.weight | Q4_K | [5120, 17408] | 6822515840 | 50135040
+blk.19.post_attention_norm.weight | F32 | [5120] | 6872650880 | 20480
+blk.20.attn_gate.weight | Q5_K | [5120, 6144] | 6872671360 | 21626880
+blk.20.attn_norm.weight | F32 | [5120] | 6894298240 | 20480
+blk.20.attn_qkv.weight | Q6_K | [5120, 10240] | 6894318720 | 43008000
+blk.20.ffn_down.weight | Q6_K | [17408, 5120] | 6937326720 | 73113600
+blk.20.ffn_gate.weight | Q5_K | [5120, 17408] | 7010440320 | 61276160
+blk.20.ffn_up.weight | Q5_K | [5120, 17408] | 7071716480 | 61276160
+blk.20.post_attention_norm.weight | F32 | [5120] | 7132992640 | 20480
+blk.20.ssm_a | F32 | [48] | 7133013120 | 192
+blk.20.ssm_alpha.weight | Q8_0 | [5120, 48] | 7133013312 | 261120
+blk.20.ssm_beta.weight | Q8_0 | [5120, 48] | 7133274432 | 261120
+blk.20.ssm_conv1d.weight | F32 | [4, 10240] | 7133535552 | 163840
+blk.20.ssm_dt.bias | F32 | [48] | 7133699392 | 192
+blk.20.ssm_norm.weight | F32 | [128] | 7133699584 | 512
+blk.20.ssm_out.weight | Q6_K | [6144, 5120] | 7133700096 | 25804800
+blk.21.attn_gate.weight | Q8_0 | [5120, 6144] | 7159504896 | 33423360
+blk.21.attn_norm.weight | F32 | [5120] | 7192928256 | 20480
+blk.21.attn_qkv.weight | Q6_K | [5120, 10240] | 7192948736 | 43008000
+blk.21.ffn_down.weight | Q5_K | [17408, 5120] | 7235956736 | 61276160
+blk.21.ffn_gate.weight | Q5_K | [5120, 17408] | 7297232896 | 61276160
+blk.21.ffn_up.weight | Q5_K | [5120, 17408] | 7358509056 | 61276160
+blk.21.post_attention_norm.weight | F32 | [5120] | 7419785216 | 20480
+blk.21.ssm_a | F32 | [48] | 7419805696 | 192
+blk.21.ssm_alpha.weight | Q8_0 | [5120, 48] | 7419805888 | 261120
+blk.21.ssm_beta.weight | Q8_0 | [5120, 48] | 7420067008 | 261120
+blk.21.ssm_conv1d.weight | F32 | [4, 10240] | 7420328128 | 163840
+blk.21.ssm_dt.bias | F32 | [48] | 7420491968 | 192
+blk.21.ssm_norm.weight | F32 | [128] | 7420492160 | 512
+blk.21.ssm_out.weight | Q6_K | [6144, 5120] | 7420492672 | 25804800
+blk.22.attn_gate.weight | Q5_K | [5120, 6144] | 7446297472 | 21626880
+blk.22.attn_norm.weight | F32 | [5120] | 7467924352 | 20480
+blk.22.attn_qkv.weight | Q4_K | [5120, 10240] | 7467944832 | 29491200
+blk.22.ffn_down.weight | Q6_K | [17408, 5120] | 7497436032 | 73113600
+blk.22.ffn_gate.weight | Q6_K | [5120, 17408] | 7570549632 | 73113600
+blk.22.ffn_up.weight | Q5_K | [5120, 17408] | 7643663232 | 61276160
+blk.22.post_attention_norm.weight | F32 | [5120] | 7704939392 | 20480
+blk.22.ssm_a | F32 | [48] | 7704959872 | 192
+blk.22.ssm_alpha.weight | Q8_0 | [5120, 48] | 7704960064 | 261120
+blk.22.ssm_beta.weight | Q8_0 | [5120, 48] | 7705221184 | 261120
+blk.22.ssm_conv1d.weight | F32 | [4, 10240] | 7705482304 | 163840
+blk.22.ssm_dt.bias | F32 | [48] | 7705646144 | 192
+blk.22.ssm_norm.weight | F32 | [128] | 7705646336 | 512
+blk.22.ssm_out.weight | Q6_K | [6144, 5120] | 7705646848 | 25804800
+blk.23.attn_k.weight | Q8_0 | [5120, 1024] | 7731451648 | 5570560
+blk.23.attn_k_norm.weight | F32 | [256] | 7737022208 | 1024
+blk.23.attn_norm.weight | F32 | [5120] | 7737023232 | 20480
+blk.23.attn_output.weight | Q6_K | [6144, 5120] | 7737043712 | 25804800
+blk.23.attn_q.weight | Q6_K | [5120, 12288] | 7762848512 | 51609600
+blk.23.attn_q_norm.weight | F32 | [256] | 7814458112 | 1024
+blk.23.attn_v.weight | Q8_0 | [5120, 1024] | 7814459136 | 5570560
+blk.23.ffn_down.weight | Q6_K | [17408, 5120] | 7820029696 | 73113600
+blk.23.ffn_gate.weight | Q5_K | [5120, 17408] | 7893143296 | 61276160
+blk.23.ffn_up.weight | Q6_K | [5120, 17408] | 7954419456 | 73113600
+blk.23.post_attention_norm.weight | F32 | [5120] | 8027533056 | 20480
+blk.24.attn_gate.weight | Q8_0 | [5120, 6144] | 8027553536 | 33423360
+blk.24.attn_norm.weight | F32 | [5120] | 8060976896 | 20480
+blk.24.attn_qkv.weight | Q5_K | [5120, 10240] | 8060997376 | 36044800
+blk.24.ffn_down.weight | Q6_K | [17408, 5120] | 8097042176 | 73113600
+blk.24.ffn_gate.weight | Q5_K | [5120, 17408] | 8170155776 | 61276160
+blk.24.ffn_up.weight | Q6_K | [5120, 17408] | 8231431936 | 73113600
+blk.24.post_attention_norm.weight | F32 | [5120] | 8304545536 | 20480
+blk.24.ssm_a | F32 | [48] | 8304566016 | 192
+blk.24.ssm_alpha.weight | Q8_0 | [5120, 48] | 8304566208 | 261120
+blk.24.ssm_beta.weight | Q8_0 | [5120, 48] | 8304827328 | 261120
+blk.24.ssm_conv1d.weight | F32 | [4, 10240] | 8305088448 | 163840
+blk.24.ssm_dt.bias | F32 | [48] | 8305252288 | 192
+blk.24.ssm_norm.weight | F32 | [128] | 8305252480 | 512
+blk.24.ssm_out.weight | Q6_K | [6144, 5120] | 8305252992 | 25804800
+blk.25.attn_gate.weight | Q5_K | [5120, 6144] | 8331057792 | 21626880
+blk.25.attn_norm.weight | F32 | [5120] | 8352684672 | 20480
+blk.25.attn_qkv.weight | Q5_K | [5120, 10240] | 8352705152 | 36044800
+blk.25.ffn_down.weight | Q5_K | [17408, 5120] | 8388749952 | 61276160
+blk.25.ffn_gate.weight | Q5_K | [5120, 17408] | 8450026112 | 61276160
+blk.25.ffn_up.weight | Q6_K | [5120, 17408] | 8511302272 | 73113600
+blk.25.post_attention_norm.weight | F32 | [5120] | 8584415872 | 20480
+blk.25.ssm_a | F32 | [48] | 8584436352 | 192
+blk.25.ssm_alpha.weight | Q8_0 | [5120, 48] | 8584436544 | 261120
+blk.25.ssm_beta.weight | Q8_0 | [5120, 48] | 8584697664 | 261120
+blk.25.ssm_conv1d.weight | F32 | [4, 10240] | 8584958784 | 163840
+blk.25.ssm_dt.bias | F32 | [48] | 8585122624 | 192
+blk.25.ssm_norm.weight | F32 | [128] | 8585122816 | 512
+blk.25.ssm_out.weight | Q6_K | [6144, 5120] | 8585123328 | 25804800
+blk.26.attn_gate.weight | Q6_K | [5120, 6144] | 8610928128 | 25804800
+blk.26.attn_norm.weight | F32 | [5120] | 8636732928 | 20480
+blk.26.attn_qkv.weight | Q5_K | [5120, 10240] | 8636753408 | 36044800
+blk.26.ffn_down.weight | Q6_K | [17408, 5120] | 8672798208 | 73113600
+blk.26.ffn_gate.weight | Q5_K | [5120, 17408] | 8745911808 | 61276160
+blk.26.ffn_up.weight | Q5_K | [5120, 17408] | 8807187968 | 61276160
+blk.26.post_attention_norm.weight | F32 | [5120] | 8868464128 | 20480
+blk.26.ssm_a | F32 | [48] | 8868484608 | 192
+blk.26.ssm_alpha.weight | Q8_0 | [5120, 48] | 8868484800 | 261120
+blk.26.ssm_beta.weight | Q8_0 | [5120, 48] | 8868745920 | 261120
+blk.26.ssm_conv1d.weight | F32 | [4, 10240] | 8869007040 | 163840
+blk.26.ssm_dt.bias | F32 | [48] | 8869170880 | 192
+blk.26.ssm_norm.weight | F32 | [128] | 8869171072 | 512
+blk.26.ssm_out.weight | Q5_K | [6144, 5120] | 8869171584 | 21626880
+blk.27.attn_k.weight | Q8_0 | [5120, 1024] | 8890798464 | 5570560
+blk.27.attn_k_norm.weight | F32 | [256] | 8896369024 | 1024
+blk.27.attn_norm.weight | F32 | [5120] | 8896370048 | 20480
+blk.27.attn_output.weight | Q6_K | [6144, 5120] | 8896390528 | 25804800
+blk.27.attn_q.weight | Q6_K | [5120, 12288] | 8922195328 | 51609600
+blk.27.attn_q_norm.weight | F32 | [256] | 8973804928 | 1024
+blk.27.attn_v.weight | Q8_0 | [5120, 1024] | 8973805952 | 5570560
+blk.27.ffn_down.weight | Q5_K | [17408, 5120] | 8979376512 | 61276160
+blk.27.ffn_gate.weight | Q5_K | [5120, 17408] | 9040652672 | 61276160
+blk.27.ffn_up.weight | Q5_K | [5120, 17408] | 9101928832 | 61276160
+blk.27.post_attention_norm.weight | F32 | [5120] | 9163204992 | 20480
+blk.28.attn_gate.weight | Q6_K | [5120, 6144] | 9163225472 | 25804800
+blk.28.attn_norm.weight | F32 | [5120] | 9189030272 | 20480
+blk.28.attn_qkv.weight | Q6_K | [5120, 10240] | 9189050752 | 43008000
+blk.28.ffn_down.weight | Q6_K | [17408, 5120] | 9232058752 | 73113600
+blk.28.ffn_gate.weight | Q6_K | [5120, 17408] | 9305172352 | 73113600
+blk.28.ffn_up.weight | Q5_K | [5120, 17408] | 9378285952 | 61276160
+blk.28.post_attention_norm.weight | F32 | [5120] | 9439562112 | 20480
+blk.28.ssm_a | F32 | [48] | 9439582592 | 192
+blk.28.ssm_alpha.weight | Q8_0 | [5120, 48] | 9439582784 | 261120
+blk.28.ssm_beta.weight | Q8_0 | [5120, 48] | 9439843904 | 261120
+blk.28.ssm_conv1d.weight | F32 | [4, 10240] | 9440105024 | 163840
+blk.28.ssm_dt.bias | F32 | [48] | 9440268864 | 192
+blk.28.ssm_norm.weight | F32 | [128] | 9440269056 | 512
+blk.28.ssm_out.weight | Q6_K | [6144, 5120] | 9440269568 | 25804800
+blk.29.attn_gate.weight | Q6_K | [5120, 6144] | 9466074368 | 25804800
+blk.29.attn_norm.weight | F32 | [5120] | 9491879168 | 20480
+blk.29.attn_qkv.weight | Q5_K | [5120, 10240] | 9491899648 | 36044800
+blk.29.ffn_down.weight | Q6_K | [17408, 5120] | 9527944448 | 73113600
+blk.29.ffn_gate.weight | Q5_K | [5120, 17408] | 9601058048 | 61276160
+blk.29.ffn_up.weight | Q5_K | [5120, 17408] | 9662334208 | 61276160
+blk.29.post_attention_norm.weight | F32 | [5120] | 9723610368 | 20480
+blk.29.ssm_a | F32 | [48] | 9723630848 | 192
+blk.29.ssm_alpha.weight | Q8_0 | [5120, 48] | 9723631040 | 261120
+blk.29.ssm_beta.weight | Q8_0 | [5120, 48] | 9723892160 | 261120
+blk.29.ssm_conv1d.weight | F32 | [4, 10240] | 9724153280 | 163840
+blk.29.ssm_dt.bias | F32 | [48] | 9724317120 | 192
+blk.29.ssm_norm.weight | F32 | [128] | 9724317312 | 512
+blk.29.ssm_out.weight | Q6_K | [6144, 5120] | 9724317824 | 25804800
+blk.30.attn_gate.weight | Q5_K | [5120, 6144] | 9750122624 | 21626880
+blk.30.attn_norm.weight | F32 | [5120] | 9771749504 | 20480
+blk.30.attn_qkv.weight | Q5_K | [5120, 10240] | 9771769984 | 36044800
+blk.30.ffn_down.weight | Q5_K | [17408, 5120] | 9807814784 | 61276160
+blk.30.ffn_gate.weight | Q5_K | [5120, 17408] | 9869090944 | 61276160
+blk.30.ffn_up.weight | Q5_K | [5120, 17408] | 9930367104 | 61276160
+blk.30.post_attention_norm.weight | F32 | [5120] | 9991643264 | 20480
+blk.30.ssm_a | F32 | [48] | 9991663744 | 192
+blk.30.ssm_alpha.weight | Q8_0 | [5120, 48] | 9991663936 | 261120
+blk.30.ssm_beta.weight | Q8_0 | [5120, 48] | 9991925056 | 261120
+blk.30.ssm_conv1d.weight | F32 | [4, 10240] | 9992186176 | 163840
+blk.30.ssm_dt.bias | F32 | [48] | 9992350016 | 192
+blk.30.ssm_norm.weight | F32 | [128] | 9992350208 | 512
+blk.30.ssm_out.weight | Q5_K | [6144, 5120] | 9992350720 | 21626880
+blk.31.attn_k.weight | Q8_0 | [5120, 1024] | 10013977600 | 5570560
+blk.31.attn_k_norm.weight | F32 | [256] | 10019548160 | 1024
+blk.31.attn_norm.weight | F32 | [5120] | 10019549184 | 20480
+blk.31.attn_output.weight | Q6_K | [6144, 5120] | 10019569664 | 25804800
+blk.31.attn_q.weight | Q5_K | [5120, 12288] | 10045374464 | 43253760
+blk.31.attn_q_norm.weight | F32 | [256] | 10088628224 | 1024
+blk.31.attn_v.weight | Q8_0 | [5120, 1024] | 10088629248 | 5570560
+blk.31.ffn_down.weight | Q5_K | [17408, 5120] | 10094199808 | 61276160
+blk.31.ffn_gate.weight | Q5_K | [5120, 17408] | 10155475968 | 61276160
+blk.31.ffn_up.weight | Q6_K | [5120, 17408] | 10216752128 | 73113600
+blk.31.post_attention_norm.weight | F32 | [5120] | 10289865728 | 20480
+blk.32.attn_gate.weight | Q6_K | [5120, 6144] | 10289886208 | 25804800
+blk.32.attn_norm.weight | F32 | [5120] | 10315691008 | 20480
+blk.32.attn_qkv.weight | Q5_K | [5120, 10240] | 10315711488 | 36044800
+blk.32.ffn_down.weight | Q5_K | [17408, 5120] | 10351756288 | 61276160
+blk.32.ffn_gate.weight | Q5_K | [5120, 17408] | 10413032448 | 61276160
+blk.32.ffn_up.weight | Q5_K | [5120, 17408] | 10474308608 | 61276160
+blk.32.post_attention_norm.weight | F32 | [5120] | 10535584768 | 20480
+blk.32.ssm_a | F32 | [48] | 10535605248 | 192
+blk.32.ssm_alpha.weight | Q8_0 | [5120, 48] | 10535605440 | 261120
+blk.32.ssm_beta.weight | Q8_0 | [5120, 48] | 10535866560 | 261120
+blk.32.ssm_conv1d.weight | F32 | [4, 10240] | 10536127680 | 163840
+blk.32.ssm_dt.bias | F32 | [48] | 10536291520 | 192
+blk.32.ssm_norm.weight | F32 | [128] | 10536291712 | 512
+blk.32.ssm_out.weight | Q5_K | [6144, 5120] | 10536292224 | 21626880
+blk.33.attn_gate.weight | Q5_K | [5120, 6144] | 10557919104 | 21626880
+blk.33.attn_norm.weight | F32 | [5120] | 10579545984 | 20480
+blk.33.attn_qkv.weight | Q5_K | [5120, 10240] | 10579566464 | 36044800
+blk.33.ffn_down.weight | Q5_K | [17408, 5120] | 10615611264 | 61276160
+blk.33.ffn_gate.weight | Q6_K | [5120, 17408] | 10676887424 | 73113600
+blk.33.ffn_up.weight | Q5_K | [5120, 17408] | 10750001024 | 61276160
+blk.33.post_attention_norm.weight | F32 | [5120] | 10811277184 | 20480
+blk.33.ssm_a | F32 | [48] | 10811297664 | 192
+blk.33.ssm_alpha.weight | Q8_0 | [5120, 48] | 10811297856 | 261120
+blk.33.ssm_beta.weight | Q8_0 | [5120, 48] | 10811558976 | 261120
+blk.33.ssm_conv1d.weight | F32 | [4, 10240] | 10811820096 | 163840
+blk.33.ssm_dt.bias | F32 | [48] | 10811983936 | 192
+blk.33.ssm_norm.weight | F32 | [128] | 10811984128 | 512
+blk.33.ssm_out.weight | Q6_K | [6144, 5120] | 10811984640 | 25804800
+blk.34.attn_gate.weight | Q5_K | [5120, 6144] | 10837789440 | 21626880
+blk.34.attn_norm.weight | F32 | [5120] | 10859416320 | 20480
+blk.34.attn_qkv.weight | Q5_K | [5120, 10240] | 10859436800 | 36044800
+blk.34.ffn_down.weight | Q5_K | [17408, 5120] | 10895481600 | 61276160
+blk.34.ffn_gate.weight | Q5_K | [5120, 17408] | 10956757760 | 61276160
+blk.34.ffn_up.weight | Q5_K | [5120, 17408] | 11018033920 | 61276160
+blk.34.post_attention_norm.weight | F32 | [5120] | 11079310080 | 20480
+blk.34.ssm_a | F32 | [48] | 11079330560 | 192
+blk.34.ssm_alpha.weight | Q8_0 | [5120, 48] | 11079330752 | 261120
+blk.34.ssm_beta.weight | Q8_0 | [5120, 48] | 11079591872 | 261120
+blk.34.ssm_conv1d.weight | F32 | [4, 10240] | 11079852992 | 163840
+blk.34.ssm_dt.bias | F32 | [48] | 11080016832 | 192
+blk.34.ssm_norm.weight | F32 | [128] | 11080017024 | 512
+blk.34.ssm_out.weight | Q5_K | [6144, 5120] | 11080017536 | 21626880
+blk.35.attn_k.weight | Q8_0 | [5120, 1024] | 11101644416 | 5570560
+blk.35.attn_k_norm.weight | F32 | [256] | 11107214976 | 1024
+blk.35.attn_norm.weight | F32 | [5120] | 11107216000 | 20480
+blk.35.attn_output.weight | Q6_K | [6144, 5120] | 11107236480 | 25804800
+blk.35.attn_q.weight | Q5_K | [5120, 12288] | 11133041280 | 43253760
+blk.35.attn_q_norm.weight | F32 | [256] | 11176295040 | 1024
+blk.35.attn_v.weight | Q8_0 | [5120, 1024] | 11176296064 | 5570560
+blk.35.ffn_down.weight | Q5_K | [17408, 5120] | 11181866624 | 61276160
+blk.35.ffn_gate.weight | Q5_K | [5120, 17408] | 11243142784 | 61276160
+blk.35.ffn_up.weight | Q5_K | [5120, 17408] | 11304418944 | 61276160
+blk.35.post_attention_norm.weight | F32 | [5120] | 11365695104 | 20480
+blk.36.attn_gate.weight | Q5_K | [5120, 6144] | 11365715584 | 21626880
+blk.36.attn_norm.weight | F32 | [5120] | 11387342464 | 20480
+blk.36.attn_qkv.weight | Q5_K | [5120, 10240] | 11387362944 | 36044800
+blk.36.ffn_down.weight | Q6_K | [17408, 5120] | 11423407744 | 73113600
+blk.36.ffn_gate.weight | Q5_K | [5120, 17408] | 11496521344 | 61276160
+blk.36.ffn_up.weight | Q5_K | [5120, 17408] | 11557797504 | 61276160
+blk.36.post_attention_norm.weight | F32 | [5120] | 11619073664 | 20480
+blk.36.ssm_a | F32 | [48] | 11619094144 | 192
+blk.36.ssm_alpha.weight | Q8_0 | [5120, 48] | 11619094336 | 261120
+blk.36.ssm_beta.weight | Q8_0 | [5120, 48] | 11619355456 | 261120
+blk.36.ssm_conv1d.weight | F32 | [4, 10240] | 11619616576 | 163840
+blk.36.ssm_dt.bias | F32 | [48] | 11619780416 | 192
+blk.36.ssm_norm.weight | F32 | [128] | 11619780608 | 512
+blk.36.ssm_out.weight | Q6_K | [6144, 5120] | 11619781120 | 25804800
+blk.37.attn_gate.weight | Q5_K | [5120, 6144] | 11645585920 | 21626880
+blk.37.attn_norm.weight | F32 | [5120] | 11667212800 | 20480
+blk.37.attn_qkv.weight | Q5_K | [5120, 10240] | 11667233280 | 36044800
+blk.37.ffn_down.weight | Q5_K | [17408, 5120] | 11703278080 | 61276160
+blk.37.ffn_gate.weight | Q5_K | [5120, 17408] | 11764554240 | 61276160
+blk.37.ffn_up.weight | Q5_K | [5120, 17408] | 11825830400 | 61276160
+blk.37.post_attention_norm.weight | F32 | [5120] | 11887106560 | 20480
+blk.37.ssm_a | F32 | [48] | 11887127040 | 192
+blk.37.ssm_alpha.weight | Q8_0 | [5120, 48] | 11887127232 | 261120
+blk.37.ssm_beta.weight | Q8_0 | [5120, 48] | 11887388352 | 261120
+blk.37.ssm_conv1d.weight | F32 | [4, 10240] | 11887649472 | 163840
+blk.37.ssm_dt.bias | F32 | [48] | 11887813312 | 192
+blk.37.ssm_norm.weight | F32 | [128] | 11887813504 | 512
+blk.37.ssm_out.weight | Q6_K | [6144, 5120] | 11887814016 | 25804800
+blk.38.attn_gate.weight | Q5_K | [5120, 6144] | 11913618816 | 21626880
+blk.38.attn_norm.weight | F32 | [5120] | 11935245696 | 20480
+blk.38.attn_qkv.weight | Q5_K | [5120, 10240] | 11935266176 | 36044800
+blk.38.ffn_down.weight | Q5_K | [17408, 5120] | 11971310976 | 61276160
+blk.38.ffn_gate.weight | Q5_K | [5120, 17408] | 12032587136 | 61276160
+blk.38.ffn_up.weight | Q5_K | [5120, 17408] | 12093863296 | 61276160
+blk.38.post_attention_norm.weight | F32 | [5120] | 12155139456 | 20480
+blk.38.ssm_a | F32 | [48] | 12155159936 | 192
+blk.38.ssm_alpha.weight | Q8_0 | [5120, 48] | 12155160128 | 261120
+blk.38.ssm_beta.weight | Q8_0 | [5120, 48] | 12155421248 | 261120
+blk.38.ssm_conv1d.weight | F32 | [4, 10240] | 12155682368 | 163840
+blk.38.ssm_dt.bias | F32 | [48] | 12155846208 | 192
+blk.38.ssm_norm.weight | F32 | [128] | 12155846400 | 512
+blk.38.ssm_out.weight | Q5_K | [6144, 5120] | 12155846912 | 21626880
+blk.39.attn_k.weight | Q6_K | [5120, 1024] | 12177473792 | 4300800
+blk.39.attn_k_norm.weight | F32 | [256] | 12181774592 | 1024
+blk.39.attn_norm.weight | F32 | [5120] | 12181775616 | 20480
+blk.39.attn_output.weight | Q6_K | [6144, 5120] | 12181796096 | 25804800
+blk.39.attn_q.weight | Q5_K | [5120, 12288] | 12207600896 | 43253760
+blk.39.attn_q_norm.weight | F32 | [256] | 12250854656 | 1024
+blk.39.attn_v.weight | Q6_K | [5120, 1024] | 12250855680 | 4300800
+blk.39.ffn_down.weight | Q5_K | [17408, 5120] | 12255156480 | 61276160
+blk.39.ffn_gate.weight | Q5_K | [5120, 17408] | 12316432640 | 61276160
+blk.39.ffn_up.weight | Q5_K | [5120, 17408] | 12377708800 | 61276160
+blk.39.post_attention_norm.weight | F32 | [5120] | 12438984960 | 20480
+blk.40.attn_gate.weight | Q5_K | [5120, 6144] | 12439005440 | 21626880
+blk.40.attn_norm.weight | F32 | [5120] | 12460632320 | 20480
+blk.40.attn_qkv.weight | Q5_K | [5120, 10240] | 12460652800 | 36044800
+blk.40.ffn_down.weight | Q6_K | [17408, 5120] | 12496697600 | 73113600
+blk.40.ffn_gate.weight | Q5_K | [5120, 17408] | 12569811200 | 61276160
+blk.40.ffn_up.weight | Q6_K | [5120, 17408] | 12631087360 | 73113600
+blk.40.post_attention_norm.weight | F32 | [5120] | 12704200960 | 20480
+blk.40.ssm_a | F32 | [48] | 12704221440 | 192
+blk.40.ssm_alpha.weight | Q8_0 | [5120, 48] | 12704221632 | 261120
+blk.40.ssm_beta.weight | Q8_0 | [5120, 48] | 12704482752 | 261120
+blk.40.ssm_conv1d.weight | F32 | [4, 10240] | 12704743872 | 163840
+blk.40.ssm_dt.bias | F32 | [48] | 12704907712 | 192
+blk.40.ssm_norm.weight | F32 | [128] | 12704907904 | 512
+blk.40.ssm_out.weight | Q6_K | [6144, 5120] | 12704908416 | 25804800
+blk.41.attn_gate.weight | Q5_K | [5120, 6144] | 12730713216 | 21626880
+blk.41.attn_norm.weight | F32 | [5120] | 12752340096 | 20480
+blk.41.attn_qkv.weight | Q5_K | [5120, 10240] | 12752360576 | 36044800
+blk.41.ffn_down.weight | Q6_K | [17408, 5120] | 12788405376 | 73113600
+blk.41.ffn_gate.weight | Q5_K | [5120, 17408] | 12861518976 | 61276160
+blk.41.ffn_up.weight | Q5_K | [5120, 17408] | 12922795136 | 61276160
+blk.41.post_attention_norm.weight | F32 | [5120] | 12984071296 | 20480
+blk.41.ssm_a | F32 | [48] | 12984091776 | 192
+blk.41.ssm_alpha.weight | Q8_0 | [5120, 48] | 12984091968 | 261120
+blk.41.ssm_beta.weight | Q8_0 | [5120, 48] | 12984353088 | 261120
+blk.41.ssm_conv1d.weight | F32 | [4, 10240] | 12984614208 | 163840
+blk.41.ssm_dt.bias | F32 | [48] | 12984778048 | 192
+blk.41.ssm_norm.weight | F32 | [128] | 12984778240 | 512
+blk.41.ssm_out.weight | Q6_K | [6144, 5120] | 12984778752 | 25804800
+blk.42.attn_gate.weight | Q5_K | [5120, 6144] | 13010583552 | 21626880
+blk.42.attn_norm.weight | F32 | [5120] | 13032210432 | 20480
+blk.42.attn_qkv.weight | Q5_K | [5120, 10240] | 13032230912 | 36044800
+blk.42.ffn_down.weight | Q6_K | [17408, 5120] | 13068275712 | 73113600
+blk.42.ffn_gate.weight | Q5_K | [5120, 17408] | 13141389312 | 61276160
+blk.42.ffn_up.weight | Q5_K | [5120, 17408] | 13202665472 | 61276160
+blk.42.post_attention_norm.weight | F32 | [5120] | 13263941632 | 20480
+blk.42.ssm_a | F32 | [48] | 13263962112 | 192
+blk.42.ssm_alpha.weight | Q8_0 | [5120, 48] | 13263962304 | 261120
+blk.42.ssm_beta.weight | Q8_0 | [5120, 48] | 13264223424 | 261120
+blk.42.ssm_conv1d.weight | F32 | [4, 10240] | 13264484544 | 163840
+blk.42.ssm_dt.bias | F32 | [48] | 13264648384 | 192
+blk.42.ssm_norm.weight | F32 | [128] | 13264648576 | 512
+blk.42.ssm_out.weight | Q5_K | [6144, 5120] | 13264649088 | 21626880
+blk.43.attn_k.weight | Q6_K | [5120, 1024] | 13286275968 | 4300800
+blk.43.attn_k_norm.weight | F32 | [256] | 13290576768 | 1024
+blk.43.attn_norm.weight | F32 | [5120] | 13290577792 | 20480
+blk.43.attn_output.weight | Q6_K | [6144, 5120] | 13290598272 | 25804800
+blk.43.attn_q.weight | Q5_K | [5120, 12288] | 13316403072 | 43253760
+blk.43.attn_q_norm.weight | F32 | [256] | 13359656832 | 1024
+blk.43.attn_v.weight | Q8_0 | [5120, 1024] | 13359657856 | 5570560
+blk.43.ffn_down.weight | Q5_K | [17408, 5120] | 13365228416 | 61276160
+blk.43.ffn_gate.weight | Q5_K | [5120, 17408] | 13426504576 | 61276160
+blk.43.ffn_up.weight | Q6_K | [5120, 17408] | 13487780736 | 73113600
+blk.43.post_attention_norm.weight | F32 | [5120] | 13560894336 | 20480
+blk.44.attn_gate.weight | Q6_K | [5120, 6144] | 13560914816 | 25804800
+blk.44.attn_norm.weight | F32 | [5120] | 13586719616 | 20480
+blk.44.attn_qkv.weight | Q5_K | [5120, 10240] | 13586740096 | 36044800
+blk.44.ffn_down.weight | Q5_K | [17408, 5120] | 13622784896 | 61276160
+blk.44.ffn_gate.weight | Q5_K | [5120, 17408] | 13684061056 | 61276160
+blk.44.ffn_up.weight | Q5_K | [5120, 17408] | 13745337216 | 61276160
+blk.44.post_attention_norm.weight | F32 | [5120] | 13806613376 | 20480
+blk.44.ssm_a | F32 | [48] | 13806633856 | 192
+blk.44.ssm_alpha.weight | Q8_0 | [5120, 48] | 13806634048 | 261120
+blk.44.ssm_beta.weight | Q8_0 | [5120, 48] | 13806895168 | 261120
+blk.44.ssm_conv1d.weight | F32 | [4, 10240] | 13807156288 | 163840
+blk.44.ssm_dt.bias | F32 | [48] | 13807320128 | 192
+blk.44.ssm_norm.weight | F32 | [128] | 13807320320 | 512
+blk.44.ssm_out.weight | Q6_K | [6144, 5120] | 13807320832 | 25804800
+blk.45.attn_gate.weight | IQ4_XS | [5120, 6144] | 13833125632 | 16711680
+blk.45.attn_norm.weight | F32 | [5120] | 13849837312 | 20480
+blk.45.attn_qkv.weight | Q5_K | [5120, 10240] | 13849857792 | 36044800
+blk.45.ffn_down.weight | Q5_K | [17408, 5120] | 13885902592 | 61276160
+blk.45.ffn_gate.weight | Q5_K | [5120, 17408] | 13947178752 | 61276160
+blk.45.ffn_up.weight | Q5_K | [5120, 17408] | 14008454912 | 61276160
+blk.45.post_attention_norm.weight | F32 | [5120] | 14069731072 | 20480
+blk.45.ssm_a | F32 | [48] | 14069751552 | 192
+blk.45.ssm_alpha.weight | Q8_0 | [5120, 48] | 14069751744 | 261120
+blk.45.ssm_beta.weight | Q8_0 | [5120, 48] | 14070012864 | 261120
+blk.45.ssm_conv1d.weight | F32 | [4, 10240] | 14070273984 | 163840
+blk.45.ssm_dt.bias | F32 | [48] | 14070437824 | 192
+blk.45.ssm_norm.weight | F32 | [128] | 14070438016 | 512
+blk.45.ssm_out.weight | Q5_K | [6144, 5120] | 14070438528 | 21626880
+blk.46.attn_gate.weight | Q5_K | [5120, 6144] | 14092065408 | 21626880
+blk.46.attn_norm.weight | F32 | [5120] | 14113692288 | 20480
+blk.46.attn_qkv.weight | Q5_K | [5120, 10240] | 14113712768 | 36044800
+blk.46.ffn_down.weight | Q5_K | [17408, 5120] | 14149757568 | 61276160
+blk.46.ffn_gate.weight | Q5_K | [5120, 17408] | 14211033728 | 61276160
+blk.46.ffn_up.weight | Q5_K | [5120, 17408] | 14272309888 | 61276160
+blk.46.post_attention_norm.weight | F32 | [5120] | 14333586048 | 20480
+blk.46.ssm_a | F32 | [48] | 14333606528 | 192
+blk.46.ssm_alpha.weight | Q8_0 | [5120, 48] | 14333606720 | 261120
+blk.46.ssm_beta.weight | Q8_0 | [5120, 48] | 14333867840 | 261120
+blk.46.ssm_conv1d.weight | F32 | [4, 10240] | 14334128960 | 163840
+blk.46.ssm_dt.bias | F32 | [48] | 14334292800 | 192
+blk.46.ssm_norm.weight | F32 | [128] | 14334292992 | 512
+blk.46.ssm_out.weight | Q6_K | [6144, 5120] | 14334293504 | 25804800
+blk.47.attn_k.weight | Q8_0 | [5120, 1024] | 14360098304 | 5570560
+blk.47.attn_k_norm.weight | F32 | [256] | 14365668864 | 1024
+blk.47.attn_norm.weight | F32 | [5120] | 14365669888 | 20480
+blk.47.attn_output.weight | Q6_K | [6144, 5120] | 14365690368 | 25804800
+blk.47.attn_q.weight | Q5_K | [5120, 12288] | 14391495168 | 43253760
+blk.47.attn_q_norm.weight | F32 | [256] | 14434748928 | 1024
+blk.47.attn_v.weight | Q8_0 | [5120, 1024] | 14434749952 | 5570560
+blk.47.ffn_down.weight | Q5_K | [17408, 5120] | 14440320512 | 61276160
+blk.47.ffn_gate.weight | Q5_K | [5120, 17408] | 14501596672 | 61276160
+blk.47.ffn_up.weight | Q5_K | [5120, 17408] | 14562872832 | 61276160
+blk.47.post_attention_norm.weight | F32 | [5120] | 14624148992 | 20480
+blk.48.attn_gate.weight | Q5_K | [5120, 6144] | 14624169472 | 21626880
+blk.48.attn_norm.weight | F32 | [5120] | 14645796352 | 20480
+blk.48.attn_qkv.weight | Q6_K | [5120, 10240] | 14645816832 | 43008000
+blk.48.ffn_down.weight | Q5_K | [17408, 5120] | 14688824832 | 61276160
+blk.48.ffn_gate.weight | Q5_K | [5120, 17408] | 14750100992 | 61276160
+blk.48.ffn_up.weight | Q5_K | [5120, 17408] | 14811377152 | 61276160
+blk.48.post_attention_norm.weight | F32 | [5120] | 14872653312 | 20480
+blk.48.ssm_a | F32 | [48] | 14872673792 | 192
+blk.48.ssm_alpha.weight | Q8_0 | [5120, 48] | 14872673984 | 261120
+blk.48.ssm_beta.weight | Q8_0 | [5120, 48] | 14872935104 | 261120
+blk.48.ssm_conv1d.weight | F32 | [4, 10240] | 14873196224 | 163840
+blk.48.ssm_dt.bias | F32 | [48] | 14873360064 | 192
+blk.48.ssm_norm.weight | F32 | [128] | 14873360256 | 512
+blk.48.ssm_out.weight | Q5_K | [6144, 5120] | 14873360768 | 21626880
+blk.49.attn_gate.weight | IQ4_XS | [5120, 6144] | 14894987648 | 16711680
+blk.49.attn_norm.weight | F32 | [5120] | 14911699328 | 20480
+blk.49.attn_qkv.weight | Q6_K | [5120, 10240] | 14911719808 | 43008000
+blk.49.ffn_down.weight | Q5_K | [17408, 5120] | 14954727808 | 61276160
+blk.49.ffn_gate.weight | Q5_K | [5120, 17408] | 15016003968 | 61276160
+blk.49.ffn_up.weight | Q5_K | [5120, 17408] | 15077280128 | 61276160
+blk.49.post_attention_norm.weight | F32 | [5120] | 15138556288 | 20480
+blk.49.ssm_a | F32 | [48] | 15138576768 | 192
+blk.49.ssm_alpha.weight | Q8_0 | [5120, 48] | 15138576960 | 261120
+blk.49.ssm_beta.weight | Q8_0 | [5120, 48] | 15138838080 | 261120
+blk.49.ssm_conv1d.weight | F32 | [4, 10240] | 15139099200 | 163840
+blk.49.ssm_dt.bias | F32 | [48] | 15139263040 | 192
+blk.49.ssm_norm.weight | F32 | [128] | 15139263232 | 512
+blk.49.ssm_out.weight | Q6_K | [6144, 5120] | 15139263744 | 25804800
+blk.50.attn_gate.weight | Q5_K | [5120, 6144] | 15165068544 | 21626880
+blk.50.attn_norm.weight | F32 | [5120] | 15186695424 | 20480
+blk.50.attn_qkv.weight | Q5_K | [5120, 10240] | 15186715904 | 36044800
+blk.50.ffn_down.weight | Q6_K | [17408, 5120] | 15222760704 | 73113600
+blk.50.ffn_gate.weight | Q5_K | [5120, 17408] | 15295874304 | 61276160
+blk.50.ffn_up.weight | Q5_K | [5120, 17408] | 15357150464 | 61276160
+blk.50.post_attention_norm.weight | F32 | [5120] | 15418426624 | 20480
+blk.50.ssm_a | F32 | [48] | 15418447104 | 192
+blk.50.ssm_alpha.weight | Q8_0 | [5120, 48] | 15418447296 | 261120
+blk.50.ssm_beta.weight | Q8_0 | [5120, 48] | 15418708416 | 261120
+blk.50.ssm_conv1d.weight | F32 | [4, 10240] | 15418969536 | 163840
+blk.50.ssm_dt.bias | F32 | [48] | 15419133376 | 192
+blk.50.ssm_norm.weight | F32 | [128] | 15419133568 | 512
+blk.50.ssm_out.weight | Q6_K | [6144, 5120] | 15419134080 | 25804800
+blk.51.attn_k.weight | Q6_K | [5120, 1024] | 15444938880 | 4300800
+blk.51.attn_k_norm.weight | F32 | [256] | 15449239680 | 1024
+blk.51.attn_norm.weight | F32 | [5120] | 15449240704 | 20480
+blk.51.attn_output.weight | Q6_K | [6144, 5120] | 15449261184 | 25804800
+blk.51.attn_q.weight | Q5_K | [5120, 12288] | 15475065984 | 43253760
+blk.51.attn_q_norm.weight | F32 | [256] | 15518319744 | 1024
+blk.51.attn_v.weight | Q8_0 | [5120, 1024] | 15518320768 | 5570560
+blk.51.ffn_down.weight | Q6_K | [17408, 5120] | 15523891328 | 73113600
+blk.51.ffn_gate.weight | Q5_K | [5120, 17408] | 15597004928 | 61276160
+blk.51.ffn_up.weight | Q6_K | [5120, 17408] | 15658281088 | 73113600
+blk.51.post_attention_norm.weight | F32 | [5120] | 15731394688 | 20480
+blk.52.attn_gate.weight | Q6_K | [5120, 6144] | 15731415168 | 25804800
+blk.52.attn_norm.weight | F32 | [5120] | 15757219968 | 20480
+blk.52.attn_qkv.weight | Q6_K | [5120, 10240] | 15757240448 | 43008000
+blk.52.ffn_down.weight | Q6_K | [17408, 5120] | 15800248448 | 73113600
+blk.52.ffn_gate.weight | Q5_K | [5120, 17408] | 15873362048 | 61276160
+blk.52.ffn_up.weight | Q6_K | [5120, 17408] | 15934638208 | 73113600
+blk.52.post_attention_norm.weight | F32 | [5120] | 16007751808 | 20480
+blk.52.ssm_a | F32 | [48] | 16007772288 | 192
+blk.52.ssm_alpha.weight | Q8_0 | [5120, 48] | 16007772480 | 261120
+blk.52.ssm_beta.weight | Q8_0 | [5120, 48] | 16008033600 | 261120
+blk.52.ssm_conv1d.weight | F32 | [4, 10240] | 16008294720 | 163840
+blk.52.ssm_dt.bias | F32 | [48] | 16008458560 | 192
+blk.52.ssm_norm.weight | F32 | [128] | 16008458752 | 512
+blk.52.ssm_out.weight | Q6_K | [6144, 5120] | 16008459264 | 25804800
+blk.53.attn_gate.weight | Q6_K | [5120, 6144] | 16034264064 | 25804800
+blk.53.attn_norm.weight | F32 | [5120] | 16060068864 | 20480
+blk.53.attn_qkv.weight | Q5_K | [5120, 10240] | 16060089344 | 36044800
+blk.53.ffn_down.weight | Q6_K | [17408, 5120] | 16096134144 | 73113600
+blk.53.ffn_gate.weight | Q5_K | [5120, 17408] | 16169247744 | 61276160
+blk.53.ffn_up.weight | Q5_K | [5120, 17408] | 16230523904 | 61276160
+blk.53.post_attention_norm.weight | F32 | [5120] | 16291800064 | 20480
+blk.53.ssm_a | F32 | [48] | 16291820544 | 192
+blk.53.ssm_alpha.weight | Q8_0 | [5120, 48] | 16291820736 | 261120
+blk.53.ssm_beta.weight | Q8_0 | [5120, 48] | 16292081856 | 261120
+blk.53.ssm_conv1d.weight | F32 | [4, 10240] | 16292342976 | 163840
+blk.53.ssm_dt.bias | F32 | [48] | 16292506816 | 192
+blk.53.ssm_norm.weight | F32 | [128] | 16292507008 | 512
+blk.53.ssm_out.weight | Q6_K | [6144, 5120] | 16292507520 | 25804800
+blk.54.attn_gate.weight | Q5_K | [5120, 6144] | 16318312320 | 21626880
+blk.54.attn_norm.weight | F32 | [5120] | 16339939200 | 20480
+blk.54.attn_qkv.weight | Q5_K | [5120, 10240] | 16339959680 | 36044800
+blk.54.ffn_down.weight | Q6_K | [17408, 5120] | 16376004480 | 73113600
+blk.54.ffn_gate.weight | Q6_K | [5120, 17408] | 16449118080 | 73113600
+blk.54.ffn_up.weight | Q6_K | [5120, 17408] | 16522231680 | 73113600
+blk.54.post_attention_norm.weight | F32 | [5120] | 16595345280 | 20480
+blk.54.ssm_a | F32 | [48] | 16595365760 | 192
+blk.54.ssm_alpha.weight | Q8_0 | [5120, 48] | 16595365952 | 261120
+blk.54.ssm_beta.weight | Q8_0 | [5120, 48] | 16595627072 | 261120
+blk.54.ssm_conv1d.weight | F32 | [4, 10240] | 16595888192 | 163840
+blk.54.ssm_dt.bias | F32 | [48] | 16596052032 | 192
+blk.54.ssm_norm.weight | F32 | [128] | 16596052224 | 512
+blk.54.ssm_out.weight | Q6_K | [6144, 5120] | 16596052736 | 25804800
+blk.55.attn_k.weight | Q6_K | [5120, 1024] | 16621857536 | 4300800
+blk.55.attn_k_norm.weight | F32 | [256] | 16626158336 | 1024
+blk.55.attn_norm.weight | F32 | [5120] | 16626159360 | 20480
+blk.55.attn_output.weight | Q6_K | [6144, 5120] | 16626179840 | 25804800
+blk.55.attn_q.weight | Q5_K | [5120, 12288] | 16651984640 | 43253760
+blk.55.attn_q_norm.weight | F32 | [256] | 16695238400 | 1024
+blk.55.attn_v.weight | Q8_0 | [5120, 1024] | 16695239424 | 5570560
+blk.55.ffn_down.weight | Q6_K | [17408, 5120] | 16700809984 | 73113600
+blk.55.ffn_gate.weight | Q6_K | [5120, 17408] | 16773923584 | 73113600
+blk.55.ffn_up.weight | Q6_K | [5120, 17408] | 16847037184 | 73113600
+blk.55.post_attention_norm.weight | F32 | [5120] | 16920150784 | 20480
+blk.56.attn_gate.weight | Q6_K | [5120, 6144] | 16920171264 | 25804800
+blk.56.attn_norm.weight | F32 | [5120] | 16945976064 | 20480
+blk.56.attn_qkv.weight | Q6_K | [5120, 10240] | 16945996544 | 43008000
+blk.56.ffn_down.weight | Q6_K | [17408, 5120] | 16989004544 | 73113600
+blk.56.ffn_gate.weight | Q6_K | [5120, 17408] | 17062118144 | 73113600
+blk.56.ffn_up.weight | Q6_K | [5120, 17408] | 17135231744 | 73113600
+blk.56.post_attention_norm.weight | F32 | [5120] | 17208345344 | 20480
+blk.56.ssm_a | F32 | [48] | 17208365824 | 192
+blk.56.ssm_alpha.weight | Q8_0 | [5120, 48] | 17208366016 | 261120
+blk.56.ssm_beta.weight | Q8_0 | [5120, 48] | 17208627136 | 261120
+blk.56.ssm_conv1d.weight | F32 | [4, 10240] | 17208888256 | 163840
+blk.56.ssm_dt.bias | F32 | [48] | 17209052096 | 192
+blk.56.ssm_norm.weight | F32 | [128] | 17209052288 | 512
+blk.56.ssm_out.weight | Q6_K | [6144, 5120] | 17209052800 | 25804800
+blk.57.attn_gate.weight | Q6_K | [5120, 6144] | 17234857600 | 25804800
+blk.57.attn_norm.weight | F32 | [5120] | 17260662400 | 20480
+blk.57.attn_qkv.weight | Q5_K | [5120, 10240] | 17260682880 | 36044800
+blk.57.ffn_down.weight | Q6_K | [17408, 5120] | 17296727680 | 73113600
+blk.57.ffn_gate.weight | Q6_K | [5120, 17408] | 17369841280 | 73113600
+blk.57.ffn_up.weight | Q6_K | [5120, 17408] | 17442954880 | 73113600
+blk.57.post_attention_norm.weight | F32 | [5120] | 17516068480 | 20480
+blk.57.ssm_a | F32 | [48] | 17516088960 | 192
+blk.57.ssm_alpha.weight | Q8_0 | [5120, 48] | 17516089152 | 261120
+blk.57.ssm_beta.weight | Q8_0 | [5120, 48] | 17516350272 | 261120
+blk.57.ssm_conv1d.weight | F32 | [4, 10240] | 17516611392 | 163840
+blk.57.ssm_dt.bias | F32 | [48] | 17516775232 | 192
+blk.57.ssm_norm.weight | F32 | [128] | 17516775424 | 512
+blk.57.ssm_out.weight | Q6_K | [6144, 5120] | 17516775936 | 25804800
+blk.58.attn_gate.weight | Q6_K | [5120, 6144] | 17542580736 | 25804800
+blk.58.attn_norm.weight | F32 | [5120] | 17568385536 | 20480
+blk.58.attn_qkv.weight | Q6_K | [5120, 10240] | 17568406016 | 43008000
+blk.58.ffn_down.weight | Q6_K | [17408, 5120] | 17611414016 | 73113600
+blk.58.ffn_gate.weight | Q6_K | [5120, 17408] | 17684527616 | 73113600
+blk.58.ffn_up.weight | Q6_K | [5120, 17408] | 17757641216 | 73113600
+blk.58.post_attention_norm.weight | F32 | [5120] | 17830754816 | 20480
+blk.58.ssm_a | F32 | [48] | 17830775296 | 192
+blk.58.ssm_alpha.weight | Q8_0 | [5120, 48] | 17830775488 | 261120
+blk.58.ssm_beta.weight | Q8_0 | [5120, 48] | 17831036608 | 261120
+blk.58.ssm_conv1d.weight | F32 | [4, 10240] | 17831297728 | 163840
+blk.58.ssm_dt.bias | F32 | [48] | 17831461568 | 192
+blk.58.ssm_norm.weight | F32 | [128] | 17831461760 | 512
+blk.58.ssm_out.weight | Q6_K | [6144, 5120] | 17831462272 | 25804800
+blk.59.attn_k.weight | Q8_0 | [5120, 1024] | 17857267072 | 5570560
+blk.59.attn_k_norm.weight | F32 | [256] | 17862837632 | 1024
+blk.59.attn_norm.weight | F32 | [5120] | 17862838656 | 20480
+blk.59.attn_output.weight | Q6_K | [6144, 5120] | 17862859136 | 25804800
+blk.59.attn_q.weight | Q5_K | [5120, 12288] | 17888663936 | 43253760
+blk.59.attn_q_norm.weight | F32 | [256] | 17931917696 | 1024
+blk.59.attn_v.weight | Q8_0 | [5120, 1024] | 17931918720 | 5570560
+blk.59.ffn_down.weight | Q6_K | [17408, 5120] | 17937489280 | 73113600
+blk.59.ffn_gate.weight | Q6_K | [5120, 17408] | 18010602880 | 73113600
+blk.59.ffn_up.weight | Q6_K | [5120, 17408] | 18083716480 | 73113600
+blk.59.post_attention_norm.weight | F32 | [5120] | 18156830080 | 20480
+blk.60.attn_gate.weight | Q6_K | [5120, 6144] | 18156850560 | 25804800
+blk.60.attn_norm.weight | F32 | [5120] | 18182655360 | 20480
+blk.60.attn_qkv.weight | Q6_K | [5120, 10240] | 18182675840 | 43008000
+blk.60.ffn_down.weight | Q6_K | [17408, 5120] | 18225683840 | 73113600
+blk.60.ffn_gate.weight | Q6_K | [5120, 17408] | 18298797440 | 73113600
+blk.60.ffn_up.weight | Q6_K | [5120, 17408] | 18371911040 | 73113600
+blk.60.post_attention_norm.weight | F32 | [5120] | 18445024640 | 20480
+blk.60.ssm_a | F32 | [48] | 18445045120 | 192
+blk.60.ssm_alpha.weight | Q8_0 | [5120, 48] | 18445045312 | 261120
+blk.60.ssm_beta.weight | Q8_0 | [5120, 48] | 18445306432 | 261120
+blk.60.ssm_conv1d.weight | F32 | [4, 10240] | 18445567552 | 163840
+blk.60.ssm_dt.bias | F32 | [48] | 18445731392 | 192
+blk.60.ssm_norm.weight | F32 | [128] | 18445731584 | 512
+blk.60.ssm_out.weight | Q6_K | [6144, 5120] | 18445732096 | 25804800
+blk.61.attn_gate.weight | Q6_K | [5120, 6144] | 18471536896 | 25804800
+blk.61.attn_norm.weight | F32 | [5120] | 18497341696 | 20480
+blk.61.attn_qkv.weight | Q5_K | [5120, 10240] | 18497362176 | 36044800
+blk.61.ffn_down.weight | Q6_K | [17408, 5120] | 18533406976 | 73113600
+blk.61.ffn_gate.weight | Q6_K | [5120, 17408] | 18606520576 | 73113600
+blk.61.ffn_up.weight | Q6_K | [5120, 17408] | 18679634176 | 73113600
+blk.61.post_attention_norm.weight | F32 | [5120] | 18752747776 | 20480
+blk.61.ssm_a | F32 | [48] | 18752768256 | 192
+blk.61.ssm_alpha.weight | Q8_0 | [5120, 48] | 18752768448 | 261120
+blk.61.ssm_beta.weight | Q8_0 | [5120, 48] | 18753029568 | 261120
+blk.61.ssm_conv1d.weight | F32 | [4, 10240] | 18753290688 | 163840
+blk.61.ssm_dt.bias | F32 | [48] | 18753454528 | 192
+blk.61.ssm_norm.weight | F32 | [128] | 18753454720 | 512
+blk.61.ssm_out.weight | Q6_K | [6144, 5120] | 18753455232 | 25804800
+blk.62.attn_gate.weight | Q6_K | [5120, 6144] | 18779260032 | 25804800
+blk.62.attn_norm.weight | F32 | [5120] | 18805064832 | 20480
+blk.62.attn_qkv.weight | Q6_K | [5120, 10240] | 18805085312 | 43008000
+blk.62.ffn_down.weight | Q6_K | [17408, 5120] | 18848093312 | 73113600
+blk.62.ffn_gate.weight | Q6_K | [5120, 17408] | 18921206912 | 73113600
+blk.62.ffn_up.weight | Q6_K | [5120, 17408] | 18994320512 | 73113600
+blk.62.post_attention_norm.weight | F32 | [5120] | 19067434112 | 20480
+blk.62.ssm_a | F32 | [48] | 19067454592 | 192
+blk.62.ssm_alpha.weight | Q8_0 | [5120, 48] | 19067454784 | 261120
+blk.62.ssm_beta.weight | Q8_0 | [5120, 48] | 19067715904 | 261120
+blk.62.ssm_conv1d.weight | F32 | [4, 10240] | 19067977024 | 163840
+blk.62.ssm_dt.bias | F32 | [48] | 19068140864 | 192
+blk.62.ssm_norm.weight | F32 | [128] | 19068141056 | 512
+blk.62.ssm_out.weight | Q6_K | [6144, 5120] | 19068141568 | 25804800
+blk.63.attn_k.weight | Q8_0 | [5120, 1024] | 19093946368 | 5570560
+blk.63.attn_k_norm.weight | F32 | [256] | 19099516928 | 1024
+blk.63.attn_norm.weight | F32 | [5120] | 19099517952 | 20480
+blk.63.attn_output.weight | Q8_0 | [6144, 5120] | 19099538432 | 33423360
+blk.63.attn_q.weight | Q6_K | [5120, 12288] | 19132961792 | 51609600
+blk.63.attn_q_norm.weight | F32 | [256] | 19184571392 | 1024
+blk.63.attn_v.weight | Q8_0 | [5120, 1024] | 19184572416 | 5570560
+blk.63.ffn_down.weight | Q6_K | [17408, 5120] | 19190142976 | 73113600
+blk.63.ffn_gate.weight | Q6_K | [5120, 17408] | 19263256576 | 73113600
+blk.63.ffn_up.weight | Q6_K | [5120, 17408] | 19336370176 | 73113600
+blk.63.post_attention_norm.weight | F32 | [5120] | 19409483776 | 20480
+blk.64.attn_k.weight | Q8_0 | [5120, 1024] | 19409504256 | 5570560
+blk.64.attn_k_norm.weight | F32 | [256] | 19415074816 | 1024
+blk.64.attn_norm.weight | F32 | [5120] | 19415075840 | 20480
+blk.64.attn_output.weight | Q6_K | [6144, 5120] | 19415096320 | 25804800
+blk.64.attn_q.weight | Q6_K | [5120, 12288] | 19440901120 | 51609600
+blk.64.attn_q_norm.weight | F32 | [256] | 19492510720 | 1024
+blk.64.attn_v.weight | Q8_0 | [5120, 1024] | 19492511744 | 5570560
+blk.64.ffn_down.weight | Q6_K | [17408, 5120] | 19498082304 | 73113600
+blk.64.ffn_gate.weight | Q6_K | [5120, 17408] | 19571195904 | 73113600
+blk.64.ffn_up.weight | Q6_K | [5120, 17408] | 19644309504 | 73113600
+blk.64.nextn.eh_proj.weight | Q6_K | [10240, 5120] | 19717423104 | 43008000
+blk.64.nextn.enorm.weight | F32 | [5120] | 19760431104 | 20480
+blk.64.nextn.hnorm.weight | F32 | [5120] | 19760451584 | 20480
+blk.64.nextn.shared_head_norm.weight | F32 | [5120] | 19760472064 | 20480
+blk.64.post_attention_norm.weight | F32 | [5120] | 19760492544 | 20480
+## Summary by type: type count bytes GiB
+Q6_K 160 8539238400 7.953
+F32 360 10686464 0.010
+Q4_K 12 1157529600 1.078
+Q5_K 189 8852602880 8.245
+IQ4_XS 19 807731200 0.752
+Q8_0 124 292454400 0.272
+IQ4_NL 2 100270080 0.093
+total tensor bytes 19760513024 (18.403 GiB); data_start+tensor_bytes=19771509664 vs file 19771509664
