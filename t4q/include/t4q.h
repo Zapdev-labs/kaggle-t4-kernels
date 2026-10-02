@@ -21,6 +21,8 @@ int  t4q_logits(t4q_ctx*, const int32_t* ids, int n, float* out);
 /* named intermediate from the last token step while dump mode is on; returns element count or -1 */
 int  t4q_dump(t4q_ctx*, const char* name, int layer, float* out, size_t cap);
 void t4q_set_dump(t4q_ctx*, int on);
+/* runtime options: "act_q8" (1 = llama.cpp-style q8_1 activations in quantized GEMVs; validation mode) */
+int  t4q_set_option(t4q_ctx*, const char* key, int value);
 int  t4q_dump_keys(t4q_ctx*, char* buf, int cap); /* newline separated "name-layer" keys */
 void t4q_stats(t4q_ctx*, char* json, int cap);   /* tok/s, load info, repack check */
 int  t4q_n_vocab(t4q_ctx*);

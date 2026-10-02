@@ -245,6 +245,87 @@ def summarize(kl, agree, gap):
             "top1_agree_excl_ties": float(agree[m].mean()) if m.any() else 1.0, "n_ties": int((~m).sum())}
 
 
+def run_dump(eng, ids):
+    n = len(ids)
+    eng.reset()
+    tdumps, logits1 = {}, None
+    for i in range(n):
+        want = i in (0, 1, n - 1)
+        eng.set_dump(want)
+        lg = eng.logits(ids[i:i + 1])
+        if want:
+            tdumps[i] = eng.dump_all()
+            if i == 1:
+                logits1 = lg[0].copy()
+    eng.set_dump(False)
+    return tdumps, logits1
+
+
+def run_v2(eng, man, a):
+    v2 = {}
+    all_b, all_t, floor = [], [], []
+    t = time.time()
+    nsteps = 0
+    for s in man["seqs"]:
+        ids = read_ids(os.path.join(a.work, s["ids"]))
+        n = len(ids)
+        T = min(s["tbt"], n - 1)
+        eng.reset()
+        mine = eng.logits(ids)
+        nsteps += n
+        ob = np.fromfile(os.path.join(a.oracle, s["name"] + ".batch.f32"), dtype=np.float32).reshape(n, V)
+        ot = np.fromfile(os.path.join(a.oracle, s["name"] + ".tbt.f32"), dtype=np.float32).reshape(T, V)
+        kb, ab, gb = kl_stats(ob, mine)
+        kt, at, gt = kl_stats(ot, mine[n - T:])
+        kf, af, gf = kl_stats(ot, ob[n - T:])
+        v2[s["name"]] = {"vs_batch": summarize(kb, ab, gb), "vs_tbt": summarize(kt, at, gt),
+                         "noise_floor_batch_vs_tbt": summarize(kf, af, gf)}
+        all_b.append((kb, ab, gb))
+        all_t.append((kt, at, gt))
+        floor.append((kf, af, gf))
+        log("V2", s["name"], json.dumps(v2[s["name"]]))
+    cat = lambda L: [np.concatenate([x[i] for x in L]) for i in range(3)]  # noqa: E731
+    v2["ALL_vs_batch"] = summarize(*cat(all_b))
+    v2["ALL_vs_tbt"] = summarize(*cat(all_t))
+    v2["ALL_floor"] = summarize(*cat(floor))
+    v2["t4q_ms_per_step"] = round(1e3 * (time.time() - t) / max(nsteps, 1), 2)
+    return v2
+
+
+def v2_ok(S):
+    return bool(S["top1_agree_excl_ties"] >= 0.99 and S["mean_kl"] <= 2e-3 and S["p99_kl"] <= 2e-2)
+
+
+def run_v3(eng, man, a, tok):
+    v3 = {}
+    ok = True
+    for s in man["gens"]:
+        ids = read_ids(os.path.join(a.work, s["ids"]))
+        eng.reset()
+        t = time.time()
+        eng.prefill(ids)
+        tp = time.time() - t
+        t = time.time()
+        gen = eng.generate(s["n"])
+        tg = time.time() - t
+        ref = np.fromfile(os.path.join(a.oracle, s["name"] + ".gen.i32"), dtype=np.int32)
+        gaps = np.loadtxt(os.path.join(a.oracle, s["name"] + ".gen.txt"))[:, 3]
+        m = min(len(gen), len(ref))
+        diff = np.nonzero(gen[:m] != ref[:m])[0]
+        first = int(diff[0]) if len(diff) else -1
+        gap = float(gaps[first]) if first >= 0 else None
+        passed = first < 0 or (gap is not None and gap < 0.05)
+        ok &= passed
+        v3[s["name"]] = {"n": int(len(gen)), "first_divergence": first, "oracle_gap_at_div": gap,
+                         "match_prefix": int(m if first < 0 else first), "pass": bool(passed),
+                         "prefill_tok_s": round(len(ids) / tp, 2), "decode_tok_s": round((len(gen) - 1) / tg, 2)}
+        if tok:
+            v3[s["name"]]["t4q_text"] = tok.decode(gen)
+            v3[s["name"]]["llama_text"] = tok.decode(ref)
+        log("V3", s["name"], json.dumps(v3[s["name"]])[:3000])
+    return v3, bool(ok)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
@@ -252,10 +333,10 @@ def main():
     ap.add_argument("--oracle", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--lib", default=os.path.join(HERE, "..", "build", "libt4q.so"))
-    ap.add_argument("--skip", default="")
+    ap.add_argument("--modes", default="q8,fp32")
     a = ap.parse_args()
     man = json.load(open(os.path.join(a.work, "manifest.json")))
-    skip = set(a.skip.split(","))
+    modes = [m for m in a.modes.split(",") if m]
 
     def save():
         with open(a.out, "w") as f:
@@ -271,132 +352,73 @@ def main():
     log("load", st)
     save()
     g = GGUF(a.model)
-
-    # ---- dump run (V0 + V1)
+    tok = None
     try:
-        d = man["dump"]
-        ids = read_ids(os.path.join(a.work, d["ids"]))
-        n = len(ids)
-        eng.reset()
-        tdumps = {}
-        logits1 = None
-        for i in range(n):
-            want = i in (0, 1, n - 1)
-            eng.set_dump(want)
-            lg = eng.logits(ids[i:i + 1])
-            if want:
-                tdumps[i] = eng.dump_all()
-                if i == 1:
-                    logits1 = lg[0].copy()
-        eng.set_dump(False)
-        if "V0" not in skip:
-            try:
-                r0 = v0(g, tdumps[0], tdumps[1], ids, logits1)
-                R["V0"] = r0
-                R["V0_pass"] = all(v.get("pass", False) for v in r0.values())
-                log("V0", json.dumps(r0, default=float))
-            except Exception:  # noqa: BLE001
-                R["V0_error"] = traceback.format_exc()[-3000:]
-                log(R["V0_error"])
-        save()
-        op = os.path.join(a.oracle, d["name"] + ".dump.bin")
-        if os.path.exists(op):
-            orc = read_oracle_dump(op)
-            r1, worst = v1(orc, tdumps, n)
-            R["V1"] = r1
-            R["V1_worst_ratio_by_key"] = worst
-            R["V1_pass"] = bool(worst) and max(worst.values()) <= 1.0
-            R["V1_n_compared"] = len(r1)
-            log("V1 worst/tol by key", json.dumps(worst))
-        else:
-            R["V1_error"] = "oracle dump missing"
-        save()
+        tok = Tokenizer()
     except Exception:  # noqa: BLE001
-        R["dump_error"] = traceback.format_exc()[-3000:]
-        log(R["dump_error"])
-        save()
+        pass
+    d = man["dump"]
+    dids = read_ids(os.path.join(a.work, d["ids"]))
+    op = os.path.join(a.oracle, d["name"] + ".dump.bin")
+    orc = read_oracle_dump(op) if os.path.exists(op) else None
 
-    # ---- V2 logits
-    try:
-        v2 = {}
-        all_b, all_t, floor = [], [], []
-        t = time.time()
-        nsteps = 0
-        for s in man["seqs"]:
-            ids = read_ids(os.path.join(a.work, s["ids"]))
-            n, T = len(ids), s["tbt"]
-            eng.reset()
-            mine = eng.logits(ids)
-            nsteps += n
-            ob = np.fromfile(os.path.join(a.oracle, s["name"] + ".batch.f32"), dtype=np.float32).reshape(n, V)
-            ot = np.fromfile(os.path.join(a.oracle, s["name"] + ".tbt.f32"), dtype=np.float32).reshape(T, V)
-            kb, ab, gb = kl_stats(ob, mine)
-            kt, at, gt = kl_stats(ot, mine[n - T:])
-            kf, af, gf = kl_stats(ot, ob[n - T:])
-            v2[s["name"]] = {"vs_batch": summarize(kb, ab, gb), "vs_tbt": summarize(kt, at, gt),
-                             "noise_floor_batch_vs_tbt": summarize(kf, af, gf)}
-            all_b.append((kb, ab, gb)); all_t.append((kt, at, gt)); floor.append((kf, af, gf))
-            log("V2", s["name"], json.dumps(v2[s["name"]]))
-        cat = lambda L: [np.concatenate([x[i] for x in L]) for i in range(3)]  # noqa: E731
-        v2["ALL_vs_batch"] = summarize(*cat(all_b))
-        v2["ALL_vs_tbt"] = summarize(*cat(all_t))
-        v2["ALL_floor"] = summarize(*cat(floor))
-        v2["t4q_ms_per_step"] = round(1e3 * (time.time() - t) / max(nsteps, 1), 2)
-        R["V2"] = v2
-        A, Tt, F = v2["ALL_vs_batch"], v2["ALL_vs_tbt"], v2["ALL_floor"]
-        R["V2_pass"] = bool(A["top1_agree_excl_ties"] >= 0.99 and A["mean_kl"] <= 2e-3 and A["p99_kl"] <= 2e-2 and
-                            Tt["top1_agree_excl_ties"] >= 0.99 and Tt["mean_kl"] <= 2e-3 and Tt["p99_kl"] <= 2e-2)
-        R["V2_kl_over_floor"] = {"batch": A["mean_kl"] / max(F["mean_kl"], 1e-12),
-                                 "tbt": Tt["mean_kl"] / max(F["mean_kl"], 1e-12)}
-        save()
-    except Exception:  # noqa: BLE001
-        R["V2_error"] = traceback.format_exc()[-3000:]
-        log(R["V2_error"])
-        save()
-
-    # ---- V3 greedy
-    try:
-        tok = None
+    for mode in modes:
+        M = R.setdefault(mode, {})
+        eng.set_option("act_q8", 1 if mode == "q8" else 0)
+        # ---- dump run: V0 (fp32 mode: fp64 reference on real weights) + V1 (vs oracle intermediates)
         try:
-            tok = Tokenizer()
+            tdumps, logits1 = run_dump(eng, dids)
+            if mode == "fp32":
+                try:
+                    r0 = v0(g, tdumps[0], tdumps[1], dids, logits1)
+                    R["V0"] = r0
+                    R["V0_pass"] = all(v.get("pass", False) for v in r0.values())
+                    log("V0", json.dumps(r0, default=float))
+                except Exception:  # noqa: BLE001
+                    R["V0_error"] = traceback.format_exc()[-3000:]
+                    log(R["V0_error"])
+            if orc is not None:
+                r1, worst = v1(orc, tdumps, len(dids))
+                M["V1"] = r1
+                M["V1_worst_ratio_by_key"] = worst
+                M["V1_pass"] = bool(worst) and max(worst.values()) <= 1.0
+                log(mode, "V1 worst/tol by key", json.dumps(worst))
+            else:
+                M["V1_error"] = "oracle dump missing"
         except Exception:  # noqa: BLE001
-            pass
-        v3 = {}
-        ok = True
-        for s in man["gens"]:
-            ids = read_ids(os.path.join(a.work, s["ids"]))
-            eng.reset()
-            t = time.time()
-            eng.prefill(ids)
-            tp = time.time() - t
-            t = time.time()
-            gen = eng.generate(s["n"])
-            tg = time.time() - t
-            ref = np.fromfile(os.path.join(a.oracle, s["name"] + ".gen.i32"), dtype=np.int32)
-            gaps = np.loadtxt(os.path.join(a.oracle, s["name"] + ".gen.txt"))[:, 3]
-            m = min(len(gen), len(ref))
-            diff = np.nonzero(gen[:m] != ref[:m])[0]
-            first = int(diff[0]) if len(diff) else -1
-            gap = float(gaps[first]) if first >= 0 else None
-            passed = first < 0 or (gap is not None and gap < 0.05)
-            ok &= passed
-            v3[s["name"]] = {"n": int(len(gen)), "first_divergence": first, "oracle_gap_at_div": gap,
-                             "match_prefix": int(m if first < 0 else first), "pass": bool(passed),
-                             "prefill_tok_s": round(len(ids) / tp, 2), "decode_tok_s": round((len(gen) - 1) / tg, 2)}
-            if tok:
-                v3[s["name"]]["t4q_text"] = tok.decode(gen)
-                v3[s["name"]]["llama_text"] = tok.decode(ref)
-            log("V3", s["name"], json.dumps(v3[s["name"]])[:3000])
-        R["V3"] = v3
-        R["V3_pass"] = bool(ok)
+            M["dump_error"] = traceback.format_exc()[-3000:]
+            log(M["dump_error"])
         save()
-    except Exception:  # noqa: BLE001
-        R["V3_error"] = traceback.format_exc()[-3000:]
-        log(R["V3_error"])
+        # ---- V2
+        try:
+            v2 = run_v2(eng, man, a)
+            M["V2"] = v2
+            A, Tt, F = v2["ALL_vs_batch"], v2["ALL_vs_tbt"], v2["ALL_floor"]
+            M["V2_kl_over_floor"] = {"batch": A["mean_kl"] / max(F["mean_kl"], 1e-12),
+                                     "tbt": Tt["mean_kl"] / max(F["mean_kl"], 1e-12)}
+            M["V2_tbt_pass"] = v2_ok(Tt)
+            M["V2_batch_pass"] = v2_ok(A)
+            log(mode, "V2 ALL", json.dumps({k: v2[k] for k in ("ALL_vs_batch", "ALL_vs_tbt", "ALL_floor")}))
+        except Exception:  # noqa: BLE001
+            M["V2_error"] = traceback.format_exc()[-3000:]
+            log(M["V2_error"])
         save()
+        # ---- V3
+        try:
+            M["V3"], M["V3_pass"] = run_v3(eng, man, a, tok)
+        except Exception:  # noqa: BLE001
+            M["V3_error"] = traceback.format_exc()[-3000:]
+            log(M["V3_error"])
+        save()
+    eng.set_option("act_q8", 0)
     R["final_stats"] = eng.stats()
-    R["gate_M1"] = bool(R.get("V0_pass") and R.get("V0_repack", {}).get("pass") and R.get("V1_pass") and
-                        R.get("V2_pass") and R.get("V3_pass"))
+    q8, f32 = R.get("q8", {}), R.get("fp32", {})
+    # Gate (see PROGRESS.md): V0 op-level vs fp64 + bit-exact repack; V1 (design tolerances) and V2 (design
+    # thresholds vs token-by-token llama.cpp) in act_q8 mode, which reproduces llama.cpp's q8_1 activation
+    # rounding; fp32 mode must pass V2 vs the llama batch path; V3 greedy in both modes.
+    R["gate_M1"] = bool(R.get("V0_pass") and R.get("V0_repack", {}).get("pass") and q8.get("V1_pass") and
+                        q8.get("V2_tbt_pass") and f32.get("V2_batch_pass") and q8.get("V3_pass") and
+                        f32.get("V3_pass"))
     save()
     log("GATE M1:", R["gate_M1"])
 

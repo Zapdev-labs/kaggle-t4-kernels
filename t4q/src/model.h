@@ -47,6 +47,8 @@ struct Layer {
 struct Scratch {
     float *h, *xn, *a, *qkv, *z, *braw, *araw, *beta, *g, *conv, *qn, *kn, *o, *on;
     float *qfull, *k, *v, *aq, *ak, *att, *attg, *ffg, *ffu, *ffa, *scores, *logits;
+    int8_t* xq;          // q8_1 activations (act_q8 mode)
+    float *xd, *xs;
 };
 
 struct RepackStats {
@@ -71,6 +73,7 @@ struct t4q_ctx {
     float* h_logits = nullptr;   // pinned [V], logits of the last step
     bool have_logits = false;
     bool dump_on = false;
+    bool act_q8 = false;  // llama.cpp-style q8_1 activation quantization in the GEMVs (validation mode)
     std::map<std::string, std::vector<float>> dumps;
     RepackStats rstats;
     double load_s = 0, gen_s = 0;

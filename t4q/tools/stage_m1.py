@@ -212,7 +212,7 @@ def prepare_inputs(t4q):
         (WORK / f"{name}.txt").write_text(txt)
         jobs.append(f"tok {name} {WORK / (name + '.txt')} {WORK / (name + '.i32')}")
     for name in ("P0", "P1", "W"):
-        T = 64 if name == "W" else 32
+        T = 100000  # token-by-token oracle for every position after the first
         man["seqs"].append({"name": name, "ids": f"{name}.i32", "tbt": T})
         jobs.append(f"seq {name} {WORK / (name + '.i32')} {T}")
     for name in ("P0", "P1"):
@@ -269,17 +269,21 @@ def main():
                        "validate.log", timeout=max(300, remaining))
         val = json.loads(vout.read_text()) if vout.exists() else {}
         result("validate", {"rc": rc, "secs": round(time.time() - t), "tail": o[-3000:] if rc else ""})
-        summ = {k: val.get(k) for k in ("load_s", "V0_pass", "V0_repack", "V1_pass", "V1_worst_ratio_by_key",
-                                         "V2_pass", "V2_kl_over_floor", "V3_pass", "gate_M1", "final_stats")}
-        if "V2" in val:
-            summ["V2_ALL"] = {k: val["V2"].get(k) for k in ("ALL_vs_batch", "ALL_vs_tbt", "ALL_floor", "t4q_ms_per_step")}
-        if "V3" in val:
-            summ["V3"] = {k: {kk: vv for kk, vv in v.items() if not kk.endswith("_text")} for k, v in val["V3"].items()}
-        for k in ("V0_error", "V2_error", "V3_error", "dump_error", "V1_error"):
-            if k in val:
-                summ[k] = val[k][-1500:]
+        summ = {k: val.get(k) for k in ("load_s", "V0_pass", "V0_repack", "gate_M1", "final_stats", "V0_error")}
+        for mode in ("q8", "fp32"):
+            M = val.get(mode, {})
+            sm = {k: M.get(k) for k in ("V1_pass", "V1_worst_ratio_by_key", "V2_tbt_pass", "V2_batch_pass",
+                                        "V2_kl_over_floor", "V3_pass")}
+            if "V2" in M:
+                sm["V2_ALL"] = {k: M["V2"].get(k) for k in ("ALL_vs_batch", "ALL_vs_tbt", "ALL_floor", "t4q_ms_per_step")}
+            if "V3" in M:
+                sm["V3"] = {k: {kk: vv for kk, vv in v.items() if not kk.endswith("_text")} for k, v in M["V3"].items()}
+            for k in ("V2_error", "V3_error", "dump_error", "V1_error"):
+                if k in M:
+                    sm[k] = M[k][-1500:]
+            summ[mode] = sm
         result("summary", summ)
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         import traceback
         result("fatal", traceback.format_exc()[-3000:])
     finally:

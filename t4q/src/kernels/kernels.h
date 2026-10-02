@@ -13,6 +13,10 @@ void launch_dequant_rows(const PackedW& W, const int32_t* rows, int n, float* ou
 
 // gemv_ref.cu: y[rows] = W x (fp32 activations, fp32 accumulation)
 void launch_gemv(const PackedW& W, const float* x, float* y, cudaStream_t s);
+// llama.cpp-style q8_1 activations (validation mode "act_q8"): per 32 block d = amax/127 and the sum of x, both
+// rounded to fp16 (stored here as floats), q = round(x/d). gemv_q8 reproduces ggml's vec_dot_*_q8_1 formulas.
+void launch_quantize_q8_1(const float* x, int K, int8_t* xq, float* xd, float* xs, cudaStream_t s);
+void launch_gemv_q8(const PackedW& W, const int8_t* xq, const float* xd, const float* xs, float* y, cudaStream_t s);
 
 // misc.cu
 void launch_rmsnorm(const float* x, const float* w, float* y, int n, float eps, cudaStream_t s);

@@ -144,6 +144,7 @@ void alloc_scratch(Scratch& s, bool head) {
     s.attg = dalloc<float>(HQ * HD);
     s.ffg = dalloc<float>(FF); s.ffu = dalloc<float>(FF); s.ffa = dalloc<float>(FF);
     s.scores = nullptr;
+    s.xq = dalloc<int8_t>(FF); s.xd = dalloc<float>(FF / 32); s.xs = dalloc<float>(FF / 32);
     s.logits = head ? dalloc<float>(V) : nullptr;
 }
 

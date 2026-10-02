@@ -79,6 +79,13 @@ int t4q_generate(t4q_ctx* c, int32_t* out, int max_new, const t4q_sampling* smp,
     API_CATCH(-1)
 }
 
+int t4q_set_option(t4q_ctx* c, const char* key, int value) {
+    const std::string k(key);
+    if (k == "act_q8") { c->act_q8 = value != 0; return 0; }
+    g_err = "unknown option " + k;
+    return -1;
+}
+
 void t4q_set_dump(t4q_ctx* c, int on) { c->dump_on = on != 0; if (!on) c->dumps.clear(); }
 
 int t4q_dump(t4q_ctx* c, const char* name, int layer, float* out, size_t cap) {
@@ -107,11 +114,11 @@ void t4q_stats(t4q_ctx* c, char* json, int cap) {
              "{\"load_s\": %.2f, \"steps\": %ld, \"step_ms\": %.3f, \"gen_tokens\": %ld, \"gen_tok_s\": %.3f, "
              "\"repack_tensors\": %d, \"repack_rows_checked\": %d, \"repack_rows_mismatched\": %d, "
              "\"repack_max_abs_diff\": %g, \"repack_first_bad\": \"%s\", \"vram_used_mib\": [%.0f, %.0f], "
-             "\"max_ctx\": %d, \"split\": %d}",
+             "\"max_ctx\": %d, \"split\": %d, \"act_q8\": %d}",
              c->load_s, c->steps, c->steps ? 1e3 * c->step_s / c->steps : 0.0, c->gen_tokens,
              c->gen_s > 0 ? c->gen_tokens / c->gen_s : 0.0, c->rstats.tensors, c->rstats.checked,
              c->rstats.mismatched, c->rstats.max_abs_diff, c->rstats.first_bad.c_str(),
-             c->vram_used[0] / 1048576.0, c->vram_used[1] / 1048576.0, c->max_ctx, c->split);
+             c->vram_used[0] / 1048576.0, c->vram_used[1] / 1048576.0, c->max_ctx, c->split, (int)c->act_q8);
     if (json && cap > 0) {
         strncpy(json, tmp, cap - 1);
         json[cap - 1] = 0;

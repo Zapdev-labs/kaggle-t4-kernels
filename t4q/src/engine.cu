@@ -21,6 +21,16 @@ void dump(t4q_ctx* c, int gpu, const char* name, int il, const float* dptr, size
     CK(cudaMemcpy(v.data(), dptr, n * 4, cudaMemcpyDeviceToHost));
 }
 
+// y = W x; in act_q8 mode quantized weights see llama.cpp-style q8_1 activations
+void gemv(t4q_ctx* c, const PackedW& W, const float* x, float* y, Scratch& s, cudaStream_t st) {
+    if (c->act_q8 && W.fmt != FMT_F32) {
+        launch_quantize_q8_1(x, (int)W.cols, s.xq, s.xd, s.xs, st);
+        launch_gemv_q8(W, s.xq, s.xd, s.xs, y, st);
+    } else {
+        launch_gemv(W, x, y, st);
+    }
+}
+
 void check_launch(const char* what) {
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) throw std::runtime_error(std::string("launch failed: ") + what + ": " + cudaGetErrorString(e));
@@ -28,10 +38,10 @@ void check_launch(const char* what) {
 
 void deltanet(t4q_ctx* c, Layer& L, Scratch& s, cudaStream_t st) {
     const int il = L.il, g = L.gpu;
-    launch_gemv(L.qkv, s.xn, s.qkv, st);
-    launch_gemv(L.z, s.xn, s.z, st);
-    launch_gemv(L.beta, s.xn, s.braw, st);
-    launch_gemv(L.alpha, s.xn, s.araw, st);
+    gemv(c, L.qkv, s.xn, s.qkv, s, st);
+    gemv(c, L.z, s.xn, s.z, s, st);
+    gemv(c, L.beta, s.xn, s.braw, s, st);
+    gemv(c, L.alpha, s.xn, s.araw, s, st);
     check_launch("gdn proj");
     dump(c, g, "linear_attn_qkv_mixed", il, s.qkv, CONV);
     dump(c, g, "z", il, s.z, VDIM);
@@ -49,16 +59,16 @@ void deltanet(t4q_ctx* c, Layer& L, Scratch& s, cudaStream_t st) {
     if (c->dump_on && il == 0) dump(c, g, "ssm_state", il, L.S, (size_t)HV * DK * DK);
     launch_gdn_gnorm(s.o, s.z, L.ssm_norm, s.on, HV, EPS, st);
     dump(c, g, "final_output", il, s.on, VDIM);
-    launch_gemv(L.ssm_out, s.on, s.a, st);
+    gemv(c, L.ssm_out, s.on, s.a, s, st);
     check_launch("ssm_out");
     dump(c, g, "linear_attn_out", il, s.a, D);
 }
 
 void attention(t4q_ctx* c, Layer& L, Scratch& s, cudaStream_t st) {
     const int il = L.il, g = L.gpu;
-    launch_gemv(L.wq, s.xn, s.qfull, st);
-    launch_gemv(L.wk, s.xn, s.k, st);
-    launch_gemv(L.wv, s.xn, s.v, st);
+    gemv(c, L.wq, s.xn, s.qfull, s, st);
+    gemv(c, L.wk, s.xn, s.k, s, st);
+    gemv(c, L.wv, s.xn, s.v, s, st);
     check_launch("attn proj");
     dump(c, g, "Qcur_full", il, s.qfull, HQ * HD * 2);
     dump(c, g, "Kcur_raw", il, s.k, HKV * HD);
@@ -72,7 +82,7 @@ void attention(t4q_ctx* c, Layer& L, Scratch& s, cudaStream_t st) {
     dump(c, g, "attn_pregate", il, s.att, HQ * HD);
     launch_gate_sigmoid(s.att, s.qfull, s.attg, st);
     dump(c, g, "attn_gated", il, s.attg, HQ * HD);
-    launch_gemv(L.wo, s.attg, s.a, st);
+    gemv(c, L.wo, s.attg, s.a, s, st);
     check_launch("attn out");
     dump(c, g, "attn_output", il, s.a, D);
 }
@@ -89,10 +99,10 @@ void run_layer(t4q_ctx* c, Layer& L) {
     dump(c, g, "attn_residual", il, s.h, D);
     launch_rmsnorm(s.h, L.post_norm, s.xn, D, EPS, st);
     dump(c, g, "attn_post_norm", il, s.xn, D);
-    launch_gemv(L.gate, s.xn, s.ffg, st);
-    launch_gemv(L.up, s.xn, s.ffu, st);
+    gemv(c, L.gate, s.xn, s.ffg, s, st);
+    gemv(c, L.up, s.xn, s.ffu, s, st);
     launch_silu_mul(s.ffg, s.ffu, s.ffa, FF, st);
-    launch_gemv(L.down, s.ffa, s.a, st);
+    gemv(c, L.down, s.ffa, s.a, s, st);
     check_launch("ffn");
     dump(c, g, "ffn_out", il, s.a, D);
     launch_add(s.h, s.a, D, st);
@@ -127,7 +137,7 @@ void engine_step(t4q_ctx* c, int token) {
     CK(cudaSetDevice(1));
     launch_rmsnorm(s.h, c->output_norm, s.xn, D, EPS, st);
     dump(c, 1, "result_norm", -1, s.xn, D);
-    launch_gemv(c->output, s.xn, s.logits, st);
+    gemv(c, c->output, s.xn, s.logits, s, st);
     check_launch("lm_head");
     CK(cudaMemcpyAsync(c->h_logits, s.logits, (size_t)V * 4, cudaMemcpyDeviceToHost, st));
     CK(cudaStreamSynchronize(st));

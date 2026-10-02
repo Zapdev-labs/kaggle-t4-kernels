@@ -13,6 +13,7 @@ inline float __fadd_rn(float a, float b) { return a + b; }
 inline float __fsub_rn(float a, float b) { return a - b; }
 T4Q_HD float h2f(uint16_t v) { return fp16_to_fp32(v); }
 #else
+#include <cstdint>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #define T4Q_HD __device__ __forceinline__
