@@ -35,14 +35,40 @@ __device__ __forceinline__ void st_vol_u32(unsigned* p, unsigned v) {
 __device__ __forceinline__ unsigned epoch_of(const StepState* st, int idx) {
     return *(volatile const uint32_t*)&st->step * (unsigned)NAR + (unsigned)idx + 1u;
 }
+__device__ int d_spin_ns = 0;  // > 0: __nanosleep between polls of a spin wait (option spin_ns; power under the cap)
 // spin until flag >= e (wrap-safe); returns false on watchdog
 __device__ __forceinline__ bool wait_flag(const unsigned* flag, unsigned e) {
     const unsigned long long t0 = gtimer();
     unsigned spins = 0;
+    const int ns = d_spin_ns;
     while ((int)(ld_vol_u32(flag) - e) < 0) {
+        if (ns) __nanosleep(ns);
         if ((++spins & 1023u) == 0 && gtimer() - t0 > WATCHDOG_NS) return false;
     }
     return true;
+}
+__device__ __forceinline__ float2 ld_vol_f2(const float2* p) {
+    float2 v;
+    asm volatile("ld.volatile.global.v2.f32 {%0,%1}, [%2];" : "=f"(v.x), "=f"(v.y) : "l"(p));
+    return v;
+}
+__device__ __forceinline__ void st_vol_f2(float2* p, float x, float y) {
+    asm volatile("st.volatile.global.v2.f32 [%0], {%1,%2};" ::"l"(p), "f"(x), "f"(y) : "memory");
+}
+// LL mailbox (option ll): the peer writes {value, epoch tag} pairs with single 8-byte stores, so a value is valid once
+// its tag reaches the epoch; no fence, counter or flag on the producer side. Returns the value (NaN on watchdog).
+__device__ __forceinline__ float wait_ll(const float2* p, unsigned e, bool& ok) {
+    float2 v = ld_vol_f2(p);
+    if ((int)(__float_as_uint(v.y) - e) >= 0) return v.x;
+    const unsigned long long t0 = gtimer();
+    unsigned spins = 0;
+    const int ns = d_spin_ns;
+    for (;;) {
+        if (ns) __nanosleep(ns);
+        v = ld_vol_f2(p);
+        if ((int)(__float_as_uint(v.y) - e) >= 0) return v.x;
+        if ((++spins & 1023u) == 0 && gtimer() - t0 > WATCHDOG_NS) { ok = false; return 0.f; }
+    }
 }
 
 __device__ __forceinline__ float warp_sum(float v) {
@@ -476,6 +502,14 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     if (AR) {
         __syncthreads();
         const int nrow = wpb * tpw * 2 * RPL;
+        if (ar.fence == -3) {  // LL rows: {value, epoch} 8-byte stores into the peer's float2 mailbox
+            const unsigned tag = epoch_of(ar.st, ar.idx);
+            for (int t = tid; t < nrow; t += blockDim.x) {
+                const int row = blockIdx.x * nrow + t;
+                if (row < a.N) st_vol_f2((float2*)ar.y_peer + row, sy[t], __uint_as_float(tag));
+            }
+            return;
+        }
         bool wrote = false;
         if (ar.fence != -2)
             for (int t = tid; t < nrow / 4; t += blockDim.x) {
@@ -613,6 +647,11 @@ void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t 
     T4Q_G(FAST_K5, 2, 6, false, false, PRO_NONE)
     T4Q_G(FAST_P4, 4, 17, false, false, PRO_NONE)
     T4Q_G(FAST_P4M, 4, 17, false, false, PRO_NONE)
+    // K5 (ssm_out) RPL 1 / 4 layouts (T4Q_RPL_K5 A/B)
+    T4Q_G(FAST_K5, 4, 6, true, false, PRO_NONE)
+    T4Q_G(FAST_K5, 4, 6, false, false, PRO_NONE)
+    T4Q_G(FAST_K5, 1, 6, true, false, PRO_NONE)
+    T4Q_G(FAST_K5, 1, 6, false, false, PRO_NONE)
 #undef T4Q_G
     throw std::runtime_error("tp::gemv: no instantiation for fmt " + std::to_string(f) + " rpl " + std::to_string(rpl) +
                              " nch " + std::to_string(nch) + " ar " + std::to_string(isar) + " seg " +
@@ -668,6 +707,106 @@ __global__ void __launch_bounds__(1024) k_ar_norm(const float* h, float* h_out, 
         v[k] = x;
         ss += x * x;
     }
+    ss = block_sum(ss, red);
+    const float scale = rsqrtf(ss / 5120.f + 1e-6f);
+#pragma unroll
+    for (int k = 0; k < 5; k++) {
+        const int i = tid + 1024 * k;
+        const float y = (v[k] * scale) * w[i];
+        xn[i] = y;
+        quant_warp(y, xq + i, xm + (i >> 5));
+    }
+}
+
+// multi-block AR + RMSNorm + q8 (default since M4 round 2): 20 blocks x 256 threads, every block reduces the full sum
+// of squares redundantly (60 KB of L2 reads each) and then normalizes / quantizes its own 256 elements (8 q8 groups),
+// one element per thread. The single-block kernel above spent 13-15 us per call (graph trace, M4 v14) in its serial
+// per-thread loop of 5 dependent load + quant_warp rounds.
+constexpr int ARN_BLOCKS = 20;
+template <bool WAIT>
+__global__ void __launch_bounds__(256) k_ar_norm_mb(const float* h, float* h_out, const float* own, const float* rx,
+                                                    const unsigned* flag, StepState* st, int idx,
+                                                    const float* __restrict__ w, float* xn, int8_t* xq, int2* xm,
+                                                    const Pf pf, float* pub_peer_rx, unsigned* pub_peer_flag) {
+    T4Q_PF_BLOCKS(ARN_BLOCKS)
+    __shared__ __align__(16) float sx[5120];
+    __shared__ float red[8];
+    __shared__ int s_ok;
+    const int tid = threadIdx.x;
+    const int slot = idx & 1;
+    const int e = blockIdx.x * 256 + tid;
+    const float wv = w[e];  // independent of the wait: issue early
+    if (pub_peer_flag && blockIdx.x == 0)
+        publish_partial(own + slot * 5120, pub_peer_rx ? pub_peer_rx + slot * 5120 : nullptr, pub_peer_flag + slot,
+                        epoch_of(st, idx));
+    float4 xv[5], ov[5];
+#pragma unroll
+    for (int k = 0; k < 5; k++) xv[k] = ((const float4*)h)[tid + 256 * k];
+    if (own) {
+#pragma unroll
+        for (int k = 0; k < 5; k++) ov[k] = ((const float4*)(own + slot * 5120))[tid + 256 * k];
+    }
+    if (WAIT) {
+        if (tid == 0) {
+            s_ok = wait_flag(flag + slot, epoch_of(st, idx));
+            if (!s_ok) st->err = 1000 + idx;
+        }
+        __syncthreads();
+    }
+    if (own) {
+        float4 rv[5];
+#pragma unroll
+        for (int k = 0; k < 5; k++) rv[k] = ld_vol_f4((const float4*)(rx + slot * 5120) + tid + 256 * k);
+#pragma unroll
+        for (int k = 0; k < 5; k++) {
+            xv[k].x = xv[k].x + (ov[k].x + rv[k].x);
+            xv[k].y = xv[k].y + (ov[k].y + rv[k].y);
+            xv[k].z = xv[k].z + (ov[k].z + rv[k].z);
+            xv[k].w = xv[k].w + (ov[k].w + rv[k].w);
+        }
+    }
+    float ss = 0.f;
+#pragma unroll
+    for (int k = 0; k < 5; k++) {
+        ss += xv[k].x * xv[k].x + xv[k].y * xv[k].y + xv[k].z * xv[k].z + xv[k].w * xv[k].w;
+        ((float4*)sx)[tid + 256 * k] = xv[k];
+    }
+    ss = block_sum(ss, red);  // its barriers also publish sx
+    const float scale = rsqrtf(ss / 5120.f + 1e-6f);
+    const float x = sx[e];
+    if (own) h_out[e] = x;
+    const float y = (x * scale) * wv;
+    xn[e] = y;
+    quant_warp(y, xq + e, xm + (e >> 5));
+}
+
+// LL variant of k_ar_norm: h += own + rxl.value once every tag reached epoch(idx); same arithmetic order
+__global__ void __launch_bounds__(1024) k_ar_norm_ll(const float* h, float* h_out, const float* own, const float2* rxl,
+                                                     StepState* st, int idx, const float* __restrict__ w, float* xn,
+                                                     int8_t* xq, int2* xm) {
+    __shared__ float red[32];
+    const int tid = threadIdx.x;
+    const int slot = idx & 1;
+    const unsigned e = epoch_of(st, idx);
+    float v[5], o[5], hv[5];
+#pragma unroll
+    for (int k = 0; k < 5; k++) {
+        const int i = tid + 1024 * k;
+        hv[k] = h[i];
+        o[k] = own[slot * 5120 + i];
+    }
+    bool ok = true;
+    float ss = 0.f;
+#pragma unroll
+    for (int k = 0; k < 5; k++) {
+        const int i = tid + 1024 * k;
+        const float r = wait_ll(rxl + slot * 5120 + i, e, ok);
+        const float x = hv[k] + (o[k] + r);
+        h_out[i] = x;
+        v[k] = x;
+        ss += x * x;
+    }
+    if (!ok) st->err = 5000 + idx;
     ss = block_sum(ss, red);
     const float scale = rsqrtf(ss / 5120.f + 1e-6f);
 #pragma unroll
@@ -763,6 +902,36 @@ __global__ void __launch_bounds__(256) k_gdn(const float* __restrict__ y, const 
                                              const float* __restrict__ cw, const float* __restrict__ ssm_a,
                                              const float* __restrict__ ssm_dt, float* S, float* o,
                                              const StepState* st) { d_gdn(y, yab, ring, cw, ssm_a, ssm_dt, S, o, st, blockIdx.x); }
+
+// gdn, then the last of the 4 blocks of each head applies the gated RMSNorm + q8 for that head (same arithmetic as
+// k_gnorm_q8: its 128-thread block_sum plus four zero warp partials)
+__global__ void __launch_bounds__(256) k_gdn_gn(const float* __restrict__ y, const float* __restrict__ yab, float* ring,
+                                                const float* __restrict__ cw, const float* __restrict__ ssm_a,
+                                                const float* __restrict__ ssm_dt, float* S, float* o,
+                                                const StepState* st, unsigned* cnt, const float* z,
+                                                const float* __restrict__ gw, int8_t* xq, int2* xm) {
+    d_gdn(y, yab, ring, cw, ssm_a, ssm_dt, S, o, st, blockIdx.x);
+    __shared__ int s_last;
+    __shared__ float red2[8];
+    const int vl = blockIdx.x >> 2, tid = threadIdx.x;
+    __threadfence();
+    __syncthreads();
+    if (tid == 0) {
+        const unsigned old = atomicAdd(cnt + vl, 1u);
+        s_last = old == 3u;
+        if (s_last) cnt[vl] = 0u;  // the next use is a later kernel
+    }
+    __syncthreads();
+    if (!s_last) return;
+    __threadfence();
+    const float x = tid < 128 ? __ldcg(o + vl * 128 + tid) : 0.f;
+    const float ss = block_sum(x * x, red2);
+    if (tid >= 128) return;
+    const float scale = rsqrtf(ss / 128.0f + 1e-6f);
+    const float zz = z[vl * 128 + tid];
+    const float val = ((x * scale) * gw[tid]) * (zz / (1.0f + expf(-zz)));
+    quant_warp(val, xq + vl * 128 + tid, xm + vl * 4 + (tid >> 5));
+}
 
 __global__ void __launch_bounds__(128) k_gnorm_q8(const float* o, const float* z, const float* __restrict__ w,
                                                   int8_t* xq, int2* xm, const Pf pf) {
@@ -1074,10 +1243,23 @@ void embed(const uint8_t* embd, StepState* st, const int* prompt, float* h, cuda
     k_embed<<<20 + P.blocks, 256, 0, s>>>(embd, st, prompt, h, P);
 }
 
+int g_arn = 0;  // 0: multi-block ar_norm (default), 1: single 1024-thread block (M4 round 1)
+void set_arn(int v) { g_arn = v; }
+
 void ar_norm(const float* h, float* h_out, const float* own, const float* rx, const unsigned* flag,
              const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s,
              const Pf* pf, float* pub_peer_rx, unsigned* pub_peer_flag) {
     const Pf P = pf ? *pf : Pf{};
+    if (g_arn == 0) {
+        const int nb = ARN_BLOCKS + P.blocks;
+        if (flag)
+            k_ar_norm_mb<true><<<nb, 256, 0, s>>>(h, h_out, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm, P,
+                                                  pub_peer_rx, pub_peer_flag);
+        else
+            k_ar_norm_mb<false><<<nb, 256, 0, s>>>(h, h_out, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm, P,
+                                                   pub_peer_rx, pub_peer_flag);
+        return;
+    }
     const int nb = 1 + (P.blocks + 3) / 4;  // 1024-thread blocks
     if (flag)
         k_ar_norm<true><<<nb, 1024, 0, s>>>(h, h_out, own, rx, flag, (StepState*)st, idx, w, xn, xq, xm, P,
@@ -1091,6 +1273,19 @@ void gdn(const float* y, const float* yab, float* ring, const float* conv_w, con
          float* S, float* o, const StepState* st, cudaStream_t s) {
     k_gdn<<<96, 256, 0, s>>>(y, yab, ring, conv_w, ssm_a, ssm_dt, S, o, st);
 }
+
+void gdn_gn(const float* y, const float* yab, float* ring, const float* conv_w, const float* ssm_a, const float* ssm_dt,
+            float* S, float* o, const StepState* st, unsigned* cnt, const float* z, const float* gw, int8_t* xq,
+            int2* xm, cudaStream_t s) {
+    k_gdn_gn<<<96, 256, 0, s>>>(y, yab, ring, conv_w, ssm_a, ssm_dt, S, o, st, cnt, z, gw, xq, xm);
+}
+
+void ar_norm_ll(const float* h, float* h_out, const float* own, const float2* rxl, const StepState* st, int idx,
+                const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s) {
+    k_ar_norm_ll<<<1, 1024, 0, s>>>(h, h_out, own, rxl, (StepState*)st, idx, w, xn, xq, xm);
+}
+
+void set_spin_ns(int ns) { cudaMemcpyToSymbol(d_spin_ns, &ns, sizeof ns); }
 
 void gnorm_q8(const float* o, const float* z, const float* w, int8_t* xq, int2* xm, cudaStream_t s, const Pf* pf) {
     const Pf P = pf ? *pf : Pf{};

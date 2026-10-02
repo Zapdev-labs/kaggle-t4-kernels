@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <random>
 
+#include "cupti_trace.h"
 #include "kernels/tp_kernels.h"
 #include "model.h"
 #include "quant_cpu.h"
@@ -101,9 +102,10 @@ void build_fw(t4q_ctx* c, Stage& sg, int g, tp::FW& W, const std::vector<Piece>&
         if (nsplit && getenv("T4Q_RPL_N")) rpl = atoi(getenv("T4Q_RPL_N"));
         if (ksplit && getenv("T4Q_RPL_K")) rpl = atoi(getenv("T4Q_RPL_K"));
     }
+    if (ff == FAST_K5 && getenv("T4Q_RPL_K5")) rpl = atoi(getenv("T4Q_RPL_K5"));
     if (il && (il != rpl || rows.size() != 2 || rows[0].nr != rows[1].nr))
         throw std::runtime_error(std::string("bad interleave in ") + what);
-    W.L = make_layout(ff, (int)N, (int)K, rpl);
+    W.L = make_layout(ff, (int)N, (int)K, rpl, getenv("T4Q_CM") ? atoi(getenv("T4Q_CM")) : 0);
     CK(cudaSetDevice(g));
     CK(cudaMalloc(&W.base, W.L.bytes));
     CK(cudaMemsetAsync(W.base, 0, W.L.bytes, G.s));
@@ -377,8 +379,14 @@ struct Enq {
     tp::ProArgs lead;  // storage for the leader-prologue args of the current GEMV
     bool rows_in_gemv() const { return arpub() && c->tps->arpub == 2; }  // arpub 2: GEMV writes rows, consumer flags
     // AR args for a K-split GEMV: nullptr (arpub 1: plain GEMV), rows-only (arpub 2) or full epilogue publish
+    bool ll() const { return c->tps->ll && c->tps->p2p && c->tps->fuse == 0 && !mega(); }
     const tp::ArArgs* ksplit(tp::Gpu& G, int idx, tp::ArArgs& a) {
         a = ar(G, idx);
+        if (ll()) {
+            a.y_peer = (float*)(G.peer_rxl + (idx & 1) * D);
+            a.fence = -3;
+            return &a;
+        }
         if (!arpub()) return &a;
         if (!rows_in_gemv()) return nullptr;
         a.fence = -1;
@@ -459,6 +467,11 @@ struct Enq {
             return &lead;
         }
         if (c->tps->fuse) return &p;  // fuse 2: redundant AR + norm prologue in every block
+        if (ll() && p.add) {
+            tp::ar_norm_ll(p.h_in, p.h_out, G.part, G.rxl, G.st, p.idx, p.nw, G.xn, G.xq, G.xm, G.s);
+            mark(G, "ar_norm");
+            return nullptr;
+        }
         // in fallback mode arnorm() already enqueued the pull and cleared p.flag
         const tp::Pf pf = pf_for(nxt);
         const bool pub = arpub() && p.add && c->tps->p2p;  // fallback mode published in pull()
@@ -562,11 +575,17 @@ struct Enq {
                 sg.w = L.ab; sg.x = G.xn; sg.y = G.yab; sg.nrows = 48;
                 tp::gemv(L.qkvz, G.xq, G.xm, G.y, s, nullptr, &sg, pre(G, pa, L.qkvz));
                 mark(G, "gemv_qkvz");
-                tp::gdn(G.y, G.yab, L.conv_ring, L.conv_w, L.ssm_a, L.ssm_dt, L.S, G.o, G.st, s);
-                mark(G, "gdn");
+                if (S.gdnf) {
+                    tp::gdn_gn(G.y, G.yab, L.conv_ring, L.conv_w, L.ssm_a, L.ssm_dt, L.S, G.o, G.st, G.gcnt, G.y + 5120,
+                               L.ssm_norm, G.xq, G.xm, s);
+                    mark(G, "gdn+gnorm");
+                } else {
+                    tp::gdn(G.y, G.yab, L.conv_ring, L.conv_w, L.ssm_a, L.ssm_dt, L.S, G.o, G.st, s);
+                    mark(G, "gdn");
+                }
                 tp::ProArgs pg;
                 pg.o = G.o; pg.z = G.y + 5120; pg.gw = L.ssm_norm;
-                if (S.fuse != 1) {
+                if (S.fuse != 1 && !S.gdnf) {
                     const tp::Pf pf = pf_for(L.ssm_out);
                     tp::gnorm_q8(G.o, G.y + 5120, L.ssm_norm, G.xq, G.xm, s, &pf);
                     mark(G, "gnorm_q8");
@@ -735,6 +754,106 @@ void set_prompt(t4q_ctx* c, const int32_t* ids, int n) {
     }
 }
 
+// CUPTI timeline of n steps: per-position kernel durations / launch gaps (file T4Q_TRACE_OUT) and a per-kernel-name
+// summary (stats "trace"). Positions repeat every step, so kernel k of every step is the same graph node.
+void trace_steps(t4q_ctx* c, int n) {
+    tp::State& S = *c->tps;
+    if (c->pos + n > S.max_ctx) throw std::runtime_error("trace: context full");
+    sync_both(c);
+    if (S.graphs && !S.G[0].gexec) {  // capture outside the trace window
+        capture_graphs(c);
+    }
+    std::string err;
+    if (!trace::begin(err)) {
+        S.trace_json = "{\"error\": \"" + err + "\"}";
+        return;
+    }
+    for (int i = 0; i < n; i++) run_step(c);
+    sync_both(c);
+    std::vector<trace::Rec> R = trace::end();
+    check_err(c);
+    std::vector<trace::Rec> dv[2];
+    for (auto& r : R)
+        if (r.dev >= 0 && r.dev < 2) dv[r.dev].push_back(r);
+    std::string js = "{\"steps\": " + std::to_string(n) + ", \"mode\": \"" + (S.graphs ? "graphs" : "eager") + "\"";
+    std::string fj = "{\"steps\": " + std::to_string(n);
+    const int skip = 1;  // first step may include warm-up effects
+    std::vector<std::string> names;
+    int per = 0;
+    for (int g = 0; g < 2; g++) {
+        auto& v = dv[g];
+        if (v.empty() || v.size() % n) {
+            js += ", \"gpu" + std::to_string(g) + "\": {\"error\": \"" + std::to_string(v.size()) + " records for " +
+                  std::to_string(n) + " steps\"}";
+            continue;
+        }
+        per = (int)(v.size() / n);
+        if (names.empty())
+            for (int k = 0; k < per; k++) names.push_back(v[k].name);
+        std::vector<double> dur(per, 0), gap(per, 0), rel(per, 0);
+        double step_us = 0, busy = 0, gaps = 0;
+        std::map<std::string, std::pair<double, int>> agg, agg_gap;
+        for (int s = skip; s < n; s++) {
+            const uint64_t s0 = v[(size_t)s * per].start;
+            if (s + 1 < n) step_us += (v[(size_t)(s + 1) * per].start - s0) * 1e-3;
+            for (int k = 0; k < per; k++) {
+                const auto& r = v[(size_t)s * per + k];
+                const double d = (r.end - r.start) * 1e-3;
+                const double gp = ((int64_t)r.start - (int64_t)v[(size_t)s * per + k - 1].end) * 1e-3;
+                dur[k] += d;
+                gap[k] += gp;
+                rel[k] += (r.start - s0) * 1e-3;
+                busy += d;
+                gaps += gp;
+                agg[r.name].first += d;
+                agg[r.name].second += 1;
+                agg_gap[r.name].first += gp;
+            }
+        }
+        const int m = n - skip;
+        char b[256];
+        snprintf(b, sizeof b, ", \"gpu%d\": {\"kernels_per_step\": %d, \"step_us\": %.1f, \"busy_us\": %.1f, \"gap_us\": %.1f",
+                 g, per, step_us / std::max(1, m - 1), busy / m, gaps / m);
+        js += b;
+        js += ", \"by_name\": {";
+        bool first = true;
+        for (auto& kv : agg) {
+            snprintf(b, sizeof b, "%s\"%s\": [%.1f, %d, %.1f]", first ? "" : ", ", kv.first.c_str(), kv.second.first / m,
+                     kv.second.second / m, agg_gap[kv.first].first / m);
+            js += b;
+            first = false;
+        }
+        js += "}}";
+        fj += ", \"gpu" + std::to_string(g) + "\": {\"dur\": [";
+        for (int k = 0; k < per; k++) { snprintf(b, sizeof b, "%s%.2f", k ? "," : "", dur[k] / m); fj += b; }
+        fj += "], \"gap\": [";
+        for (int k = 0; k < per; k++) { snprintf(b, sizeof b, "%s%.2f", k ? "," : "", gap[k] / m); fj += b; }
+        fj += "], \"rel\": [";
+        for (int k = 0; k < per; k++) { snprintf(b, sizeof b, "%s%.2f", k ? "," : "", rel[k] / m); fj += b; }
+        fj += "]}";
+    }
+    // cross-GPU offset of step starts (common CUPTI timebase)
+    if (!dv[0].empty() && dv[0].size() == dv[1].size() && per) {
+        double off = 0;
+        for (int s = skip; s < n; s++) off += ((int64_t)dv[1][(size_t)s * per].start - (int64_t)dv[0][(size_t)s * per].start) * 1e-3;
+        char b[96];
+        snprintf(b, sizeof b, ", \"gpu1_minus_gpu0_step_start_us\": %.2f", off / (n - skip));
+        js += b;
+        fj += b;
+    }
+    fj += ", \"names\": [";
+    for (size_t k = 0; k < names.size(); k++) fj += (k ? ",\"" : "\"") + names[k] + "\"";
+    fj += "]}";
+    js += "}";
+    S.trace_json = js;
+    if (const char* p = getenv("T4Q_TRACE_OUT")) {
+        if (FILE* f = fopen(p, "w")) {
+            fputs(fj.c_str(), f);
+            fclose(f);
+        }
+    }
+}
+
 }  // namespace
 
 // ================================================================================================ API
@@ -777,6 +896,8 @@ void tp_load(t4q_ctx* c, const char* path) {
         G.amb = dmalloc<float>(8); G.apart = dmalloc<float>(2 * 160);
         G.st = dmalloc<tp::StepState>(1);
         G.scratch = dmalloc<float>(5120 + 64);
+        G.rxl = dmalloc<float2>(2 * D);
+        G.gcnt = dmalloc<unsigned>(32);
         G.prompt = dmalloc<int>(S.max_ctx);
     }
     for (int g = 0; g < 2; g++) {
@@ -795,6 +916,7 @@ void tp_load(t4q_ctx* c, const char* path) {
         G.peer_rx = S.p2p ? P.rx : P.hrx;
         G.peer_flag = S.p2p ? P.flag : P.hflag;
         G.peer_amb = S.p2p ? P.amb : P.hamb;
+        G.peer_rxl = S.p2p ? P.rxl : nullptr;
     }
     {
         int nsm = 40;
@@ -949,6 +1071,34 @@ int tp_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop, int 
 int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     tp::State& S = *c->tps;
     if (k == "graphs") { S.graphs = v != 0; return 0; }
+    if (k == "spin_ns") {
+        S.spin_ns = v;
+        for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); tp::set_spin_ns(v); }
+        sync_both(c);
+        return 0;
+    }
+    if (k == "arn") {  // host-side launch choice: graphs are re-captured
+        sync_both(c);
+        tp::set_arn(v);
+        S.arn = v;
+        for (int g = 0; g < 2; g++) {
+            CK(cudaSetDevice(g));
+            if (S.G[g].gexec) { cudaGraphExecDestroy(S.G[g].gexec); S.G[g].gexec = nullptr; }
+            if (S.G[g].graph) { cudaGraphDestroy(S.G[g].graph); S.G[g].graph = nullptr; }
+        }
+        return 0;
+    }
+    if (k == "ll" || k == "gdnf") {
+        sync_both(c);
+        if (k == "ll") S.ll = v;
+        else S.gdnf = v;
+        for (int g = 0; g < 2; g++) {
+            CK(cudaSetDevice(g));
+            if (S.G[g].gexec) { cudaGraphExecDestroy(S.G[g].gexec); S.G[g].gexec = nullptr; }
+            if (S.G[g].graph) { cudaGraphDestroy(S.G[g].graph); S.G[g].graph = nullptr; }
+        }
+        return 0;
+    }
     if (k == "fuse" || k == "pf_kb" || k == "arpub" || k == "mega") {  // graphs are re-captured on the next step
         sync_both(c);
         if (k == "mega" && v) {
@@ -971,6 +1121,10 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
             if (S.G[g].gexec) { cudaGraphExecDestroy(S.G[g].gexec); S.G[g].gexec = nullptr; }
             if (S.G[g].graph) { cudaGraphDestroy(S.G[g].graph); S.G[g].graph = nullptr; }
         }
+        return 0;
+    }
+    if (k == "trace") {  // CUPTI timeline of v steps in the current mode (state advances by v tokens)
+        trace_steps(c, std::max(2, v));
         return 0;
     }
     if (k == "profile") {  // run one eager step with per-kernel events (state advances by one token)
@@ -1039,10 +1193,12 @@ std::string tp_stats_json(t4q_ctx* c) {
     char b[512];
     snprintf(b, sizeof b,
              ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"arpub\": %d, \"mega\": %d, \"pf_kb\": %d, \"graphs\": %d, "
-             "\"graph_capture_ms\": %.1f",
-             (int)S.p2p, S.fuse, S.arpub, S.mega, S.pf_kb, (int)S.graphs, S.ms_graph_capture);
+             "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"graph_capture_ms\": %.1f",
+             (int)S.p2p, S.fuse, S.arpub, S.mega, S.pf_kb, (int)S.graphs, S.ll, S.gdnf, S.spin_ns, S.arn,
+             S.ms_graph_capture);
     std::string s = b;
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;
     if (!S.prof_json.empty()) s += ", \"profile\": " + S.prof_json;
+    if (!S.trace_json.empty()) s += ", \"trace\": " + S.trace_json;
     return s;
 }

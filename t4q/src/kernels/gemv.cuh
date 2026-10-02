@@ -53,15 +53,22 @@ static inline size_t src_row_bytes(int f, int K) { return (size_t)(K / src_block
 // ------------------------------------------------------------------------------------------------ layout
 struct Layout {
     int fmt = 0, N = 0, K = 0, rpl = 1;
+    int cm = 0;  // 1: chunk-major plane order ([chunk][tile] instead of [tile][chunk]; same bytes, other addresses)
     int ntiles = 0, nch = 0;
     size_t off_codes = 0, off_qh = 0, off_sc = 0, off_d = 0, bytes = 0;
 };
 
 static inline size_t align256(size_t x) { return (x + 255) & ~(size_t)255; }
+#ifdef __CUDACC__
+__host__ __device__
+#endif
+static inline size_t tc_index(int tile, int c, int nch, int ntiles, int cm) {
+    return cm ? (size_t)c * ntiles + tile : (size_t)tile * nch + c;
+}
 
-static inline Layout make_layout(int fmt, int N, int K, int rpl) {
+static inline Layout make_layout(int fmt, int N, int K, int rpl, int cm = 0) {
     Layout L;
-    L.fmt = fmt; L.N = N; L.K = K; L.rpl = rpl;
+    L.fmt = fmt; L.N = N; L.K = K; L.rpl = rpl; L.cm = cm;
     L.ntiles = (N + 2 * rpl - 1) / (2 * rpl);
     L.nch = K / 512;
     size_t tc = (size_t)L.ntiles * L.nch;
@@ -195,7 +202,7 @@ static inline void repack_host(const Layout& L, const uint8_t* src, uint8_t* dst
         const int tile = row / (2 * rpl), w = row % (2 * rpl), h = w / rpl, r = w % rpl;
         for (int kb = 0; kb < K / 32; ++kb) {
             const int c = kb / 16, j = kb % 16, lane = h * 16 + j;
-            const size_t tc = (size_t)tile * nch + c;
+            const size_t tc = tc_index(tile, c, nch, L.ntiles, L.cm);
             if (L.fmt == FAST_P4) {
                 const uint8_t* b = s + 18 * kb;
                 std::memcpy(codes + (tc * rpl + r) * 512 + lane * 16, b + 2, 16);
@@ -281,6 +288,7 @@ struct GemvArgs {
     const int2* xm;         // [M][K/32]
     float* y;               // [M][ldy]
     int N, K, ntiles, ldy;
+    int cm;                 // Layout::cm
 };
 
 static inline GemvArgs make_args(const Layout& L, const uint8_t* dev_base, const int8_t* xq, const int2* xm, float* y,
@@ -288,7 +296,7 @@ static inline GemvArgs make_args(const Layout& L, const uint8_t* dev_base, const
     GemvArgs a;
     a.codes = dev_base + L.off_codes; a.qh = dev_base + L.off_qh; a.sc = dev_base + L.off_sc;
     a.d = (const uint16_t*)(dev_base + L.off_d);
-    a.xq = xq; a.xm = xm; a.y = y; a.N = L.N; a.K = L.K; a.ntiles = L.ntiles; a.ldy = ldy;
+    a.xq = xq; a.xm = xm; a.y = y; a.N = L.N; a.K = L.K; a.ntiles = L.ntiles; a.ldy = ldy; a.cm = L.cm;
     return a;
 }
 
@@ -330,7 +338,7 @@ __device__ __forceinline__ void ldg_halves(uint32_t* out, const void* p) {
 
 template <int FMT, int RPL, int NCH>
 __device__ __forceinline__ void load_chunk(WChunk<FMT, RPL>& w, const GemvArgs& a, int tile, int c, int lane) {
-    const size_t tc = (size_t)tile * NCH + c;
+    const size_t tc = tc_index(tile, c, NCH, a.ntiles, a.cm);
     constexpr int NP = FMT == FAST_Q8 ? 2 : 1;
 #pragma unroll
     for (int r = 0; r < RPL; ++r)
@@ -578,7 +586,7 @@ static __global__ void quantize_q8_kernel(const float* __restrict__ x, int K, in
 // One thread per (row, 32-group). src rows are raw GGUF blocks (row stride src_row_bytes); dst zero-initialized.
 // rows [row0, row0 + N) of the layout; src holds exactly those N rows
 static __global__ void repack_kernel(int fmt, int N, int K, int rpl, int ntiles, size_t off_qh, size_t off_sc, size_t off_d,
-                              const uint8_t* __restrict__ src, uint8_t* __restrict__ dst, int row0 = 0) {
+                              const uint8_t* __restrict__ src, uint8_t* __restrict__ dst, int row0 = 0, int cm = 0) {
     const size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     const int nb = K / 32;
     if (idx >= (size_t)N * nb) return;
@@ -591,7 +599,7 @@ static __global__ void repack_kernel(int fmt, int N, int K, int rpl, int ntiles,
     const uint8_t* s = src + (size_t)lrow * rb;
     const int tile = row / (2 * rpl), w = row % (2 * rpl), h = w / rpl, r = w % rpl;
     const int c = kb / 16, j = kb % 16, lane = h * 16 + j;
-    const size_t tc = (size_t)tile * nch + c;
+    const size_t tc = tc_index(tile, c, nch, ntiles, cm);
     uint16_t* dp = (uint16_t*)(dst + off_d);
     if (fmt == FAST_P4) {
         const uint8_t* b = s + 18 * kb;
@@ -670,7 +678,7 @@ static inline cudaError_t repack_device_rows(const Layout& L, const uint8_t* d_s
                                              cudaStream_t s) {
     const size_t tot = (size_t)n * (L.K / 32);
     repack_kernel<<<(unsigned)((tot + 255) / 256), 256, 0, s>>>(L.fmt, n, L.K, L.rpl, L.ntiles, L.off_qh, L.off_sc,
-                                                                 L.off_d, d_src, d_dst, row0);
+                                                                 L.off_d, d_src, d_dst, row0, L.cm);
     return cudaGetLastError();
 }
 
@@ -679,7 +687,7 @@ static inline cudaError_t repack_device(const Layout& L, const uint8_t* d_src, u
     if (e != cudaSuccess) return e;
     const size_t n = (size_t)L.N * (L.K / 32);
     repack_kernel<<<(unsigned)((n + 255) / 256), 256, 0, s>>>(L.fmt, L.N, L.K, L.rpl, L.ntiles, L.off_qh, L.off_sc,
-                                                               L.off_d, d_src, d_dst);
+                                                               L.off_d, d_src, d_dst, 0, L.cm);
     return cudaGetLastError();
 }
 

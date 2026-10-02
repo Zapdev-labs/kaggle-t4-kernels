@@ -29,6 +29,17 @@ void ar_norm(const float* h, float* h_out, const float* own, const float* rx, co
 // DeltaNet step for 24 local heads: conv (ring), SiLU, L2 q/k, gates, recurrence; o [24][128]
 void gdn(const float* y, const float* yab, float* ring, const float* conv_w, const float* ssm_a, const float* ssm_dt,
          float* S, float* o, const StepState* st, cudaStream_t s);
+// gdn + gated RMSNorm q8 in one kernel (the last block of each head normalizes it); cnt: 24 zeroed counters
+void gdn_gn(const float* y, const float* yab, float* ring, const float* conv_w, const float* ssm_a, const float* ssm_dt,
+            float* S, float* o, const StepState* st, unsigned* cnt, const float* z, const float* gw, int8_t* xq,
+            int2* xm, cudaStream_t s);
+// LL all-reduce consumer: waits per element on {value, tag} pairs written by the peer's K-split GEMV (option ll)
+void ar_norm_ll(const float* h, float* h_out, const float* own, const float2* rxl, const StepState* st, int idx,
+                const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s);
+// ar_norm implementation: 0 = multi-block (default), 1 = single block
+void set_arn(int v);
+// spin-wait backoff (ns) for flag waits on the current device
+void set_spin_ns(int ns);
 // gated RMSNorm (o, z) -> q8 for ssm_out
 void gnorm_q8(const float* o, const float* z, const float* w, int8_t* xq, int2* xm, cudaStream_t s,
               const Pf* pf = nullptr);

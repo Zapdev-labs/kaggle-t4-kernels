@@ -183,6 +183,9 @@ struct Gpu {
     unsigned* peer_flag = nullptr;
     float* peer_amb = nullptr;
     // host-mapped mailbox (fallback when the GPUs have no P2P): the peer writes here, a pull kernel copies to rx
+    float2* rxl = nullptr;       // [2][5120] LL mailbox {value, epoch tag} (option ll), peer-written
+    float2* peer_rxl = nullptr;
+    unsigned* gcnt = nullptr;    // [32] per-head block counters of the fused gdn + gated norm kernel
     float* hrx = nullptr;       // [2][5120]
     unsigned* hflag = nullptr;  // [8]: [0..1] AR, [2..3] argmax
     float* hamb = nullptr;      // [4]
@@ -213,6 +216,7 @@ struct State {
     std::vector<const FW*> spec_fw;
     std::string selftest_json;
     std::string prof_json;
+    std::string trace_json;
     int max_blocks = 80;  // co-resident GEMV blocks (2 per SM)
     bool p2p = true;      // false: host-mapped mailbox fallback
     float* hscratch[2] = {nullptr, nullptr};  // host-mapped AR test targets (self-test timing without P2P)
@@ -222,6 +226,10 @@ struct State {
     int mega_grid = 80;
     int arpub = 2;        // 1: the consumer kernel publishes this GPU's partial (plain K-split GEMVs; default);
                           // 0: the K-split GEMV epilogue publishes (M2-M4 v5). fuse != 0 forces 0.
+    int ll = 0;           // 1: LL all-reduce (tagged 8-byte rows from the K-split GEMVs, no flags; P2P, fuse 0 only)
+    int gdnf = 0;         // 1: gdn and the gated norm q8 in one kernel
+    int spin_ns = 0;      // spin-wait backoff
+    int arn = 0;          // ar_norm kernel: 0 = multi-block (20 x 256), 1 = single block (round 1)
     int pf_kb = 0;        // L2 prefetch of the next GEMV during small kernels (0 = off; no gain in M4 v4)
     double ms_graph_capture = 0;
 };

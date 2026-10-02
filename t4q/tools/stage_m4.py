@@ -35,7 +35,10 @@ RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
 GGUF = "Qwen3.8-27B-Q4_0.gguf"
-TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584", "--configs", "arpub=2;mega=1"]
+CONFIGS = "arpub=2,gdnf=1,arn=0;arpub=2,gdnf=1,arn=1"
+TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584", "--configs", CONFIGS, "--rounds", "2",
+           "--trace", "24", "--trace_dir", str(OUT / "traces")]
+VARIANT_CONFIGS = "arpub=2,gdnf=1,arn=0"
 
 
 def el():
@@ -283,6 +286,13 @@ def main():
             result("fatal", "download failed")
             return
         env = dict(os.environ, LD_LIBRARY_PATH=f"{llb}:/usr/local/cuda/lib64:" + os.environ.get("LD_LIBRARY_PATH", ""))
+        (OUT / "traces").mkdir(exist_ok=True)
+        cup = sorted(glob.glob("/usr/local/cuda/**/libcupti.so*", recursive=True)) + sorted(
+            glob.glob("/usr/local/lib/python3*/dist-packages/nvidia/cuda_cupti/lib/libcupti.so*")) + sorted(
+            glob.glob("/usr/local/cuda*/extras/CUPTI/lib64/libcupti.so*"))
+        result("cupti", cup[:6])
+        if cup:
+            os.environ["T4Q_CUPTI"] = cup[0]
         if (t4q / "build" / "oracle_dump").exists():
             t = time.time()
             rc, o = stream([str(t4q / "build" / "oracle_dump"), model, str(WORK / "jobs.txt"), str(ORC), "layer"],
@@ -304,7 +314,7 @@ def main():
         summ = {k: val.get(k) for k in ("load_s", "vram_used_mib", "correct", "gate_detail", "best_decode_tok_s",
                                          "depth_decode_tok_s", "gate_30", "V1", "V4_graphs_vs_eager_logits_bitident",
                                          "V4_graphs_vs_eager_greedy_identical", "V1_error", "V4_error",
-                                         "profile_at_depth", "final_stats", "V3_alt")}
+                                         "profile_at_depth", "final_stats", "V3_alt", "gate_30_depth", "trace")}
         summ["selftest_worst"] = (val.get("selftest") or {}).get("worst")
         summ["bench"] = val.get("bench")
         for mode in ("eager", "graphs"):
@@ -316,15 +326,18 @@ def main():
         summ["p2p"] = val.get("p2p")
         result("summary", summ)
         # variant processes: forced host-mapped fallback (on a P2P box), and RPL=2 P4 layouts; greedy V3 + short bench
-        variants = [("nop2p", {"T4Q_NO_P2P": "1"}, bool(val.get("p2p")))]
+        variants = [("cm1", {"T4Q_CM": "1"}, True), ("k5r4", {"T4Q_RPL_K5": "4"}, True),
+                    ("k5r1", {"T4Q_RPL_K5": "1"}, True), ("nop2p", {"T4Q_NO_P2P": "1"}, bool(val.get("p2p")))]
         for vname, venv, run in variants:
             if not run or DEADLINE - el() < 300:
                 continue
             vout2 = OUT / f"results_tp_{vname}.json"
+            (OUT / "traces" / vname).mkdir(parents=True, exist_ok=True)
             rc, o = stream([sys.executable, "-u", str(t4q / "tests" / "tp_check.py"), "--model", model, "--work",
                             str(WORK), "--oracle", str(ORC), "--out", str(vout2), "--lib",
                             str(t4q / "build" / "libt4q.so"), "--modes", "graphs", "--sections", "v3", "--gen", "256",
-                            "--depth", "0", "--configs", "arpub=2;mega=1"], f"tp_check_{vname}.log",
+                            "--depth", "0", "--configs", VARIANT_CONFIGS, "--trace", "24", "--trace_dir",
+                            str(OUT / "traces" / vname)], f"tp_check_{vname}.log",
                            timeout=DEADLINE - el() - 60, env=dict(os.environ, **venv))
             v2_ = json.loads(vout2.read_text()) if vout2.exists() else {}
             bench = {}

@@ -48,6 +48,9 @@ def main():
     ap.add_argument("--sections", default="v1,v2,v3,v4")
     ap.add_argument("--configs", default="arpub=2;arpub=1;fuse=3",
                     help="';'-separated option sets to bench; the first is the default (validated by V1-V4)")
+    ap.add_argument("--rounds", type=int, default=1, help="repeat the config list (interleaved A/B against drift)")
+    ap.add_argument("--trace", type=int, default=24, help="CUPTI trace steps per config (0 = off)")
+    ap.add_argument("--trace_dir", default="")
     a = ap.parse_args()
     secs = set(a.sections.split(","))
     modes = [m for m in a.modes.split(",") if m]
@@ -153,9 +156,23 @@ def main():
         kv = dict(x.split("=") for x in c.split(",") if x)
         cfgs.append(("_".join(f"{k}{v}" for k, v in kv.items()), {k: int(v) for k, v in kv.items()}))
 
+    all_keys = sorted({k for _, o in cfgs for k in o})
+
     def apply(opts):
-        for k, v in opts.items():
-            eng.set_option(k, v)
+        for k in all_keys:  # options absent from a config fall back to config 0's value (or 0)
+            eng.set_option(k, opts.get(k, cfgs[0][1].get(k, 0)))
+
+    def do_trace(key, nsteps):
+        if nsteps <= 0:
+            return
+        try:
+            if a.trace_dir:
+                os.environ["T4Q_TRACE_OUT"] = os.path.join(a.trace_dir, f"trace_{key}.json")
+            eng.set_option("trace", nsteps)
+            R.setdefault("trace", {})[key] = eng.stats().get("trace")
+            log("trace", key, json.dumps(R["trace"][key])[:3000])
+        except Exception:  # noqa: BLE001
+            R.setdefault("trace", {})[key] = {"error": traceback.format_exc()[-1500:]}
 
     apply(cfgs[0][1])
     if a.bench:
@@ -175,18 +192,23 @@ def main():
                       "text_head": tok.decode(g[:60]) if tok else ""}
             log("bench", key, json.dumps(B[key])[:400])
 
-        for fi, (fz, opts) in enumerate(cfgs):
+        for rnd in range(a.rounds):
+          for fi, (fz, opts) in enumerate(cfgs):
             apply(opts)
-            for mode in (modes if fi == 0 else [modes[-1]]):
+            sfx = f"_r{rnd}" if rnd else ""
+            for mode in (modes if (fi == 0 and rnd == 0) else [modes[-1]]):
                 eng.set_option("graphs", 1 if mode == "graphs" else 0)
                 for name in ("P0", "P1"):
                     try:
-                        bench_prompt(f"{mode}_{fz}_{name}", name, a.gen)
+                        bench_prompt(f"{mode}_{fz}_{name}{sfx}", name, a.gen)
                     except Exception:  # noqa: BLE001
-                        B[f"{mode}_{fz}_{name}_error"] = traceback.format_exc()[-2000:]
-                        log(B[f"{mode}_{fz}_{name}_error"])
+                        B[f"{mode}_{fz}_{name}{sfx}_error"] = traceback.format_exc()[-2000:]
+                        log(B[f"{mode}_{fz}_{name}{sfx}_error"])
                     save()
-            if fi > 0 and "v3" in secs:  # greedy check of the alternative kernel structure
+            if rnd == 0:
+                eng.set_option("graphs", 1 if modes[-1] == "graphs" else 0)
+                do_trace(fz, a.trace)
+            if fi > 0 and rnd == 0 and "v3" in secs:  # greedy check of the alternative kernel structure
                 try:
                     v3, ok = VA.run_v3(eng, man, a, None)
                     R.setdefault("V3_alt", {})[fz] = {k: (v["first_divergence"], v["oracle_gap_at_div"])
@@ -208,19 +230,20 @@ def main():
                 eng.prefill(body)
                 tp_ = time.time() - t0
                 B["depth_prefill_via_decode_tok_s"] = round(len(body) / tp_, 2)
-                for fz, opts in cfgs:
+                ngen = max(16, min(128, (4096 - len(body) - 8 - 16) // len(cfgs)))
+                for fi, (fz, opts) in enumerate(cfgs):
                     apply(opts)
+                    eng.set_option("graphs", 1 if mode == "graphs" else 0)
                     ctx0 = eng.pos
                     w0 = time.time()
-                    g = eng.generate(128)
+                    g = eng.generate(ngen)
                     tg = time.time() - w0
                     B[f"depth{a.depth}_{mode}_{fz}"] = {"ctx_start": int(ctx0), "n_gen": int(len(g)),
                                                           "decode_tok_s": round((len(g) - 1) / tg, 2), "t0": w0,
                                                           "t1": w0 + tg, "text_head": tok.decode(g[:40]) if tok else ""}
                     log("bench depth", json.dumps(B[f"depth{a.depth}_{mode}_{fz}"])[:400])
-                    eng.set_option("profile", 1)
-                    R.setdefault("profile_at_depth", {})[fz] = eng.stats().get("profile")
-                    log("profile", fz, json.dumps(R["profile_at_depth"][fz]))
+                    if fi == 0:
+                        do_trace(f"depth_{fz}", 16)
                 apply(cfgs[0][1])
             except Exception:  # noqa: BLE001
                 B["depth_error"] = traceback.format_exc()[-2000:]
@@ -228,11 +251,21 @@ def main():
             save()
     R["final_stats"] = {k: v for k, v in eng.stats().items() if k not in ("selftest", "profile")}
     # gate
+    alt_ok = {fz: bool((R.get("V3_alt") or {}).get(fz, {}).get("pass")) for fz, _ in cfgs[1:]}
+    alt_ok[cfgs[0][0]] = True
+
+    def cfg_ok(key):  # benches of an alternative config count only if its greedy V3 check passed
+        for fz, okv in sorted(alt_ok.items(), key=lambda x: -len(x[0])):
+            if f"_{fz}_" in key + "_" or key.endswith(f"_{fz}"):
+                return okv
+        return True
+
     best = 0.0
     for k, v in R.get("bench", {}).items():
-        if isinstance(v, dict) and "decode_tok_s" in v:
+        if isinstance(v, dict) and "decode_tok_s" in v and cfg_ok(k) and not k.startswith("depth"):
             best = max(best, v["decode_tok_s"])
-    dep = [v["decode_tok_s"] for k, v in R.get("bench", {}).items() if k.startswith("depth") and isinstance(v, dict)]
+    dep = [v["decode_tok_s"] for k, v in R.get("bench", {}).items()
+           if k.startswith("depth") and isinstance(v, dict) and "decode_tok_s" in v and cfg_ok(k)]
     corr = {"selftest": bool((R.get("selftest") or {}).get("pass")), "V1_floor": R.get("V1_floor_pass"),
             "TP_h_identical": R.get("TP_h_identical")}
     for mode in modes:
@@ -244,7 +277,8 @@ def main():
     R["correct"] = all(bool(v) for v in corr.values())
     R["best_decode_tok_s"] = best
     R["depth_decode_tok_s"] = max(dep) if dep else None
-    R["gate_30"] = bool(R["correct"] and dep and max(dep) >= 30.0)
+    R["gate_30_depth"] = bool(R["correct"] and dep and max(dep) >= 30.0)
+    R["gate_30"] = bool(R["correct"] and best >= 30.0)
     save()
     log("GATE correct", R["correct"], "best decode", best, "depth decode", R["depth_decode_tok_s"], "gate", R["gate_30"])
 

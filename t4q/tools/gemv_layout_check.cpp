@@ -60,7 +60,7 @@ static float group_dot(int fmt, const int* q /*4 or 8*/, uint32_t H0, uint32_t H
     }
 }
 
-static int run(int fmt, int N, int K, int rpl, int M) {
+static int run(int fmt, int N, int K, int rpl, int M, int cm = 0) {
     size_t rb = src_row_bytes(fmt, K);
     std::vector<uint8_t> src(rb * N);
     for (auto& b : src) b = (uint8_t)rnd();
@@ -76,7 +76,7 @@ static int run(int fmt, int N, int K, int rpl, int M) {
                 memcpy(blk + 2, &m2, 2);
             }
         }
-    Layout L = make_layout(fmt, N, K, rpl);
+    Layout L = make_layout(fmt, N, K, rpl, cm);
     std::vector<uint8_t> P(L.bytes);
     repack_host(L, src.data(), P.data());
     std::vector<float> x((size_t)M * K);
@@ -93,7 +93,7 @@ static int run(int fmt, int N, int K, int rpl, int M) {
                 for (int lane = 0; lane < 32; ++lane) {
                     int h = lane >> 4, j = lane & 15;
                     for (int c = 0; c < nch; ++c) {
-                        size_t tc = (size_t)tile * nch + c;
+                        size_t tc = tc_index(tile, c, nch, L.ntiles, cm);
                         int NP = fmt == FAST_Q8 ? 2 : 1;
                         int q[8];
                         for (int p = 0; p < NP; ++p)
@@ -147,20 +147,21 @@ static int run(int fmt, int N, int K, int rpl, int M) {
     }
     rms = std::sqrt(rms / ((double)N * M));
     double ne = maxe / rms;
-    printf("%s N=%d K=%d rpl=%d M=%d  max_err/rms=%.3e %s\n", fmt_name(fmt), N, K, rpl, M, ne, ne < 1e-4 ? "OK" : "FAIL");
+    printf("%s N=%d K=%d rpl=%d M=%d cm=%d  max_err/rms=%.3e %s\n", fmt_name(fmt), N, K, rpl, M, cm, ne,
+           ne < 1e-4 ? "OK" : "FAIL");
     return ne < 1e-4 ? 0 : 1;
 }
 
 int main() {
     int bad = 0;
-    for (int rpl : {1, 2, 4}) {
-        bad += run(FAST_P4, 37, 1536, rpl, 3);
-        bad += run(FAST_P4, 20, 8704, rpl, 2);
-        bad += run(FAST_Q8, 21, 1024, rpl, 3);
-        bad += run(FAST_K6, 19, 1536, rpl, 3);
-        bad += run(FAST_K6, 8, 5120, rpl, 2);
-        bad += run(FAST_P4M, 23, 8704, rpl, 2);
-        bad += run(FAST_K5, 17, 3072, rpl, 3);
+    for (int rpl : {1, 2, 4}) for (int cm : {0, 1}) {
+        bad += run(FAST_P4, 37, 1536, rpl, 3, cm);
+        bad += run(FAST_P4, 20, 8704, rpl, 2, cm);
+        bad += run(FAST_Q8, 21, 1024, rpl, 3, cm);
+        bad += run(FAST_K6, 19, 1536, rpl, 3, cm);
+        bad += run(FAST_K6, 8, 5120, rpl, 2, cm);
+        bad += run(FAST_P4M, 23, 8704, rpl, 2, cm);
+        bad += run(FAST_K5, 17, 3072, rpl, 3, cm);
     }
     printf(bad ? "LAYOUT CHECK FAILED\n" : "LAYOUT CHECK PASSED\n");
     return bad != 0;
