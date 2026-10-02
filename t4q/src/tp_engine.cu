@@ -1301,7 +1301,10 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
         if (k == "mega") S.mega = v;
         if (k == "fuse" && v == 1) throw std::runtime_error("fuse=1 (silu/gnorm prologues) retired in M4 v8");
         if (k == "fuse") S.fuse = v;
-        else if (k == "arpub") S.arpub = v < 0 ? S.arpub_auto : v;
+        else if (k == "arpub") {
+            if (v == 4) throw std::runtime_error("arpub 4 (copy-engine rows) is not graph-capturable (M4 v26)");
+            S.arpub = v < 0 ? S.arpub_auto : v;
+        }
         else S.pf_kb = v;
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
