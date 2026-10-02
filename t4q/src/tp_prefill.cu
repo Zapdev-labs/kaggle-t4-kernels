@@ -83,6 +83,85 @@ __global__ void __launch_bounds__(256) k_pf_add_norm(float* h, const float* own,
     for (int k = 0; k < 20; k++) xn[(size_t)t * D + tid + 256 * k] = (x[k] * scale) * w[tid + 256 * k];
 }
 
+// ---- fused producers that quantize straight into the GEMM's activation layout (gemm.cuh, int8 path):
+// xq [Tp][K] row tr, xs [K/32][Tp] {d/16, -(M + 128*sumq)*d/16}, xsum [K/32][Tp] d*sumq; one warp = one 32-group,
+// lane = element (same math as gemm::quant_rows_kernel)
+struct Q8Out {
+    int8_t* xq;
+    float2* xs;
+    float* xsum;
+    int K, Tp;
+};
+__device__ __forceinline__ void warp_q8(float v, const Q8Out& q, int tr, int k) {
+    float amax = fabsf(v);
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+    const float d = amax / 127.f;
+    const int qi = amax == 0.f ? 0 : __float2int_rn(v / d);
+    int sq = qi;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) sq += __shfl_xor_sync(0xffffffffu, sq, o);
+    q.xq[(size_t)tr * q.K + k] = (int8_t)qi;
+    if ((threadIdx.x & 31) == 0) {
+        const int b = k >> 5;
+        const float sc = d * 0.0625f;
+        q.xs[(size_t)b * q.Tp + tr] = make_float2(sc, -(float)(12582912 + 128 * sq) * sc);
+        q.xsum[(size_t)b * q.Tp + tr] = d * (float)sq;
+    }
+}
+
+// [h += p0 + p1]; x = rmsnorm(h) * w -> q8 (and fp32 xn if xn != nullptr). grid T x 256 (token tr of the sub-batch)
+__global__ void __launch_bounds__(256) k_pf_add_norm_q8(float* h, const float* own, const float* rx, int gpu, int add,
+                                                        const float* __restrict__ w, float* xn, Q8Out q) {
+    __shared__ float red[8];
+    const int t = blockIdx.x, tid = threadIdx.x;
+    float* hp = h + (size_t)t * D;
+    float x[20];
+#pragma unroll
+    for (int k = 0; k < 20; k++) x[k] = hp[tid + 256 * k];
+    if (add) {
+        const float* p0 = (gpu == 0 ? own : rx) + (size_t)t * D;
+        const float* p1 = (gpu == 0 ? rx : own) + (size_t)t * D;
+#pragma unroll
+        for (int k = 0; k < 20; k++) {
+            x[k] = x[k] + (p0[tid + 256 * k] + p1[tid + 256 * k]);
+            hp[tid + 256 * k] = x[k];
+        }
+    }
+    float ss = 0.f;
+#pragma unroll
+    for (int k = 0; k < 20; k++) ss += x[k] * x[k];
+    ss = block_sum(ss, red);
+    const float scale = rsqrtf(ss / 5120.f + 1e-6f);
+#pragma unroll
+    for (int k = 0; k < 20; k++) {
+        const int e = tid + 256 * k;
+        const float y = (x[k] * scale) * w[e];
+        if (xn) xn[(size_t)t * D + e] = y;
+        warp_q8(y, q, t, e);
+    }
+}
+
+// silu(g) * u (gate|up rows interleaved by 4) -> q8 (K = 8704). grid (T, 34) x 256
+__global__ void k_pf_silu_q8(const float* __restrict__ y, int ldy, Q8Out q) {
+    const int t = blockIdx.x, i = blockIdx.y * 256 + threadIdx.x;
+    const int gr = (i >> 2) * 8 + (i & 3);
+    const float g = y[(size_t)t * ldy + gr], u = y[(size_t)t * ldy + gr + 4];
+    warp_q8((g / (1.0f + expf(-g))) * u, q, t, i);
+}
+
+// gated RMSNorm per head -> q8 (K = 3072). grid (T, 24) x 128
+__global__ void __launch_bounds__(128) k_pf_gnorm_q8(const float* __restrict__ o, const float* __restrict__ y, int ldy,
+                                                     const float* __restrict__ w, Q8Out q) {
+    __shared__ float red[4];
+    const int t = blockIdx.x, vl = blockIdx.y, i = threadIdx.x;
+    const float x = o[(size_t)t * 3072 + vl * 128 + i];
+    const float ss = block_sum(x * x, red);
+    const float scale = rsqrtf(ss / 128.0f + 1e-6f);
+    const float zz = y[(size_t)t * ldy + 5120 + vl * 128 + i];
+    warp_q8(((x * scale) * w[i]) * (zz / (1.0f + expf(-zz))), q, t, vl * 128 + i);
+}
+
 // yab[t][i] = xn[t] . ab[i] (48 fp32 rows: 24 alpha then 24 beta). grid ceil(T/8) x 128; thread = (token tid & 7,
 // rows (tid >> 3) + 16j, j < 3)
 __global__ void __launch_bounds__(128) k_pf_ab(const float* __restrict__ xn, const float* __restrict__ ab, int T,
@@ -157,28 +236,32 @@ __global__ void k_pf_ring(const float* __restrict__ y, int ldy, int T, int p0, f
 }
 
 // DeltaNet scan over T tokens with decode's per-token math; state in registers (decode layout S[vl][col][k]).
-// grid 96 = (24 local v heads x 4 slices of 32 value columns), 256 threads (warp = 4 columns, lane = 4 key rows).
-// Inputs are staged through shared memory in chunks of 16 tokens (double buffered; the next chunk's global loads are in
-// flight while the current one is scanned), which keeps the per-token step off the global-memory latency.
+// grid 96 = (24 local v heads x 4 slices of 32 value columns), 256 threads: warp w owns columns sl*32 + 4w + j
+// (j = lane >> 3); the 8 lanes of a column own k = 32m + 4*(lane & 7) + e (m, e < 4), so the two k-reductions per token
+// are 3 shuffles each. Inputs are staged through shared memory in chunks of 8 tokens (double buffered); the decay and
+// beta gates are computed once per token in the staging step.
 constexpr int GCH = 8;  // 18.5 KB smem: 3 blocks per SM, all 96 resident
 __global__ void __launch_bounds__(256) k_pf_gdn(const float* __restrict__ qkv, const float* __restrict__ yab, int T,
                                                 const float* __restrict__ ssm_a, const float* __restrict__ ssm_dt,
                                                 float* S, float* o) {
     __shared__ __align__(16) float sq[2][GCH][128], sk[2][GCH][128], svv[2][GCH][32], sab[2][GCH][2];
     const int bx = blockIdx.x, vl = bx >> 2, sl = bx & 3, kl = vl & 7, tid = threadIdx.x;
-    const int lane = tid & 31, warp = tid >> 5;
-    float s[4][4];
+    const int lane = tid & 31, warp = tid >> 5, j = lane >> 3, i8 = lane & 7;
+    const int colw = warp * 4 + j;  // column within the slice
+    const int col = sl * 32 + colw;
+    float s[4][4];  // s[m][e] = S[col][32m + 4*i8 + e]
+    {
+        const float* Sp = S + ((size_t)vl * 128 + col) * 128 + 4 * i8;
 #pragma unroll
-    for (int cc = 0; cc < 4; cc++) {
-        const int col = sl * 32 + warp * 4 + cc;
-        const float* Sp = S + ((size_t)vl * 128 + col) * 128;
-#pragma unroll
-        for (int r = 0; r < 4; r++) s[cc][r] = Sp[r * 32 + lane];
+        for (int m = 0; m < 4; m++) {
+            const float4 v = *(const float4*)(Sp + 32 * m);
+            s[m][0] = v.x; s[m][1] = v.y; s[m][2] = v.z; s[m][3] = v.w;
+        }
     }
     const float dtv = ssm_dt[vl], av = ssm_a[vl];
-    // staging (GCH = 8): q/k 8 tokens x 32 float4 (one each per thread), v 8 x 8 float4 (threads < 64), ab 16 floats
+    // staging (GCH = 8): q/k 8 tokens x 32 float4 (one each per thread), v 8 x 8 float4 (threads < 64), gates (8)
     float4 rq, rk, rv;
-    float rab = 0.f;
+    float rbeta = 0.f, rg = 0.f;
     auto gload = [&](int c0) {
         {
             const int tt = tid >> 5, f = tid & 31, t = c0 + tt;
@@ -192,16 +275,22 @@ __global__ void __launch_bounds__(256) k_pf_gdn(const float* __restrict__ qkv, c
             const int tt = tid >> 3, f = tid & 7, t = c0 + tt;
             if (t < T) rv = __ldg((const float4*)(qkv + (size_t)t * 5120 + 2048 + vl * 128 + sl * 32) + f);
         }
-        if (tid < 16) {
-            const int tt = tid >> 1, t = c0 + tt;
-            if (t < T) rab = __ldg(yab + (size_t)t * 48 + (tid & 1) * 24 + vl);
+        if (tid >= 64 && tid < 64 + GCH) {
+            const int t = c0 + tid - 64;
+            if (t < T) {
+                const float ya_ = __ldg(yab + (size_t)t * 48 + vl), yb = __ldg(yab + (size_t)t * 48 + 24 + vl);
+                rbeta = 1.0f / (1.0f + expf(-yb));
+                const float xg = ya_ + dtv;
+                const float sp = xg > 20.0f ? xg : logf(1.0f + expf(xg));
+                rg = expf(sp * av);
+            }
         }
     };
     auto sstore = [&](int b) {
         *(float4*)&sq[b][tid >> 5][(tid & 31) * 4] = rq;
         *(float4*)&sk[b][tid >> 5][(tid & 31) * 4] = rk;
         if (tid < 64) *(float4*)&svv[b][tid >> 3][(tid & 7) * 4] = rv;
-        if (tid < 16) sab[b][tid >> 1][tid & 1] = rab;
+        if (tid >= 64 && tid < 64 + GCH) { sab[b][tid - 64][0] = rg; sab[b][tid - 64][1] = rbeta; }
     };
     gload(0);
     sstore(0);
@@ -210,47 +299,45 @@ __global__ void __launch_bounds__(256) k_pf_gdn(const float* __restrict__ qkv, c
         if (c0 + GCH < T) gload(c0 + GCH);
         const int n = min(GCH, T - c0);
         for (int tt = 0; tt < n; tt++) {
-            float kr[4], qr[4];
+            float kr[4][4], qr[4][4];
 #pragma unroll
-            for (int r = 0; r < 4; r++) { kr[r] = sk[b][tt][r * 32 + lane]; qr[r] = sq[b][tt][r * 32 + lane]; }
-            const float4 v4 = *(const float4*)&svv[b][tt][warp * 4];
-            const float sv[4] = {v4.x, v4.y, v4.z, v4.w};
-            const float ya_ = sab[b][tt][0], yb = sab[b][tt][1];
-            const float beta = 1.0f / (1.0f + expf(-yb));
-            const float xg = ya_ + dtv;
-            const float sp = xg > 20.0f ? xg : logf(1.0f + expf(xg));
-            const float gv = expf(sp * av);
-            float outv[4];
-#pragma unroll
-            for (int cc = 0; cc < 4; cc++) {
-                float kv = 0.f;
-#pragma unroll
-                for (int r = 0; r < 4; r++) kv += s[cc][r] * kr[r];
-                kv = warp_sum(kv);
-                const float delta = (sv[cc] - gv * kv) * beta;
-                float a = 0.f;
-#pragma unroll
-                for (int r = 0; r < 4; r++) {
-                    const float sn = gv * s[cc][r] + kr[r] * delta;
-                    a += sn * qr[r];
-                    s[cc][r] = sn;
-                }
-                outv[cc] = warp_sum(a);
+            for (int m = 0; m < 4; m++) {
+                const float4 kv4 = *(const float4*)&sk[b][tt][32 * m + 4 * i8];
+                const float4 qv4 = *(const float4*)&sq[b][tt][32 * m + 4 * i8];
+                kr[m][0] = kv4.x; kr[m][1] = kv4.y; kr[m][2] = kv4.z; kr[m][3] = kv4.w;
+                qr[m][0] = qv4.x; qr[m][1] = qv4.y; qr[m][2] = qv4.z; qr[m][3] = qv4.w;
             }
-            if (lane == 0)
-                *(float4*)(o + (size_t)(c0 + tt) * 3072 + vl * 128 + sl * 32 + warp * 4) =
-                    make_float4(outv[0] * (1.0f / sqrtf(128.0f)), outv[1] * (1.0f / sqrtf(128.0f)),
-                                outv[2] * (1.0f / sqrtf(128.0f)), outv[3] * (1.0f / sqrtf(128.0f)));
+            const float gv = sab[b][tt][0], beta = sab[b][tt][1], sv = svv[b][tt][colw];
+            float kv = 0.f;
+#pragma unroll
+            for (int m = 0; m < 4; m++)
+#pragma unroll
+                for (int e = 0; e < 4; e++) kv += s[m][e] * kr[m][e];
+            kv += __shfl_xor_sync(0xffffffffu, kv, 1);
+            kv += __shfl_xor_sync(0xffffffffu, kv, 2);
+            kv += __shfl_xor_sync(0xffffffffu, kv, 4);
+            const float delta = (sv - gv * kv) * beta;
+            float a = 0.f;
+#pragma unroll
+            for (int m = 0; m < 4; m++)
+#pragma unroll
+                for (int e = 0; e < 4; e++) {
+                    const float sn = gv * s[m][e] + kr[m][e] * delta;
+                    a += sn * qr[m][e];
+                    s[m][e] = sn;
+                }
+            a += __shfl_xor_sync(0xffffffffu, a, 1);
+            a += __shfl_xor_sync(0xffffffffu, a, 2);
+            a += __shfl_xor_sync(0xffffffffu, a, 4);
+            if (i8 == 0) o[(size_t)(c0 + tt) * 3072 + vl * 128 + col] = a * (1.0f / sqrtf(128.0f));
         }
         if (c0 + GCH < T) sstore(b ^ 1);
         __syncthreads();
     }
+    {
+        float* Sp = S + ((size_t)vl * 128 + col) * 128 + 4 * i8;
 #pragma unroll
-    for (int cc = 0; cc < 4; cc++) {
-        const int col = sl * 32 + warp * 4 + cc;
-        float* Sp = S + ((size_t)vl * 128 + col) * 128;
-#pragma unroll
-        for (int r = 0; r < 4; r++) Sp[r * 32 + lane] = s[cc][r];
+        for (int m = 0; m < 4; m++) *(float4*)(Sp + 32 * m) = make_float4(s[m][0], s[m][1], s[m][2], s[m][3]);
     }
 }
 
@@ -637,6 +724,13 @@ struct PfRun {
         mark(g, W.L.N == 8192 ? "gemm_qkvz" : W.L.N == 7168 ? "gemm_attn_qkv" : W.L.N == 17408 ? "gemm_gateup"
                 : W.L.K == 8704 ? "gemm_down" : W.L.fmt == gemv::FAST_K5 ? "gemm_ssm_out" : "gemm_attn_out");
     }
+    Q8Out q8out(int g, int s, int K) {
+        PfGpu& B = P->G[g];
+        Q8Out q;
+        q.xq = B.xq; q.xs = B.xs; q.xsum = B.xsum; q.K = K; q.Tp = (sT[s] + 127) / 128 * 128;
+        return q;
+    }
+    bool fused() const { return c->tps->pf_fuse && !i4; }
     // K5 GEMMs need int8 activations even in i4 mode
     void qg(int g, int s, const tp::FW& W, const float* x, int K, float* y, int ldy) {
         const bool save = i4;
@@ -666,15 +760,21 @@ struct PfRun {
         CK(cudaStreamWaitEvent(S.G[g].s, P->G[1 - g].sent[s][sl], 0));
         CK(cudaStreamWaitEvent(S.G[g].s, P->G[g].sent[s][sl], 0));
     }
-    void add_norm(int g, int s, const float* w, bool add) {
+    // q8: fused path, quantize into the GEMM layout (xn written only when want_xn)
+    void add_norm(int g, int s, const float* w, bool add, bool q8 = false, bool want_xn = true) {
         tp::Gpu& G = c->tps->G[g];
         PfGpu& B = P->G[g];
         if (add) recv(g, s);
         const int sl = (ar - 1) & 1;
         const size_t off = (size_t)st0[s] * D;
-        k_pf_add_norm<<<sT[s], 256, 0, G.s>>>(B.h + off, B.part + off, B.rx[sl] + off, g, add ? 1 : 0, w, B.xn + off);
+        if (q8)
+            k_pf_add_norm_q8<<<sT[s], 256, 0, G.s>>>(B.h + off, B.part + off, B.rx[sl] + off, g, add ? 1 : 0, w,
+                                                     want_xn ? B.xn + off : nullptr, q8out(g, s, D));
+        else
+            k_pf_add_norm<<<sT[s], 256, 0, G.s>>>(B.h + off, B.part + off, B.rx[sl] + off, g, add ? 1 : 0, w,
+                                                  B.xn + off);
         ck_launch("add_norm");
-        mark(g, "ar_wait+add_norm");
+        mark(g, q8 ? "ar_wait+add_norm_q8" : "ar_wait+add_norm");
     }
 
     void mixer(int g, int il, int s, float theta_scale) {
@@ -683,9 +783,11 @@ struct PfRun {
         tp::Layer& L = G.L[il];
         PfGpu& B = P->G[g];
         const int t0 = st0[s], Ts = sT[s], ps = p0 + t0;
-        add_norm(g, s, L.attn_norm, il > 0);
+        const bool fu = fused();
+        add_norm(g, s, L.attn_norm, il > 0, fu, !L.attn);
         if (!L.attn) {
-            qg(g, s, L.qkvz, B.xn, D, B.y, 8192);
+            if (fu) gemm(g, s, L.qkvz, B.y, 8192);
+            else qg(g, s, L.qkvz, B.xn, D, B.y, 8192);
             k_pf_ab<<<(Ts + 7) / 8, 128, 0, G.s>>>(B.xn + (size_t)t0 * D, L.ab, Ts, B.yab + (size_t)t0 * 48);
             mark(g, "ab");
             k_pf_conv<<<dim3(Ts, 40), 128, 0, G.s>>>(B.y + (size_t)t0 * 8192, 8192, L.conv_ring, L.conv_w, ps,
@@ -702,13 +804,22 @@ struct PfRun {
             k_pf_gdn<<<96, 256, 0, G.s>>>(B.qkv + (size_t)t0 * 5120, B.yab + (size_t)t0 * 48, Ts, L.ssm_a, L.ssm_dt,
                                           L.S, B.o + (size_t)t0 * 3072);
             mark(g, "gdn_scan");
-            k_pf_gnorm<<<dim3(Ts, 24), 128, 0, G.s>>>(B.o + (size_t)t0 * 3072, B.y + (size_t)t0 * 8192, 8192,
-                                                       L.ssm_norm, B.g32 + (size_t)t0 * 3072);
-            ck_launch("deltanet");
-            mark(g, "gnorm");
-            qg(g, s, L.ssm_out, B.g32, 3072, B.part, D);
+            if (fu) {
+                k_pf_gnorm_q8<<<dim3(Ts, 24), 128, 0, G.s>>>(B.o + (size_t)t0 * 3072, B.y + (size_t)t0 * 8192, 8192,
+                                                              L.ssm_norm, q8out(g, s, 3072));
+                ck_launch("deltanet");
+                mark(g, "gnorm_q8");
+                gemm(g, s, L.ssm_out, B.part, D);
+            } else {
+                k_pf_gnorm<<<dim3(Ts, 24), 128, 0, G.s>>>(B.o + (size_t)t0 * 3072, B.y + (size_t)t0 * 8192, 8192,
+                                                           L.ssm_norm, B.g32 + (size_t)t0 * 3072);
+                ck_launch("deltanet");
+                mark(g, "gnorm");
+                qg(g, s, L.ssm_out, B.g32, 3072, B.part, D);
+            }
         } else {
-            qg(g, s, L.qkv_a, B.xn, D, B.y, 7168);
+            if (fu) gemm(g, s, L.qkv_a, B.y, 7168);
+            else qg(g, s, L.qkv_a, B.xn, D, B.y, 7168);
             k_pf_attn_prep<<<dim3(Ts, 14), 256, 0, G.s>>>(B.y + (size_t)t0 * 7168, 7168, L.q_norm, L.k_norm,
                                                           B.qa + (size_t)t0 * 3072, (__half*)L.kc, (__half*)L.vc,
                                                           S.max_ctx, ps, theta_scale);
@@ -732,7 +843,16 @@ struct PfRun {
         tp::Layer& L = G.L[il];
         PfGpu& B = P->G[g];
         const int t0 = st0[s], Ts = sT[s];
-        add_norm(g, s, L.post_norm, true);
+        const bool fu = fused();
+        add_norm(g, s, L.post_norm, true, fu, false);
+        if (fu) {
+            gemm(g, s, L.gateup, B.y, 17408);
+            k_pf_silu_q8<<<dim3(Ts, 34), 256, 0, G.s>>>(B.y + (size_t)t0 * 17408, 17408, q8out(g, s, 8704));
+            ck_launch("silu_q8");
+            mark(g, "silu_q8");
+            gemm(g, s, L.down, B.part, D);
+            return;
+        }
         qg(g, s, L.gateup, B.xn, D, B.y, 17408);
         k_pf_silu<<<dim3(Ts, 34), 256, 0, G.s>>>(B.y + (size_t)t0 * 17408, 17408, B.g32 + (size_t)t0 * 8704);
         ck_launch("silu");
