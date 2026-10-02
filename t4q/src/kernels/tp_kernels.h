@@ -12,7 +12,8 @@ void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t 
           const SegArgs* seg = nullptr, const ProArgs* pro = nullptr);
 void set_max_blocks(int n);
 int gemv_threads();  // block size of plain (K-split) GEMVs
-void set_p4u(int v);  // P4 unsigned high-nibble dp4a path (option p4u)
+void set_p4u(int v);
+void set_sq_threads(int v);  // 128 or 256 (option sqt)  // P4 unsigned high-nibble dp4a path (option p4u)
 void set_threads(int n);
 void touch(const uint8_t* p, size_t n, int mode, float* sink, cudaStream_t s);  // L2 warm-up experiment  // GEMV block size for plain-x kernels (128 or 256)
 
@@ -40,6 +41,10 @@ void ar_norm_ll(const float* h, float* h_out, const float* own, const float2* rx
                 const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s);
 // ar_norm implementation: 0 = multi-block (default), 1 = single block
 void set_arn(int v);
+// arpub 3: AR + norm where each of the 20 blocks publishes its own slice of the partial with its own flag
+void ar_norm_mf(const float* h, float* h_out, const float* own, const float* rx, const unsigned* tflag,
+                const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s,
+                float* peer_rx, unsigned* peer_tflag);
 // spin-wait backoff (ns) for flag waits on the current device
 void set_spin_ns(int ns);
 void set_attn2(int v);  // 1: split attention v2 (reduce-scatter scores, separate softmax and P.V)

@@ -253,6 +253,7 @@ __device__ __noinline__ void ar_tail(const ArArgs& ar, unsigned nwork, int t, fl
 }
 
 int g_max_blocks = 80;
+int g_sq_threads = 128;  // gate|up silu-quant GEMV block size (option sqt: 128 -> 2 tiles per warp, 256 -> 1)
 int g_threads = 128;  // plain-x GEMV block size (M4 v11 selftest: 128 >= 256 on every shape)
 
 template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO, bool SQ = false, int CVX = 1>
@@ -637,7 +638,7 @@ void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaSt
     }
     const bool coresident = (PRO != PRO_NONE && !(SQ && PRO != PRO_LEADER));
     // block size: 128 threads (T4Q_THREADS) only for plain-x kernels; prologue kernels assume 256
-    const int threads = PRO == PRO_NONE ? g_threads : 256;
+    const int threads = PRO == PRO_NONE ? (SQ ? g_sq_threads : g_threads) : 256;
     const int wpb = threads / 32;
     const int target = coresident ? std::min((ntot + wpb - 1) / wpb, cap) : (ntot + wpb - 1) / wpb;
     int tpw = (ntot + wpb * target - 1) / (wpb * target);
@@ -664,6 +665,7 @@ void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaSt
 
 int g_p4u = 1;  // 1: P4 GEMVs use the unsigned high-nibble dp4a path (bit-identical, fewer instructions)
 void set_p4u(int v) { g_p4u = v; }
+void set_sq_threads(int v) { g_sq_threads = v == 256 ? 256 : 128; }
 void set_max_blocks(int n) { g_max_blocks = n; }
 int gemv_threads() { return g_threads; }
 void set_threads(int n) { g_threads = (n == 128) ? 128 : 256; }
@@ -813,12 +815,27 @@ __global__ void __launch_bounds__(1024) k_ar_norm(const float* h, float* h_out, 
 // one element per thread. The single-block kernel above spent 13-15 us per call (graph trace, M4 v14) in its serial
 // per-thread loop of 5 dependent load + quant_warp rounds.
 constexpr int ARN_BLOCKS = 20;
-template <bool WAIT>
+// MF (arpub 3): every block copies its own 256-element slice of the partial to the peer and sets its own flag
+// (pub_peer_flag / flag are [2][TFLAGS] arrays); threads 0..19 then wait for the peer's 20 slice flags
+template <bool WAIT, bool MF = false>
 __global__ void __launch_bounds__(256) k_ar_norm_mb(const float* h, float* h_out, const float* own, const float* rx,
                                                     const unsigned* flag, StepState* st, int idx,
                                                     const float* __restrict__ w, float* xn, int8_t* xq, int2* xm,
                                                     const Pf pf, float* pub_peer_rx, unsigned* pub_peer_flag) {
     T4Q_PF_BLOCKS(ARN_BLOCKS)
+    if (MF) {
+        const int sl = idx & 1, e0 = blockIdx.x * 256 + threadIdx.x;
+        pub_peer_rx[sl * 5120 + e0] = own[sl * 5120 + e0];
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            __threadfence_system();
+            st_vol_u32(pub_peer_flag + sl * TFLAGS + blockIdx.x, epoch_of(st, idx));
+        }
+        if (threadIdx.x < ARN_BLOCKS) {
+            if (!wait_flag(flag + sl * TFLAGS + threadIdx.x, epoch_of(st, idx))) st->err = 1000 + idx;
+        }
+        __syncthreads();
+    }
     __shared__ __align__(16) float sx[5120];
     __shared__ float red[8];
     __shared__ int s_ok;
@@ -827,7 +844,7 @@ __global__ void __launch_bounds__(256) k_ar_norm_mb(const float* h, float* h_out
     const int e = blockIdx.x * 256 + tid;
     DBG_T0
     const float wv = w[e];  // independent of the wait: issue early
-    if (pub_peer_flag && blockIdx.x == 0)
+    if (!MF && pub_peer_flag && blockIdx.x == 0)
         publish_partial(own + slot * 5120, pub_peer_rx ? pub_peer_rx + slot * 5120 : nullptr, pub_peer_flag + slot,
                         epoch_of(st, idx));
     float4 xv[5], ov[5];
@@ -1804,6 +1821,13 @@ void gdn_gn(const float* y, const float* yab, float* ring, const float* conv_w, 
     k_gdn_gn<<<96, 256, 0, s>>>(y, yab, ring, conv_w, ssm_a, ssm_dt, S, o, st, cnt, z, gw, xq, xm);
 }
 
+void ar_norm_mf(const float* h, float* h_out, const float* own, const float* rx, const unsigned* tflag,
+                const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s,
+                float* peer_rx, unsigned* peer_tflag) {
+    k_ar_norm_mb<false, true><<<ARN_BLOCKS, 256, 0, s>>>(h, h_out, own, rx, tflag, (StepState*)st, idx, w, xn, xq, xm,
+                                                         Pf{}, peer_rx, peer_tflag);
+}
+
 void ar_norm_ll(const float* h, float* h_out, const float* own, const float2* rxl, const StepState* st, int idx,
                 const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s) {
     k_ar_norm_ll<<<1, 1024, 0, s>>>(h, h_out, own, rxl, (StepState*)st, idx, w, xn, xq, xm);
@@ -1827,7 +1851,7 @@ void attn_prep(const float* ya, const float* qw, const float* kw, float* qa, uin
     k_attn_prep<<<14, 256, 0, s>>>(ya, qw, kw, qa, (__half*)kc, (__half*)vc, max_ctx, st, theta_scale);
 }
 
-int g_attn2 = 1;
+int g_attn2 = 0;
 void set_attn2(int v) { g_attn2 = v; }
 void attn_split(const float* qa, const uint16_t* kc, const uint16_t* vc, float* ws, int max_ctx, const StepState* st,
                 cudaStream_t s) {

@@ -513,6 +513,12 @@ struct Enq {
         }
         if (c->tps->fuse) return &p;  // fuse 2: redundant AR + norm prologue in every block
         if (tail() && p.add) return nullptr;  // the previous K-split GEMV's tail blocks did the AR + norm
+        if (c->tps->arpub == 3 && c->tps->p2p && p.add) {
+            tp::ar_norm_mf(p.h_in, p.h_out, G.part, G.rx, G.tflag, G.st, p.idx, p.nw, G.xn, G.xq, G.xm, G.s,
+                           G.peer_rx, G.peer_tflag);
+            mark(G, "ar_norm");
+            return nullptr;
+        }
         if (ll() && p.add) {
             tp::ar_norm_ll(p.h_in, p.h_out, G.part, G.rxl, G.st, p.idx, p.nw, G.xn, G.xq, G.xm, G.s);
             mark(G, "ar_norm");
@@ -1193,10 +1199,11 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
         sync_both(c);
         return 0;
     }
-    if (k == "arn" || k == "p4u" || k == "attn2") {  // host-side launch choice: graphs are re-captured
+    if (k == "arn" || k == "p4u" || k == "attn2" || k == "sqt") {  // host-side launch choice: graphs are re-captured
         sync_both(c);
         if (k == "arn") { tp::set_arn(v); S.arn = v; }
         else if (k == "attn2") { tp::set_attn2(v); S.attn2 = v; }
+        else if (k == "sqt") { tp::set_sq_threads(v); S.sqt = v; }
         else { tp::set_p4u(v); S.p4u = v; }
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
@@ -1358,10 +1365,10 @@ std::string tp_stats_json(t4q_ctx* c) {
     char b[512];
     snprintf(b, sizeof b,
              ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"arpub\": %d, \"mega\": %d, \"pf_kb\": %d, \"graphs\": %d, "
-             "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"attnf\": %d, \"p4u\": %d, \"cm\": %d, \"tail\": %d, \"arpub_auto\": %d, \"ar_rows_cost_us\": %.1f, \"attn2\": %d, "
+             "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"attnf\": %d, \"p4u\": %d, \"cm\": %d, \"tail\": %d, \"arpub_auto\": %d, \"ar_rows_cost_us\": %.1f, \"attn2\": %d, \"sqt\": %d, "
              "\"graph_capture_ms\": %.1f",
              (int)S.p2p, S.fuse, S.arpub, S.mega, S.pf_kb, (int)S.graphs, S.ll, S.gdnf, S.spin_ns, S.arn, S.attnf,
-             S.p4u, S.G[0].lm.L.cm, S.tail, S.arpub_auto, S.ar_rows_cost_us, S.attn2,
+             S.p4u, S.G[0].lm.L.cm, S.tail, S.arpub_auto, S.ar_rows_cost_us, S.attn2, S.sqt,
              S.ms_graph_capture);
     std::string s = b;
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;
