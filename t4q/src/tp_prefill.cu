@@ -58,7 +58,10 @@ __global__ void k_pf_embed(const uint8_t* __restrict__ embd, const int* __restri
 
 // [h += p0 + p1] (p0 = GPU0's partial on both GPUs, so both residuals stay bit-identical); xn = rmsnorm(h) * w.
 // grid T x 256 threads (20 elements each)
-__global__ void __launch_bounds__(256) k_pf_add_norm(float* h, const float* own, const float* rx, int gpu, int add,
+__device__ __forceinline__ float ldp(const float* p, int i) { return p[i]; }
+__device__ __forceinline__ float ldp(const __half* p, int i) { return __half2float(p[i]); }
+template <class PT>
+__global__ void __launch_bounds__(256) k_pf_add_norm(float* h, const PT* own, const PT* rx, int gpu, int add,
                                                      const float* __restrict__ w, float* xn) {
     __shared__ float red[8];
     const int t = blockIdx.x, tid = threadIdx.x;
@@ -67,11 +70,11 @@ __global__ void __launch_bounds__(256) k_pf_add_norm(float* h, const float* own,
 #pragma unroll
     for (int k = 0; k < 20; k++) x[k] = hp[tid + 256 * k];
     if (add) {
-        const float* p0 = (gpu == 0 ? own : rx) + (size_t)t * D;
-        const float* p1 = (gpu == 0 ? rx : own) + (size_t)t * D;
+        const PT* p0 = (gpu == 0 ? own : rx) + (size_t)t * D;
+        const PT* p1 = (gpu == 0 ? rx : own) + (size_t)t * D;
 #pragma unroll
         for (int k = 0; k < 20; k++) {
-            x[k] = x[k] + (p0[tid + 256 * k] + p1[tid + 256 * k]);
+            x[k] = x[k] + (ldp(p0, tid + 256 * k) + ldp(p1, tid + 256 * k));
             hp[tid + 256 * k] = x[k];
         }
     }
@@ -130,7 +133,8 @@ __device__ __forceinline__ void warp_q8(float v, const Q8Out& q, int tr, int k) 
 }
 
 // [h += p0 + p1]; x = rmsnorm(h) * w -> q8 (and fp32 xn if xn != nullptr). grid T x 256 (token tr of the sub-batch)
-__global__ void __launch_bounds__(256) k_pf_add_norm_q8(float* h, const float* own, const float* rx, int gpu, int add,
+template <class PT>
+__global__ void __launch_bounds__(256) k_pf_add_norm_q8(float* h, const PT* own, const PT* rx, int gpu, int add,
                                                         const float* __restrict__ w, float* xn, Q8Out q) {
     __shared__ float red[8];
     const int t = blockIdx.x, tid = threadIdx.x;
@@ -139,11 +143,11 @@ __global__ void __launch_bounds__(256) k_pf_add_norm_q8(float* h, const float* o
 #pragma unroll
     for (int k = 0; k < 20; k++) x[k] = hp[tid + 256 * k];
     if (add) {
-        const float* p0 = (gpu == 0 ? own : rx) + (size_t)t * D;
-        const float* p1 = (gpu == 0 ? rx : own) + (size_t)t * D;
+        const PT* p0 = (gpu == 0 ? own : rx) + (size_t)t * D;
+        const PT* p1 = (gpu == 0 ? rx : own) + (size_t)t * D;
 #pragma unroll
         for (int k = 0; k < 20; k++) {
-            x[k] = x[k] + (p0[tid + 256 * k] + p1[tid + 256 * k]);
+            x[k] = x[k] + (ldp(p0, tid + 256 * k) + ldp(p1, tid + 256 * k));
             hp[tid + 256 * k] = x[k];
         }
     }
@@ -1219,6 +1223,7 @@ struct PfRun {
     bool i4 = false;
     bool g8 = false;  // gemm8 path (pf_g8)
     int chk_done[2] = {0, 0};
+    bool ar16 = false;  // pf_ar16: K-split GEMMs write fp16 partials, the all-reduce copies fp16
     int ga = 32;      // gemm8 activation scale group (pf_ga)
     int tpad(int Ts) const { return g8 ? (Ts + 255) / 256 * 256 : (Ts + 127) / 128 * 128; }
     // profiling (option pf_prof): events on GPU0's stream after each op group, named by the op that just ended
@@ -1260,6 +1265,7 @@ struct PfRun {
         } else if (g8) {
             gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, in2 ? B.xq2 : B.xq, in2 ? B.dx2 : B.dx,
                                               y + (size_t)st0[s] * ldy, ldy, Ts, Tps);
+            if (ar16 && y == B.part) { a8.yh = (__half*)B.part + (size_t)st0[s] * ldy; a8.y = nullptr; }
             const int pbn = c->tps->pf_bn;
             const int bn = pbn ? pbn : (Tps >= 512 ? 256 : 128);
             e = gemm8::launch9(W.L.fmt, W.L.rpl, (Tps % bn) ? 128 : bn, ga, a8, G.s);
@@ -1303,7 +1309,10 @@ struct PfRun {
             PfGpu& B = P->G[g];
             CK(cudaEventRecord(B.part_ev[s], S.G[g].s));
             CK(cudaStreamWaitEvent(B.sc, B.part_ev[s], 0));
-            CK(cudaMemcpyPeerAsync(P->G[1 - g].rx[sl] + off, 1 - g, B.part + off, g, bytes, B.sc));
+            if (ar16)
+                CK(cudaMemcpyPeerAsync((__half*)P->G[1 - g].rx[sl] + off, 1 - g, (const __half*)B.part + off, g, bytes / 2, B.sc));
+            else
+                CK(cudaMemcpyPeerAsync(P->G[1 - g].rx[sl] + off, 1 - g, B.part + off, g, bytes, B.sc));
             CK(cudaEventRecord(B.sent[s][sl], B.sc));
         }
     }
@@ -1322,11 +1331,19 @@ struct PfRun {
         const int sl = (ar - 1) & 1;
         const size_t off = (size_t)st0[s] * D;
         if (q8)
-            k_pf_add_norm_q8<<<sT[s], 256, 0, G.s>>>(B.h + off, B.part + off, B.rx[sl] + off, g, add ? 1 : 0, w,
-                                                     want_xn ? B.xn + off : nullptr, q8out(g, s, D));
+            if (ar16)
+                k_pf_add_norm_q8<__half><<<sT[s], 256, 0, G.s>>>(B.h + off, (const __half*)B.part + off, (const __half*)B.rx[sl] + off,
+                                                                 g, add ? 1 : 0, w, want_xn ? B.xn + off : nullptr, q8out(g, s, D));
+            else
+                k_pf_add_norm_q8<float><<<sT[s], 256, 0, G.s>>>(B.h + off, B.part + off, B.rx[sl] + off, g, add ? 1 : 0, w,
+                                                                want_xn ? B.xn + off : nullptr, q8out(g, s, D));
         else
-            k_pf_add_norm<<<sT[s], 256, 0, G.s>>>(B.h + off, B.part + off, B.rx[sl] + off, g, add ? 1 : 0, w,
-                                                  B.xn + off);
+            if (ar16)
+                k_pf_add_norm<__half><<<sT[s], 256, 0, G.s>>>(B.h + off, (const __half*)B.part + off, (const __half*)B.rx[sl] + off,
+                                                              g, add ? 1 : 0, w, B.xn + off);
+            else
+                k_pf_add_norm<float><<<sT[s], 256, 0, G.s>>>(B.h + off, B.part + off, B.rx[sl] + off, g, add ? 1 : 0, w,
+                                                             B.xn + off);
         ck_launch("add_norm");
         mark(g, q8 ? "ar_wait+add_norm_q8" : "ar_wait+add_norm");
     }
@@ -1519,6 +1536,7 @@ int tp_prefill_batched(t4q_ctx* c, const int32_t* ids, int n, void (*run_last_st
         R.T = std::min(S.pf_ub, nb - b0);
         R.p0 = c->pos + b0;
         R.g8 = S.pf_g8 != 0;
+        R.ar16 = R.g8 && S.pf_ar16;
         R.ga = S.pf_ga;
         R.i4 = S.pf_i4 != 0 && !R.g8;
         if (S.pf_prof) { R.ev = &ev; R.evn = &evn; }

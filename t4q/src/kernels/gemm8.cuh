@@ -73,6 +73,7 @@ struct Args {
     // AB bit 6 (gate|up silu epilogue, gemm9 GA 64 BN 256): q8 of silu(gate) * up straight into the down GEMM's input
     int8_t* oq = nullptr;  // [Tp][N/2]
     float* odx = nullptr;  // [N/128][Tp] (64-feature groups)
+    __half* yh = nullptr;  // if set: fp16 output yh[t * ldy + n] instead of y (no accumulate)
 };
 
 static inline Args make_args(const gemv::Layout& L, const uint8_t* base, const float* invs, const int8_t* xq,
@@ -686,9 +687,13 @@ __global__ void __launch_bounds__(NT, 1) gemm9_kernel(const Args a) {
             for (int e = 0; e < 2; ++e) {
                 const int tok = tok0 + wn * WN + 8 * g + 2 * t4 + e;
                 if (tok < a.T) {
-                    float* p = a.y + (size_t)tok * a.ldy + row;
                     const float v = GA == 0 ? (float)__float_as_int(acc[i][g][e]) * (a.dx[tok] * sr) : acc[i][g][e] * sr;
-                    *p = a.accumulate ? *p + v : v;
+                    if (a.yh) {
+                        a.yh[(size_t)tok * a.ldy + row] = __float2half_rn(v);
+                    } else {
+                        float* p = a.y + (size_t)tok * a.ldy + row;
+                        *p = a.accumulate ? *p + v : v;
+                    }
                 }
             }
     }

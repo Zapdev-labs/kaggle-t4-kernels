@@ -282,6 +282,7 @@ struct State {
     int pf_ga = 64;       // gemm8 activation scale group: 32 (exact q8 blocks), 64, or 0 (one scale per token)
     int pf_silu = 1;      // 1: gate|up GEMM epilogue writes q8(silu(gate) * up) for down (gemm8 GA 64 only)
     int pf_gdn2 = 0;
+    int pf_ar16 = 1;      // 1: fp16 all-reduce partials (gemm8 path)
     int pf_gdnc = 1;      // 1: chunked DeltaNet scan on fp16 tensor cores (k_pf_gdnc)
     int pf_gdnc_chk = 0;  // 1: first DeltaNet call of each batched prefill also runs the sequential scan and compares
     std::string pf_gdnc_json;      // 1: DeltaNet scan computes o_t and kv_{t+1} in one pass over the state (0: two passes)
