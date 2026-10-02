@@ -374,10 +374,10 @@ def summarize_sustain(S):
 
 REF_SUSTAIN = 8
 GEMM_KBU = [2]
-GEMM_TABLE = True
+GEMM_TABLE = False
 GEMM_SASS = ["_ZN3t4q5gemm812gemm12_kernelILi0ELi4ELi3EEEvNS0_4ArgsE"]
 GEMM_SUSTAIN = 4
-GEMM_SVARS = "17,32,33,16,17,33"
+GEMM_SVARS = "17,34,35,36,37,17"
 NVCC = "/usr/local/cuda/bin/nvcc" if os.path.exists("/usr/local/cuda/bin/nvcc") else (shutil.which("nvcc") or "nvcc")
 
 

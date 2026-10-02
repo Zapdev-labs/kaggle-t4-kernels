@@ -70,7 +70,7 @@ static int g_dev = 0;
 
 static const char* VNAME[] = {"i8", "i8_epi1", "i8_epi0", "f16", "i4split", "w4a4_timing", "g8_256", "g8_128", "g8m1", "g8m2", "g8m3", "g8m7", "g8m15", "g8m8", "g8b_256", "g8b_128", "g9_256_32", "g9_256_64", "g9_128_32", "g9_128_64",
                                "g9_256_tok", "g9a_noconv", "g9a_noffma", "g9a_hotld", "g9a_nold", "g9a_nold_nosts", "g9a_tok_nold_nosts",
-                               "g9_256_64_il", "g10_64", "g10_128", "g11_256x128", "g11_128x256", "g12_s2", "g12_s3"};
+                               "g9_256_64_il", "g10_64", "g10_128", "g11_256x128", "g11_128x256", "g12_s2", "g12_s3", "g9_64_zero_x", "g9_64_zero_w", "g9_64_const_x", "g9_64_sparse_x"};
 static float* g_invs = nullptr;
 static float* g_dx = nullptr;
 static const Layout* g_L = nullptr;
@@ -96,6 +96,10 @@ static cudaError_t launch_var(int var, int fmt, int rpl, const gemm::GemmArgs& a
             case 14: return gemm8::launch_t<FAST_P4, 4, 256, 16>(a8, st);
             case 15: return gemm8::launch_t<FAST_P4, 4, 128, 16>(a8, st);
         }
+    }
+    if (var >= 34 && var <= 37) {  // data-toggle probes: gemm9 GA64 BN256 on modified inputs (set up in the sustain loop)
+        gemm8::Args a8 = gemm8::make_args(*g_L, g_w, g_invs, a.xq, g_dx, a.y, a.ldy, a.T, a.Tp);
+        return gemm8::launch9(fmt, rpl, 256, 64, a8, st);
     }
     if (var == 32 || var == 33) {
         gemm8::Args a8 = gemm8::make_args(*g_L, g_w, g_invs, a.xq, g_dx, a.y, a.ldy, a.T, a.Tp);
@@ -565,9 +569,26 @@ int main(int argc, char** argv) {
         }
         for (int var : svars) {
         if (var >= 6) gemm8::quant8(D.x, K, T, Tp, K, D.xq, g_dx, st,
-                                    var >= 32 ? 32 : var == 29 ? 128 : var >= 30 ? 64 : (var == 20 || var == 26) ? 0 : var >= 21 ? 64 : (var >= 16 && (var & 1)) ? 64 : 32);
+                                    var >= 34 ? 64 : var >= 32 ? 32 : var == 29 ? 128 : var >= 30 ? 64 : (var == 20 || var == 26) ? 0 : var >= 21 ? 64 : (var >= 16 && (var & 1)) ? 64 : 32);
         else if (var >= 4) gemm::quant_rows_i4_kernel<<<(Tp * (K / 32) + 127) / 128, 128, 0, st>>>(D.x, K, T, Tp, K, D.xq, D.xs, D.xsum);
         else gemm::quant_rows(D.x, K, T, Tp, K, D.xq, D.xs, D.xsum, st);
+        // data-toggle probes
+        static uint8_t* wsave = nullptr;
+        if (var == 34) CK(cudaMemsetAsync(D.xq, 0, (size_t)Tp * K, st));                 // all-zero activations
+        if (var == 36) CK(cudaMemsetAsync(D.xq, 0x11, (size_t)Tp * K, st));              // constant activations
+        if (var == 37) {  // 7 of 8 activation bytes zero (keeps every 8th)
+            std::vector<int8_t> h((size_t)Tp * K);
+            CK(cudaMemcpyAsync(h.data(), D.xq, h.size(), cudaMemcpyDeviceToHost, st));
+            CK(cudaStreamSynchronize(st));
+            for (size_t i2 = 0; i2 < h.size(); ++i2) if (i2 & 7) h[i2] = 0;
+            CK(cudaMemcpyAsync(D.xq, h.data(), h.size(), cudaMemcpyHostToDevice, st));
+        }
+        if (var == 35) {  // all-zero weights: codes 0x88 (c = 8 in both nibbles -> w8 = 0)
+            if (!wsave) CK(cudaMalloc(&wsave, L.off_qh > 0 ? L.off_qh : L.bytes));
+            CK(cudaMemcpyAsync(wsave, D.w, L.off_qh, cudaMemcpyDeviceToDevice, st));
+            CK(cudaMemsetAsync(D.w, 0x88, L.off_qh, st));
+        }
+        CK(cudaStreamSynchronize(st));
         auto t0 = std::chrono::steady_clock::now();
         int win = 0;
         while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < sustain) {
@@ -586,6 +607,7 @@ int main(int argc, char** argv) {
                    smp.mw / 1000.0, smp.temp, rs);
             fflush(stdout);
         }
+        if (var == 35) { CK(cudaMemcpyAsync(D.w, wsave, L.off_qh, cudaMemcpyDeviceToDevice, st)); CK(cudaStreamSynchronize(st)); }
         }
     }
     printf("DONE\n");

@@ -744,6 +744,8 @@ struct PfGpu {
     float2* xs = nullptr;
     float* xsum = nullptr;
     float* dx = nullptr;  // gemm8 activation block scales
+    int8_t* xq2 = nullptr;  // fused gate|up silu epilogue output (down GEMM input)
+    float* dx2 = nullptr;
     cudaStream_t sc = nullptr;              // copy stream (AR payloads)
     cudaEvent_t part_ev[NSUB] = {};         // compute stream: partial rows of sub s written
     cudaEvent_t sent[NSUB][2] = {};         // copy stream: sub s rows of AR slot copied to the peer
@@ -773,7 +775,7 @@ Pf* pf_get(t4q_ctx* c) {
             PfGpu& B = P->G[g];
             for (void* p : {(void*)B.ids, (void*)B.h, (void*)B.xn, (void*)B.y, (void*)B.part, (void*)B.rx[0],
                             (void*)B.rx[1], (void*)B.yab, (void*)B.qkv, (void*)B.o, (void*)B.g32, (void*)B.qa,
-                            (void*)B.xq, (void*)B.xs, (void*)B.xsum, (void*)B.dx})
+                            (void*)B.xq, (void*)B.xs, (void*)B.xsum, (void*)B.dx, (void*)B.xq2, (void*)B.dx2})
                 cudaFree(p);
             for (auto e : B.part_ev) cudaEventDestroy(e);
             for (auto& r : B.sent) for (auto e : r) cudaEventDestroy(e);
@@ -803,6 +805,8 @@ Pf* pf_get(t4q_ctx* c) {
         B.xs = dalloc<float2>(Up * (8704 / 32));
         B.xsum = dalloc<float>(Up * (8704 / 32));
         B.dx = dalloc<float>(Up * (8704 / 32));
+        B.xq2 = dalloc<int8_t>(Up * 8704);
+        B.dx2 = dalloc<float>(Up * (8704 / 32));
         CK(cudaStreamCreateWithFlags(&B.sc, cudaStreamNonBlocking));
         for (auto& e : B.part_ev) CK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming));
         for (auto& r : B.sent) for (auto& e : r) CK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming));
@@ -868,14 +872,20 @@ struct PfRun {
         ck_launch("quant");
         mark(g, "quant");
     }
-    void gemm(int g, int s, const tp::FW& W, float* y, int ldy) {
+    // silu: gate|up GEMM whose epilogue writes q8(silu(gate) * up) into xq2/dx2; in2: read the activations from xq2/dx2
+    void gemm(int g, int s, const tp::FW& W, float* y, int ldy, bool silu = false, bool in2 = false) {
         tp::Gpu& G = c->tps->G[g];
         PfGpu& B = P->G[g];
         const int Ts = sT[s], Tps = tpad(Ts);
         cudaError_t e;
         gemm::GemmArgs a = gemm::make_args(W.L, W.base, B.xq, B.xs, B.xsum, y + (size_t)st0[s] * ldy, ldy, Ts, Tps);
-        if (g8) {
-            gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, B.xq, B.dx, y + (size_t)st0[s] * ldy, ldy, Ts, Tps);
+        if (g8 && silu) {
+            gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, B.xq, B.dx, nullptr, 0, Ts, Tps);
+            a8.oq = B.xq2; a8.odx = B.dx2;
+            e = gemm8::launch9_silu(W.L.fmt, W.L.rpl, a8, G.s);
+        } else if (g8) {
+            gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, in2 ? B.xq2 : B.xq, in2 ? B.dx2 : B.dx,
+                                              y + (size_t)st0[s] * ldy, ldy, Ts, Tps);
             const int pbn = c->tps->pf_bn;
             const int bn = pbn ? pbn : (Tps >= 512 ? 256 : 128);
             e = gemm8::launch9(W.L.fmt, W.L.rpl, (Tps % bn) ? 128 : bn, ga, a8, G.s);
@@ -1018,6 +1028,11 @@ struct PfRun {
         const int t0 = st0[s], Ts = sT[s];
         const bool fu = fused();
         add_norm(g, s, L.post_norm, true, fu, false);
+        if (fu && g8 && ga == 64 && S.pf_silu && L.gateup.L.fmt == gemv::FAST_P4) {
+            gemm(g, s, L.gateup, nullptr, 0, true);
+            gemm(g, s, L.down, B.part, D, false, true);
+            return;
+        }
         if (fu) {
             gemm(g, s, L.gateup, B.y, 17408);
             k_pf_silu_q8<<<dim3(Ts, 34), 256, 0, G.s>>>(B.y + (size_t)t0 * 17408, 17408, q8out(g, s, 8704));

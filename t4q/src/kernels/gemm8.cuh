@@ -70,6 +70,9 @@ struct Args {
     const float* dx = nullptr;    // [K/32][Tp] activation block scale d = amax/127 (0 for padding tokens)
     float* y = nullptr;           // y[t * ldy + n]
     int ldy = 0, T = 0, Tp = 0, accumulate = 0;
+    // AB bit 6 (gate|up silu epilogue, gemm9 GA 64 BN 256): q8 of silu(gate) * up straight into the down GEMM's input
+    int8_t* oq = nullptr;  // [Tp][N/2]
+    float* odx = nullptr;  // [N/128][Tp] (64-feature groups)
 };
 
 static inline Args make_args(const gemv::Layout& L, const uint8_t* base, const float* invs, const int8_t* xq,
@@ -623,6 +626,55 @@ __global__ void __launch_bounds__(NT, 1) gemm9_kernel(const Args a) {
             buf ^= 1;
         }
     }
+    if (AB & 64) {
+        // gate|up rows interleaved by 4 (8-row tile: 4 gate rows then the 4 matching up rows): lanes 0..15 hold gate
+        // rows, lane ^ 16 the matching up row. Feature f = row0/2 + wm*32 + 4i + (lane >> 2); a 64-feature group is
+        // the block's 128 rows (both wm warps), so the per-token amax goes through smem.
+        __syncthreads();  // main-loop smem reads done
+        float* amx = (float*)smem;  // [2][BN]
+        float h[8][NG][2];
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            const float sr = __frcp_rn(a.invs[row0 + wm * 64 + i * 8 + (lane >> 2)]);
+#pragma unroll
+            for (int g = 0; g < NG; ++g)
+#pragma unroll
+                for (int e = 0; e < 2; ++e) {
+                    const float v = acc[i][g][e] * sr;
+                    const float u = __shfl_xor_sync(0xffffffffu, v, 16);
+                    h[i][g][e] = lane < 16 ? (v / (1.0f + expf(-v))) * u : 0.f;
+                }
+        }
+#pragma unroll
+        for (int g = 0; g < NG; ++g)
+#pragma unroll
+            for (int e = 0; e < 2; ++e) {
+                float m = 0.f;
+#pragma unroll
+                for (int i = 0; i < 8; ++i) m = fmaxf(m, fabsf(h[i][g][e]));
+                m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, 4));
+                m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, 8));
+                if (lane < 4) amx[wm * BN + wn * WN + 8 * g + 2 * t4 + e] = m;
+            }
+        __syncthreads();
+        const int K2 = a.N >> 1, fb = (row0 >> 1) + wm * 32 + (lane >> 2);
+#pragma unroll
+        for (int g = 0; g < NG; ++g)
+#pragma unroll
+            for (int e = 0; e < 2; ++e) {
+                const int tl = wn * WN + 8 * g + 2 * t4 + e, tok = tok0 + tl;
+                const float am = fmaxf(amx[tl], amx[BN + tl]);
+                const float d = am / 127.f;
+                if (lane < 16) {
+                    int8_t* q = a.oq + (size_t)tok * K2 + fb;
+#pragma unroll
+                    for (int i = 0; i < 8; ++i)
+                        q[4 * i] = (int8_t)((tok < a.T && am != 0.f) ? __float2int_rn(h[i][g][e] / d) : 0);
+                }
+                if (wm == 0 && lane < 4) a.odx[(size_t)(row0 >> 7) * a.Tp + tok] = tok < a.T ? d : 0.f;
+            }
+        return;
+    }
     // GA 0: per-token scale dx[t] (dx is [Tp])
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
@@ -658,6 +710,12 @@ static cudaError_t launch9_t(const Args& a, cudaStream_t s) {
     dim3 grid(a.Tp / BN, a.N / BM);
     k<<<grid, NT, smem, s>>>(a);
     return cudaGetLastError();
+}
+
+// gate|up GEMM with the silu * up -> q8 (GA 64) epilogue into a.oq / a.odx (P4 weights, Tp % 256 == 0)
+static inline cudaError_t launch9_silu(int fmt, int rpl, const Args& a, cudaStream_t s) {
+    if (fmt != gemv::FAST_P4) return cudaErrorInvalidValue;
+    return rpl == 4 ? launch9_t<gemv::FAST_P4, 4, 256, 64, 64>(a, s) : launch9_t<gemv::FAST_P4, 2, 256, 64, 64>(a, s);
 }
 
 // ga: activation group (32 exact q8 blocks, 64, or 0 = per token); bn 256 / 128
