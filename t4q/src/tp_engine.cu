@@ -402,8 +402,29 @@ struct Enq {
     bool rows_in_gemv() const { return arpub() && c->tps->arpub == 2; }  // arpub 2: GEMV writes rows, consumer flags
     // AR args for a K-split GEMV: nullptr (arpub 1: plain GEMV), rows-only (arpub 2) or full epilogue publish
     bool ll() const { return c->tps->ll && c->tps->p2p && c->tps->fuse == 0 && !mega(); }
-    const tp::ArArgs* ksplit(tp::Gpu& G, int idx, tp::ArArgs& a) {
+    bool tail() const { return c->tps->tail && c->tps->p2p && c->tps->fuse == 0 && !mega() && !ll(); }
+    // nw_next: the norm weight applied after this AR (tail mode does that norm in the GEMV's tail blocks)
+    const tp::ArArgs* ksplit(tp::Gpu& G, int idx, tp::ArArgs& a, const float* nw_next) {
         a = ar(G, idx);
+        if (tail()) {
+            const int sl = idx & 1;
+            a.fence = -4;
+            a.tb = 5120 / tp::gemv_threads();
+            a.cnt = G.cnt + 4;
+            a.cnt2 = G.cnt + 5;
+            a.h_in = G.hb[sl];
+            a.h_out = G.hb[(idx + 1) & 1];
+            a.own = G.part + sl * D;
+            a.rx = G.rx + sl * D;
+            a.y_peer = G.peer_rx + sl * D;
+            a.tflag = G.tflag;
+            a.peer_tflag = G.peer_tflag;
+            a.nw = nw_next;
+            a.xn = G.xn;
+            a.xq = G.xq;
+            a.xm = G.xm;
+            return &a;
+        }
         if (ll()) {
             a.y_peer = (float*)(G.peer_rxl + (idx & 1) * D);
             a.fence = -3;
@@ -489,6 +510,7 @@ struct Enq {
             return &lead;
         }
         if (c->tps->fuse) return &p;  // fuse 2: redundant AR + norm prologue in every block
+        if (tail() && p.add) return nullptr;  // the previous K-split GEMV's tail blocks did the AR + norm
         if (ll() && p.add) {
             tp::ar_norm_ll(p.h_in, p.h_out, G.part, G.rxl, G.st, p.idx, p.nw, G.xn, G.xq, G.xm, G.s);
             mark(G, "ar_norm");
@@ -613,7 +635,7 @@ struct Enq {
                     mark(G, "gnorm_q8");
                 }
                 tp::ArArgs a;
-                tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, ksplit(G, idx, a), nullptr,
+                tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, ksplit(G, idx, a, L.post_norm), nullptr,
                          S.fuse == 1 ? &pg : nullptr);
                 mark(G, "gemv_ssm_out");
             } else {
@@ -634,7 +656,7 @@ struct Enq {
                     mark(G, "attn_combine");
                 }
                 tp::ArArgs a;
-                tp::gemv(L.wo, G.xq, G.xm, G.part + (idx & 1) * D, s, ksplit(G, idx, a));
+                tp::gemv(L.wo, G.xq, G.xm, G.part + (idx & 1) * D, s, ksplit(G, idx, a, L.post_norm));
                 mark(G, "gemv_attn_out");
             }
         } else {
@@ -648,7 +670,8 @@ struct Enq {
             tp::gemv(L.gateup, G.xq, G.xm, G.y, s, nullptr, nullptr, &pq);
             mark(G, "gemv_gateup+silu_q8");
             tp::ArArgs a;
-            tp::gemv(L.down, G.xq2, G.xm2, G.part + (idx & 1) * D, s, ksplit(G, idx, a));
+            tp::gemv(L.down, G.xq2, G.xm2, G.part + (idx & 1) * D, s,
+                     ksplit(G, idx, a, il < 63 ? G.L[il + 1].attn_norm : G.output_norm));
             mark(G, "gemv_down");
         }
     }
@@ -707,11 +730,30 @@ void eager_step(t4q_ctx* c, bool prof) {
     const bool dmp = c->dump_on;
     if (dmp) c->dumps.clear();
     for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); q.start(g); }
+    const bool tl = q.tail();
+    if (dmp && tl) {  // tail mode: xn moves on inside each part; dump layer 0's attn_norm from a probe launch
+        tp::Gpu& G = S.G[0];
+        CK(cudaSetDevice(0));
+        tp::ar_norm(G.hb[0], nullptr, nullptr, G.rx, nullptr, G.st, -1, G.L[0].attn_norm, G.xn, G.xq, G.xm, G.s);
+        CK(cudaStreamSynchronize(G.s));
+        dumpv(c, "attn_norm-0", G.xn, D);
+    }
     for (int il = 0; il < 64; il++)
         for (int p = 0; p < 2; p++) {
             for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); q.layer(g, il, p); }
             check_launch("layer");
-            if (dmp) {
+            if (dmp && tl) {  // part p ended with the tail of AR 2il+p: residual in hb[(p + 1) & 1], xn = next norm
+                sync_both(c);
+                tp::Gpu& G = S.G[0];
+                if (p == 0) {
+                    dumpv(c, "attn_residual-" + std::to_string(il), G.hb[1], D);
+                    dumpv(c, "attn_post_norm-" + std::to_string(il), G.xn, D);
+                } else {
+                    dumpv(c, "l_out-" + std::to_string(il), G.hb[0], D);
+                    if (il < 63) dumpv(c, "attn_norm-" + std::to_string(il + 1), G.xn, D);
+                    else dumpv(c, "result_norm", G.xn, D);
+                }
+            } else if (dmp) {
                 sync_both(c);
                 tp::Gpu& G = S.G[0];
                 if (p == 0) {  // first kernel consumed AR 2il-1: residual in hb[0], xn = attn_norm
@@ -727,8 +769,10 @@ void eager_step(t4q_ctx* c, bool prof) {
     check_launch("head");
     if (dmp || prof) sync_both(c);
     if (dmp) {
-        dumpv(c, "l_out-63", S.G[0].hb[0], D);
-        dumpv(c, "result_norm", S.G[0].xn, D);
+        if (!tl) {
+            dumpv(c, "l_out-63", S.G[0].hb[0], D);
+            dumpv(c, "result_norm", S.G[0].xn, D);
+        }
         // both GPUs must hold the same residual bits
         std::vector<float> h1(D);
         CK(cudaSetDevice(1));
@@ -925,6 +969,7 @@ void tp_load(t4q_ctx* c, const char* path) {
         G.st = dmalloc<tp::StepState>(1);
         G.scratch = dmalloc<float>(5120 + 64);
         G.rxl = dmalloc<float2>(2 * D);
+        G.tflag = dmalloc<unsigned>(2 * tp::TFLAGS);
         G.gcnt = dmalloc<unsigned>(32);
         G.prompt = dmalloc<int>(S.max_ctx);
     }
@@ -945,6 +990,7 @@ void tp_load(t4q_ctx* c, const char* path) {
         G.peer_flag = S.p2p ? P.flag : P.hflag;
         G.peer_amb = S.p2p ? P.amb : P.hamb;
         G.peer_rxl = S.p2p ? P.rxl : nullptr;
+        G.peer_tflag = S.p2p ? P.tflag : nullptr;
     }
     {
         int nsm = 40;
@@ -1116,9 +1162,12 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
         }
         return 0;
     }
-    if (k == "ll" || k == "gdnf" || k == "attnf") {
+    if (k == "ll" || k == "gdnf" || k == "attnf" || k == "tail") {
         sync_both(c);
-        if (k == "ll") S.ll = v;
+        if (k == "tail" && v && tp::gemv_threads() * 40 != 5120 && tp::gemv_threads() * 20 != 5120)
+            throw std::runtime_error("tail: GEMV block size must divide 5120");
+        if (k == "tail") S.tail = v;
+        else if (k == "ll") S.ll = v;
         else if (k == "attnf") S.attnf = v;
         else S.gdnf = v;
         for (int g = 0; g < 2; g++) {
@@ -1222,9 +1271,9 @@ std::string tp_stats_json(t4q_ctx* c) {
     char b[512];
     snprintf(b, sizeof b,
              ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"arpub\": %d, \"mega\": %d, \"pf_kb\": %d, \"graphs\": %d, "
-             "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"attnf\": %d, \"p4u\": %d, \"cm\": %d, \"graph_capture_ms\": %.1f",
+             "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"attnf\": %d, \"p4u\": %d, \"cm\": %d, \"tail\": %d, \"graph_capture_ms\": %.1f",
              (int)S.p2p, S.fuse, S.arpub, S.mega, S.pf_kb, (int)S.graphs, S.ll, S.gdnf, S.spin_ns, S.arn, S.attnf,
-             S.p4u, S.G[0].lm.L.cm,
+             S.p4u, S.G[0].lm.L.cm, S.tail,
              S.ms_graph_capture);
     std::string s = b;
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;

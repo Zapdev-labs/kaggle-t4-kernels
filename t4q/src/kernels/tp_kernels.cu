@@ -187,6 +187,61 @@ __device__ __forceinline__ void quant_smem(float v, int i, int8_t* s_lo, int8_t*
     if (lane == 0) s_mt[g] = make_int2(__float_as_int(d), (int)((unsigned)(s & 0xffff) | ((unsigned)s1 << 16)));
 }
 
+// AR tail block t of nt (blockDim elements each): see ArArgs fence -4
+__device__ __noinline__ void ar_tail(const ArArgs& ar, unsigned nwork, int t, float* red) {
+    const int tid = threadIdx.x, nt = ar.tb;
+    const int e = t * blockDim.x + tid;
+    const int slot = ar.idx & 1;
+    const unsigned ep = epoch_of(ar.st, ar.idx);
+    const float wv = ar.nw[e];
+    const float hv = ar.h_in[e];
+    if (tid == 0) {  // all work blocks of this GPU done (their y rows are written and fenced)
+        const unsigned long long t0 = gtimer();
+        unsigned spins = 0;
+        bool ok = true;
+        while (ld_vol_u32(ar.cnt) < nwork) {
+            if ((++spins & 1023u) == 0 && gtimer() - t0 > WATCHDOG_NS) { ok = false; break; }
+        }
+        if (!ok) ((StepState*)ar.st)->err = 6000 + ar.idx;
+    }
+    __syncthreads();
+    __threadfence();
+    const float ov = __ldcg(ar.own + e);
+    ar.y_peer[e] = ov;  // my slice of the partial to the peer's mailbox (coalesced)
+    __syncthreads();
+    if (tid == 0) {
+        __threadfence_system();
+        st_vol_u32(ar.peer_tflag + slot * TFLAGS + t, ep);
+        const unsigned o = atomicAdd(ar.cnt2, 1u);
+        if (o == (unsigned)nt - 1u) {  // every tail block is past the counter wait: reset for the next K-split GEMV
+            *ar.cnt = 0u;
+            *ar.cnt2 = 0u;
+        }
+    }
+    if (tid < nt) {
+        if (!wait_flag(ar.tflag + slot * TFLAGS + tid, ep)) ((StepState*)ar.st)->err = 7000 + ar.idx;
+    }
+    __syncthreads();
+    float ss = 0.f;
+    const int n4 = 1280 / blockDim.x;
+    for (int k = 0; k < n4; k++) {
+        const int i4 = tid + blockDim.x * k;
+        const float4 h4 = __ldcg((const float4*)ar.h_in + i4);
+        const float4 o4 = __ldcg((const float4*)ar.own + i4);
+        const float4 r4 = ld_vol_f4((const float4*)ar.rx + i4);
+        const float x0 = h4.x + (o4.x + r4.x), x1 = h4.y + (o4.y + r4.y);
+        const float x2 = h4.z + (o4.z + r4.z), x3 = h4.w + (o4.w + r4.w);
+        ss += x0 * x0 + x1 * x1 + x2 * x2 + x3 * x3;
+    }
+    ss = block_sum(ss, red);
+    const float scale = rsqrtf(ss / 5120.f + 1e-6f);
+    const float x = hv + (ov + ld_vol_f32(ar.rx + e));
+    ar.h_out[e] = x;
+    const float y = (x * scale) * wv;
+    ar.xn[e] = y;
+    quant_warp(y, ar.xq + e, ar.xm + (e >> 5));
+}
+
 int g_max_blocks = 80;
 int g_threads = 128;  // plain-x GEMV block size (M4 v11 selftest: 128 >= 256 on every shape)
 
@@ -200,6 +255,11 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     const int tid = threadIdx.x, lane = tid & 31, h = lane >> 4, j = lane & 15, wib = tid >> 5;
     const int wpb = blockDim.x >> 5;  // warps per block (8, or 4 for 128-thread plain kernels)
     const int warp = blockIdx.x * wpb + wib;
+    if (AR && ar.fence == -4 && (int)blockIdx.x >= (int)gridDim.x - ar.tb) {
+        __shared__ float tred[8];
+        ar_tail(ar, gridDim.x - ar.tb, blockIdx.x - (gridDim.x - ar.tb), tred);
+        return;
+    }
     const int ntot = a.ntiles + (SEG ? sg.nrows : 0);
     const int tbeg = warp * tpw, tend = min(ntot, tbeg + tpw);
     // AR: a block owns the contiguous rows of its 8 * tpw tiles (tpw <= 2); they are staged here and sent to the peer
@@ -499,9 +559,15 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
             quant_warp(sa[wib * 32 + lane], pa.sq_xq + (blockIdx.x * ng + wib) * 32 + lane,
                        pa.sq_xm + blockIdx.x * ng + wib);
     }
+    if (AR && ar.fence == -4) {  // AR tail mode: rows stay local; fence the y writes, then count this block
+        __threadfence();
+        __syncthreads();
+        if (tid == 0) atomicAdd(ar.cnt, 1u);
+        return;
+    }
     if (AR) {
         __syncthreads();
-        const int nrow = wpb * tpw * 2 * RPL;
+        const int nrow = wpb * tpw * 2 * RPL;  // AR tail mode: rows stay local; counted below
         if (ar.fence == -3) {  // LL rows: {value, epoch} 8-byte stores into the peer's float2 mailbox
             const unsigned tag = epoch_of(ar.st, ar.idx);
             for (int t = tid; t < nrow; t += blockDim.x) {
@@ -579,7 +645,9 @@ void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaSt
                              100);
         attr[dev] = true;
     }
-    k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ, CVX><<<blocks, threads, 0, s>>>(a, ar, sg, pa, tpw);
+    const int tail = (AR && ar.fence == -4) ? ar.tb : 0;
+    if (tail && tail * threads != 5120) throw std::runtime_error("AR tail: tb * threads != 5120");
+    k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ, CVX><<<blocks + tail, threads, 0, s>>>(a, ar, sg, pa, tpw);
 }
 
 }  // namespace
@@ -587,6 +655,7 @@ void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaSt
 int g_p4u = 0;  // 1: P4 GEMVs use the unsigned high-nibble dp4a path (bit-identical, fewer instructions)
 void set_p4u(int v) { g_p4u = v; }
 void set_max_blocks(int n) { g_max_blocks = n; }
+int gemv_threads() { return g_threads; }
 void set_threads(int n) { g_threads = (n == 128) ? 128 : 256; }
 
 void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t s, const ArArgs* ar,
@@ -845,16 +914,18 @@ __device__ __forceinline__ void d_gdn(const float* __restrict__ y, const float* 
 #pragma unroll
         for (int r = 0; r < 4; r++) s[cc][r] = Sp[r * 32 + lane];
     }
+    // gate inputs (independent of the conv phase: issue early)
+    const float yb = __ldcg(yab + 24 + vl), ya_ = __ldcg(yab + vl), dtv = ssm_dt[vl], av = ssm_a[vl];
     // q (tid < 128) or k (tid >= 128) channel of local k head kl
     {
         const int ch = tid < 128 ? kl * 128 + tid : 1024 + kl * 128 + (tid - 128);
         const float x = __ldcg(y + ch);
-        const float* wc = cw + (size_t)ch * 4;
+        const float4 wc = __ldg((const float4*)(cw + (size_t)ch * 4));
         float sum = 0.f;
-        sum += ring[p0 * 5120 + ch] * wc[0];
-        sum += ring[p1 * 5120 + ch] * wc[1];
-        sum += ring[p2 * 5120 + ch] * wc[2];
-        sum += x * wc[3];
+        sum += ring[p0 * 5120 + ch] * wc.x;
+        sum += ring[p1 * 5120 + ch] * wc.y;
+        sum += ring[p2 * 5120 + ch] * wc.z;
+        sum += x * wc.w;
         const float a = sum / (1.0f + expf(-sum));
         if (vl < 8 && sl == 0) ring[pw * 5120 + ch] = x;
         float ssq = warp_sum(a * a);
@@ -879,10 +950,10 @@ __device__ __forceinline__ void d_gdn(const float* __restrict__ y, const float* 
         ring[pw * 5120 + ch] = x;
     }
     __syncthreads();
-    const float beta = 1.0f / (1.0f + expf(-__ldcg(yab + 24 + vl)));
-    const float xg = __ldcg(yab + vl) + ssm_dt[vl];
+    const float beta = 1.0f / (1.0f + expf(-yb));
+    const float xg = ya_ + dtv;
     const float sp = xg > 20.0f ? xg : logf(1.0f + expf(xg));
-    const float gv = expf(sp * ssm_a[vl]);
+    const float gv = expf(sp * av);
     float kr[4], qr[4];
 #pragma unroll
     for (int r = 0; r < 4; r++) { kr[r] = sk[r * 32 + lane]; qr[r] = sq[r * 32 + lane]; }
@@ -918,10 +989,12 @@ __global__ void __launch_bounds__(256) k_gdn_gn(const float* __restrict__ y, con
                                                 const float* __restrict__ ssm_dt, float* S, float* o,
                                                 const StepState* st, unsigned* cnt, const float* z,
                                                 const float* __restrict__ gw, int8_t* xq, int2* xm) {
+    const int vl = blockIdx.x >> 2, tid = threadIdx.x;
+    const float zz = tid < 128 ? __ldcg(z + vl * 128 + tid) : 0.f;  // gated-norm inputs, loaded before the gdn work
+    const float gwv = tid < 128 ? gw[tid] : 0.f;
     d_gdn(y, yab, ring, cw, ssm_a, ssm_dt, S, o, st, blockIdx.x);
     __shared__ int s_last;
     __shared__ float red2[8];
-    const int vl = blockIdx.x >> 2, tid = threadIdx.x;
     __threadfence();
     __syncthreads();
     if (tid == 0) {
@@ -936,8 +1009,7 @@ __global__ void __launch_bounds__(256) k_gdn_gn(const float* __restrict__ y, con
     const float ss = block_sum(x * x, red2);
     if (tid >= 128) return;
     const float scale = rsqrtf(ss / 128.0f + 1e-6f);
-    const float zz = z[vl * 128 + tid];
-    const float val = ((x * scale) * gw[tid]) * (zz / (1.0f + expf(-zz)));
+    const float val = ((x * scale) * gwv) * (zz / (1.0f + expf(-zz)));
     quant_warp(val, xq + vl * 128 + tid, xm + vl * 4 + (tid >> 5));
 }
 
@@ -1124,6 +1196,13 @@ __global__ void __launch_bounds__(256, 2) k_attn_fused(const float* ya, const fl
     const int chunk = max(ATT_MIN_CHUNK, (n_kv + NSPLIT - 1) / NSPLIT);
     const int t0 = sidx * chunk, t1 = min(n_kv, t0 + chunk);
     const bool has_pos = t0 <= pos && pos < t1;
+    __shared__ float s_cos[32], s_sin[32];
+    if (tid < 32) {  // RoPE table for dims 0..31 (same expressions as k_attn_prep)
+        const float theta = (float)pos * powf(theta_scale, (float)tid);
+        s_cos[tid] = cosf(theta);
+        s_sin[tid] = sinf(theta);
+    }
+    __syncthreads();
     // ---- phase 1
     if (warp < 6 || has_pos) {
         const bool isq = warp < 6;
@@ -1153,8 +1232,7 @@ __global__ void __launch_bounds__(256, 2) k_attn_fused(const float* ya, const fl
 #pragma unroll
                 for (int i = 0; i < 8; i++) {
                     const int d = (lane & 3) * 8 + i;
-                    const float theta = (float)pos * powf(theta_scale, (float)d);
-                    const float c = cosf(theta), sn = sinf(theta);
+                    const float c = s_cos[d], sn = s_sin[d];
                     y[i] = lane < 4 ? y[i] * c - pr[i] * sn : pr[i] * sn + y[i] * c;
                 }
             }
@@ -1266,12 +1344,13 @@ __global__ void __launch_bounds__(256, 2) k_attn_fused(const float* ya, const fl
     __threadfence();
     const int nsp = (n_kv + chunk - 1) / chunk;
     const int h6 = warp, hl = 6 * j + h6;
-    float M = -FLT_MAX;
-    for (int s2 = 0; s2 < nsp; s2++) M = fmaxf(M, __ldcg(ws + ((size_t)(j * NSPLIT + s2) * 6 + h6) * 258));
+    float M = -FLT_MAX;  // max over the splits: lanes load split lane and lane + 32 in parallel
+    for (int s2 = lane; s2 < nsp; s2 += 32) M = fmaxf(M, __ldcg(ws + ((size_t)(j * NSPLIT + s2) * 6 + h6) * 258));
+    M = warp_max(M);
     float num[8], den = 0.f;
 #pragma unroll
     for (int i = 0; i < 8; i++) num[i] = 0.f;
-#pragma unroll 4
+#pragma unroll 8
     for (int s2 = 0; s2 < nsp; s2++) {
         const float* p = ws + ((size_t)(j * NSPLIT + s2) * 6 + h6) * 258;
         const float wgt = expf(__ldcg(p) - M);
@@ -1378,14 +1457,21 @@ __global__ void __launch_bounds__(256) k_argmax_part(const float* x, int n, floa
 
 __device__ __forceinline__ void d_argmax_final(const float* apart, int nb, int row0, float* amb, const unsigned* aflag,
                                                float* peer_amb, unsigned* peer_aflag, StepState* st, int* ring) {
-    if (threadIdx.x != 0) return;
-    float bv = -FLT_MAX;
+    if (threadIdx.x >= 32) return;
+    float bv = -FLT_MAX;  // warp scan of the partials (max value, lowest index on ties: same result as a serial scan)
     int bi = 0x7fffffff;
-    for (int b = 0; b < nb; b++) {
+    for (int b = threadIdx.x; b < nb; b += 32) {
         const float v = __ldcg(apart + b);
         const int i = __float_as_int(__ldcg(apart + nb + b));
         if (v > bv || (v == bv && i < bi)) { bv = v; bi = i; }
     }
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        const float ov = __shfl_xor_sync(0xffffffffu, bv, o);
+        const int oi = __shfl_xor_sync(0xffffffffu, bi, o);
+        if (ov > bv || (ov == bv && oi < bi)) { bv = ov; bi = oi; }
+    }
+    if (threadIdx.x != 0) return;
     bi += row0;
     const unsigned step = st->step;
     const int slot = step & 1;

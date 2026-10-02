@@ -41,8 +41,25 @@ struct ArArgs {
     const StepState* st = nullptr;
     int idx = 0;                    // AR index within the step
     int fence = 2;  // per-block fence before counting: 2 = system (correct), 1 = gpu, 0 = none; -1: staged remote rows
-                    // only (no fence, counter or flag; the consumer publishes the flag); -2: staging only (tests)
+                    // only (no fence, counter or flag; the consumer publishes the flag); -2: staging only (tests);
+                    // -3: LL rows; -4: AR tail (below)
+    // fence -4 (option tail): the GEMV grid has tb extra tail blocks after the work blocks. Work blocks write their
+    // rows locally and count; the tail blocks copy the partial to the peer (one slice and flag each), wait for the
+    // peer's tb flags and do the AR + RMSNorm + q8 for the next GEMV (what k_ar_norm_mb does), so no ar_norm kernel.
+    int tb = 0;
+    unsigned* cnt2 = nullptr;          // local: tail blocks past the wait
+    const float* h_in = nullptr;       // residual in / out
+    float* h_out = nullptr;
+    const float* own = nullptr;        // this GPU's partial (slot), = the GEMV's y
+    const float* rx = nullptr;         // peer-written partial (slot)
+    const unsigned* tflag = nullptr;   // local tail flags [2][TFLAGS] (peer-written)
+    unsigned* peer_tflag = nullptr;    // peer's tail flags
+    const float* nw = nullptr;         // next norm weight
+    float* xn = nullptr;
+    int8_t* xq = nullptr;
+    int2* xm = nullptr;
 };
+constexpr int TFLAGS = 64;
 
 struct SegArgs {  // extra fp32 rows (K = 5120) appended to a GEMV launch: y[i] = w[i] . x
     const float* w = nullptr;
@@ -186,6 +203,8 @@ struct Gpu {
     float2* rxl = nullptr;       // [2][5120] LL mailbox {value, epoch tag} (option ll), peer-written
     float2* peer_rxl = nullptr;
     unsigned* gcnt = nullptr;    // [32] per-head block counters of the fused gdn + gated norm kernel
+    unsigned* tflag = nullptr;   // [2][TFLAGS] AR tail flags (peer-written), option tail
+    unsigned* peer_tflag = nullptr;
     float* hrx = nullptr;       // [2][5120]
     unsigned* hflag = nullptr;  // [8]: [0..1] AR, [2..3] argmax
     float* hamb = nullptr;      // [4]
@@ -231,6 +250,7 @@ struct State {
     int spin_ns = 0;      // spin-wait backoff
     int attnf = 0;        // 1: fused attention kernel (prep + split + combine)
     int p4u = 0;          // 1: P4 GEMVs with the unsigned high-nibble dp4a path
+    int tail = 0;         // 1: AR + norm in tail blocks of the K-split GEMVs (no ar_norm kernels; P2P only)
     int arn = 0;          // ar_norm kernel: 0 = multi-block (20 x 256), 1 = single block (round 1)
     int pf_kb = 0;        // L2 prefetch of the next GEMV during small kernels (0 = off; no gain in M4 v4)
     double ms_graph_capture = 0;

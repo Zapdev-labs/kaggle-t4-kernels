@@ -11,6 +11,7 @@ namespace tp {
 void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t s, const ArArgs* ar = nullptr,
           const SegArgs* seg = nullptr, const ProArgs* pro = nullptr);
 void set_max_blocks(int n);
+int gemv_threads();  // block size of plain (K-split) GEMVs
 void set_p4u(int v);  // P4 unsigned high-nibble dp4a path (option p4u)
 void set_threads(int n);
 void touch(const uint8_t* p, size_t n, int mode, float* sink, cudaStream_t s);  // L2 warm-up experiment  // GEMV block size for plain-x kernels (128 or 256)
