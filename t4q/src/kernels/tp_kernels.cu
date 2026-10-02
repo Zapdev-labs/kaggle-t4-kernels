@@ -253,7 +253,7 @@ __device__ __noinline__ void ar_tail(const ArArgs& ar, unsigned nwork, int t, fl
 }
 
 int g_max_blocks = 80;
-int g_sq_threads = 128;  // gate|up silu-quant GEMV block size (option sqt: 128 -> 2 tiles per warp, 256 -> 1)
+int g_sq_threads = 256;  // gate|up silu-quant GEMV block size (option sqt: 128 -> 2 tiles per warp, 256 -> 1)
 int g_threads = 128;  // plain-x GEMV block size (M4 v11 selftest: 128 >= 256 on every shape)
 
 template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO, bool SQ = false, int CVX = 1>
@@ -890,6 +890,56 @@ __global__ void __launch_bounds__(256) k_ar_norm_mb(const float* h, float* h_out
     quant_warp(y, xq + e, xm + (e >> 5));
     DBG_PH(64, 2)
     DBG_N(64)
+}
+
+// No-P2P AR + norm in one kernel (option pn, arpub 1 semantics; replaces pull + ar_norm): block b of 20
+//   copies its 256-element slice of this GPU's partial to the peer's host-mapped mailbox and sets its slice flag,
+//   waits for the peer's 20 slice flags (host-mapped, local), reads only its own slice of the peer partial from host
+//   memory, then the blocks exchange their sums of squares through tagged {value, epoch} pairs in device memory
+//   (fixed summation order, identical on both GPUs) and each normalizes / quantizes its slice.
+__global__ void __launch_bounds__(256) k_pull_norm(const float* h, float* h_out, const float* own, const float* hrx,
+                                                   const unsigned* htflag, StepState* st, int idx,
+                                                   const float* __restrict__ w, float* xn, int8_t* xq, int2* xm,
+                                                   float* peer_hrx, unsigned* peer_htflag, float2* ssb) {
+    __shared__ float red[8];
+    __shared__ float s_tot;
+    const int tid = threadIdx.x, b = blockIdx.x, sl = idx & 1;
+    const int e = b * 256 + tid;
+    const unsigned ep = epoch_of(st, idx);
+    const float wv = w[e], hv = h[e];
+    const float ov = own[sl * 5120 + e];
+    peer_hrx[sl * 5120 + e] = ov;
+    __syncthreads();
+    if (tid == 0) {
+        __threadfence_system();
+        st_vol_u32(peer_htflag + sl * TFLAGS + b, ep);
+    }
+    if (tid < ARN_BLOCKS) {
+        if (!wait_flag(htflag + sl * TFLAGS + tid, ep)) st->err = 3000 + idx;
+    }
+    __syncthreads();
+    const float r = ld_vol_f32(hrx + sl * 5120 + e);
+    const float x = hv + (ov + r);
+    h_out[e] = x;
+    const float ss = block_sum(x * x, red);
+    if (tid == 0) st_vol_f2(ssb + sl * 32 + b, ss, __uint_as_float(ep));
+    if (tid < 32) {  // gather the 20 block sums (tagged) and add them in block order
+        float v = 0.f;
+        if (tid < ARN_BLOCKS) {
+            bool ok = true;
+            v = wait_ll(ssb + sl * 32 + tid, ep, ok);
+            if (!ok) st->err = 3500 + idx;
+        }
+        // fixed-order sum: lane 0 adds lanes 0..19 sequentially via shuffles
+        float tot = 0.f;
+        for (int i = 0; i < ARN_BLOCKS; i++) tot += __shfl_sync(0xffffffffu, v, i);
+        if (tid == 0) s_tot = tot;
+    }
+    __syncthreads();
+    const float scale = rsqrtf(s_tot / 5120.f + 1e-6f);
+    const float y = (x * scale) * wv;
+    xn[e] = y;
+    quant_warp(y, xq + e, xm + (e >> 5));
 }
 
 // LL variant of k_ar_norm: h += own + rxl.value once every tag reached epoch(idx); same arithmetic order
@@ -1826,6 +1876,13 @@ void ar_norm_mf(const float* h, float* h_out, const float* own, const float* rx,
                 float* peer_rx, unsigned* peer_tflag) {
     k_ar_norm_mb<false, true><<<ARN_BLOCKS, 256, 0, s>>>(h, h_out, own, rx, tflag, (StepState*)st, idx, w, xn, xq, xm,
                                                          Pf{}, peer_rx, peer_tflag);
+}
+
+void pull_norm(const float* h, float* h_out, const float* own, const float* hrx, const unsigned* htflag,
+               const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s,
+               float* peer_hrx, unsigned* peer_htflag, float2* ssb) {
+    k_pull_norm<<<ARN_BLOCKS, 256, 0, s>>>(h, h_out, own, hrx, htflag, (StepState*)st, idx, w, xn, xq, xm, peer_hrx,
+                                           peer_htflag, ssb);
 }
 
 void ar_norm_ll(const float* h, float* h_out, const float* own, const float2* rxl, const StepState* st, int idx,

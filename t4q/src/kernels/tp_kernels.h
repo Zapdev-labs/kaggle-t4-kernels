@@ -45,6 +45,10 @@ void set_arn(int v);
 void ar_norm_mf(const float* h, float* h_out, const float* own, const float* rx, const unsigned* tflag,
                 const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s,
                 float* peer_rx, unsigned* peer_tflag);
+// no-P2P AR + norm in one kernel (slice publish to the peer's host mailbox, tagged partial sums); option pn
+void pull_norm(const float* h, float* h_out, const float* own, const float* hrx, const unsigned* htflag,
+               const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s,
+               float* peer_hrx, unsigned* peer_htflag, float2* ssb);
 // spin-wait backoff (ns) for flag waits on the current device
 void set_spin_ns(int ns);
 void set_attn2(int v);  // 1: split attention v2 (reduce-scatter scores, separate softmax and P.V)

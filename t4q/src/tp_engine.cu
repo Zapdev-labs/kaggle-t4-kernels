@@ -404,6 +404,9 @@ struct Enq {
     bool rows_in_gemv() const { return arpub() && c->tps->arpub == 2; }  // arpub 2: GEMV writes rows, consumer flags
     // AR args for a K-split GEMV: nullptr (arpub 1: plain GEMV), rows-only (arpub 2) or full epilogue publish
     bool ll() const { return c->tps->ll && c->tps->p2p && c->tps->fuse == 0 && !mega(); }
+    bool pn() const {
+        return !c->tps->p2p && c->tps->pn && arpub() && !rows_in_gemv() && c->tps->fuse == 0 && !mega();
+    }
     bool tail() const { return c->tps->tail && c->tps->p2p && c->tps->fuse == 0 && !mega() && !ll(); }
     // nw_next: the norm weight applied after this AR (tail mode does that norm in the GEMV's tail blocks)
     const tp::ArArgs* ksplit(tp::Gpu& G, int idx, tp::ArArgs& a, const float* nw_next) {
@@ -466,6 +469,7 @@ struct Enq {
             p.rx = G.rx + (idx & 1) * D;
             if (c->tps->p2p) {
                 p.flag = G.flag + (idx & 1);
+            } else if (pn()) {  // fallback with pull_norm: AR + norm in one kernel, launched by pre()
             } else {  // fallback: a pull kernel (publishes first if arpub) waits on the host flag, copies into rx
                 tp::pull(G.hflag + (idx & 1), G.hrx + (idx & 1) * D, G.rx + (idx & 1) * D, G.st, idx, G.s, G.part,
                          arpub() && !rows_in_gemv() ? G.peer_rx : nullptr, arpub() ? G.peer_flag : nullptr);
@@ -513,6 +517,14 @@ struct Enq {
         }
         if (c->tps->fuse) return &p;  // fuse 2: redundant AR + norm prologue in every block
         if (tail() && p.add) return nullptr;  // the previous K-split GEMV's tail blocks did the AR + norm
+        if (pn() && p.add) {
+            const int sl = p.idx & 1;
+            (void)sl;
+            tp::pull_norm(p.h_in, p.h_out, G.part, G.hrx, G.htflag, G.st, p.idx, p.nw, G.xn, G.xq, G.xm, G.s,
+                          G.peer_rx, G.peer_htflag, G.ssb);
+            mark(G, "pull_norm");
+            return nullptr;
+        }
         if (c->tps->arpub == 3 && c->tps->p2p && p.add) {
             tp::ar_norm_mf(p.h_in, p.h_out, G.part, G.rx, G.tflag, G.st, p.idx, p.nw, G.xn, G.xq, G.xm, G.s,
                            G.peer_rx, G.peer_tflag);
@@ -979,6 +991,7 @@ void tp_load(t4q_ctx* c, const char* path) {
         G.scratch = dmalloc<float>(5120 + 64);
         G.rxl = dmalloc<float2>(2 * D);
         G.tflag = dmalloc<unsigned>(2 * tp::TFLAGS);
+        G.ssb = dmalloc<float2>(64);
         G.gcnt = dmalloc<unsigned>(32);
         G.prompt = dmalloc<int>(S.max_ctx);
     }
@@ -986,6 +999,8 @@ void tp_load(t4q_ctx* c, const char* path) {
         tp::Gpu& G = S.G[g];
         CK(cudaHostAlloc(&G.hrx, 2 * D * 4, cudaHostAllocMapped | cudaHostAllocPortable));
         CK(cudaHostAlloc(&G.hflag, 8 * 4, cudaHostAllocMapped | cudaHostAllocPortable));
+        CK(cudaHostAlloc(&G.htflag, 2 * tp::TFLAGS * 4, cudaHostAllocMapped | cudaHostAllocPortable));
+        memset(G.htflag, 0, 2 * tp::TFLAGS * 4);
         CK(cudaHostAlloc(&G.hamb, 4 * 4, cudaHostAllocMapped | cudaHostAllocPortable));
         memset(G.hrx, 0, 2 * D * 4);
         memset(G.hflag, 0, 8 * 4);
@@ -1000,6 +1015,7 @@ void tp_load(t4q_ctx* c, const char* path) {
         G.peer_amb = S.p2p ? P.amb : P.hamb;
         G.peer_rxl = S.p2p ? P.rxl : nullptr;
         G.peer_tflag = S.p2p ? P.tflag : nullptr;
+        G.peer_htflag = P.htflag;
     }
     {
         int nsm = 40;
@@ -1199,11 +1215,12 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
         sync_both(c);
         return 0;
     }
-    if (k == "arn" || k == "p4u" || k == "attn2" || k == "sqt") {  // host-side launch choice: graphs are re-captured
+    if (k == "arn" || k == "p4u" || k == "attn2" || k == "sqt" || k == "pn") {  // host-side launch choice: graphs are re-captured
         sync_both(c);
         if (k == "arn") { tp::set_arn(v); S.arn = v; }
         else if (k == "attn2") { tp::set_attn2(v); S.attn2 = v; }
         else if (k == "sqt") { tp::set_sq_threads(v); S.sqt = v; }
+        else if (k == "pn") S.pn = v;
         else { tp::set_p4u(v); S.p4u = v; }
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
@@ -1365,10 +1382,10 @@ std::string tp_stats_json(t4q_ctx* c) {
     char b[512];
     snprintf(b, sizeof b,
              ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"arpub\": %d, \"mega\": %d, \"pf_kb\": %d, \"graphs\": %d, "
-             "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"attnf\": %d, \"p4u\": %d, \"cm\": %d, \"tail\": %d, \"arpub_auto\": %d, \"ar_rows_cost_us\": %.1f, \"attn2\": %d, \"sqt\": %d, "
+             "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"attnf\": %d, \"p4u\": %d, \"cm\": %d, \"tail\": %d, \"arpub_auto\": %d, \"ar_rows_cost_us\": %.1f, \"attn2\": %d, \"sqt\": %d, \"pn\": %d, "
              "\"graph_capture_ms\": %.1f",
              (int)S.p2p, S.fuse, S.arpub, S.mega, S.pf_kb, (int)S.graphs, S.ll, S.gdnf, S.spin_ns, S.arn, S.attnf,
-             S.p4u, S.G[0].lm.L.cm, S.tail, S.arpub_auto, S.ar_rows_cost_us, S.attn2, S.sqt,
+             S.p4u, S.G[0].lm.L.cm, S.tail, S.arpub_auto, S.ar_rows_cost_us, S.attn2, S.sqt, S.pn,
              S.ms_graph_capture);
     std::string s = b;
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;
