@@ -207,3 +207,80 @@ The SM clock under the 70 W cap varies from 555 to 1270 MHz between boxes and ov
    - Or cut the AR latency: have the slower GPU publish earlier, or overlap the leader norm with the AR wait.
 2. M5 (MTP) is the larger lever: about 2.2-2.8x on code prompts. It needs the m = k+1 verify GEMV (`gemv_fast_kernel` already handles M up to 8 with bit-identical columns) wired into `k_gemv` and the step kernels, plus `gdn_verify`/replay as in DESIGN s7.
 3. Batched decode for aggregate throughput (user goal 200-400 tok/s) needs the int8 mma GEMM path for m = 8..64, and the same for prefill (W4A8 `mma.m8n8k16`).
+
+## 2026-10-02 - M2-M4 (round 2), graph-mode profiling, AR and small-kernel work
+
+**Gate (single-stream decode >= 30 tok/s on Q4_0, outputs matching the oracle): PASS on P2P boxes, marginal.**
+- `otdoges/t4q-m4` v24: default config **30.04** tok/s (P1), `pf_kb=1536` config **30.07 / 30.05**, `tp_check` `gate_30: true`, every correctness check passing (selftest, V1 floor, TP residual identical, V2 and V3 in eager and graphs, V4 bit-identical).
+- v26, same code path (the option that differed only acts without P2P): **30.15 / 30.17**, V1-V4 passing. A later config in that run crashed the bench loop (arpub 4, see below), so v26 has no gate summary.
+- At 3.6k context the best is **29.33** (v24); the depth gate in `tp_check` (`gate_30_depth`) is not met.
+- Box lottery matters more than anything I changed this round. Over v14-v27 I saw three kinds of box: fast P2P (rows to the peer cost ~3 us per K-split GEMV), slow P2P (the same rows cost 16-31 us) and no P2P (host-mapped mailbox). With the final defaults: slow-P2P boxes give 29.9-30.2, no-P2P boxes 28.3-29.4 (v23, v25, v27). I did not get a fast-P2P box after v16.
+
+All tok/s are graph-mode decode of 256 tokens after the P0/P1 chat prompts, max_ctx 4096, as in round 1.
+
+### What I built (all under `t4q/`)
+- **CUPTI kernel timeline** (`src/cupti_trace.{h,cpp}`, option `trace`, `tp_check --trace N --trace_dir`). It dlopens libcupti (Kaggle has `/usr/local/cuda/lib64/libcupti.so`), records every kernel inside the CUDA graphs and writes per-position durations, launch gaps and start offsets for both GPUs. This replaced the eager event profile, which overstated small kernels. `t4q-m4` v14 onwards has a trace per config in `kaggle/m4/out*/traces/`.
+- **globaltimer phase probes** (option `dbgts`): block 0 of the small kernels adds per-phase offsets into a device buffer. It showed that the single-block `ar_norm` spent 13-15 us on its own arithmetic.
+- **Multi-block AR + RMSNorm + q8** (`k_ar_norm_mb`, default; `arn=1` restores the old kernel): 20 blocks x 256, each reduces the full sum of squares redundantly and normalizes its own 256 elements. Per call: 18.6 -> 10.6 us. v15: 29.77 vs 29.05 for the old kernel in the same run.
+- **AR transport auto-select** (`arpub -1`, default): at load I time the ssm_out GEMV with and without rows to the peer. If the rows cost more than 10 us (slow P2P), or there is no P2P, it uses arpub 1, where `ar_norm` block 0 copies the 20 KB partial in one coalesced pass and then publishes the flag. Otherwise it uses arpub 2 (rows from the GEMV blocks).
+  - v20 (slow P2P): 29.66 vs 27.67 for arpub 2.
+  - v19 (no P2P): 29.14 vs 27.21.
+  - Stats report `arpub_auto` and `ar_rows_cost_us`.
+- **gate|up with 256-thread blocks** (`sqt=256`, default): one tile per warp instead of two. gate|up went from 199 to 193 us (v21-v22).
+- **qkvz fp32 alpha/beta rows first** in the GEMV work list, so they are no longer the kernel tail: 97.4 -> 95.8 us.
+- **Fused gdn + gated norm** (`gdnf=1`, default): the last block of each head does the norm and q8. Gate loads and v-conv loads are hoisted. Saves the gnorm launch, about 1.6 us per DeltaNet layer.
+- **P4 unsigned high-nibble dp4a** (`p4u=1`, default): `dp4a.u32.s32` on `q & 0xF0F0F0F0` removes the shifts. It is 5.6% fewer instructions in the gate|up kernel and bit-identical; the selftest compares every P4 weight against the reference path and fails on any bit difference. No measurable speed change, since the kernel is memory-bound.
+- **Chunk-major weight layout** (`Layout::cm`, default 1; `T4Q_CM=0` restores the old layout): `[chunk][tile]` instead of `[tile][chunk]`, with the same bytes. Selftest is 0.5-1% faster. It also makes `pf_kb` prefetch hit the first-wave tiles: the GEMVs after a prefetching kernel run 2-4 us faster, but the prefetching kernel gets longer by the same amount, so the net is neutral (`pf_kb=0` stays the default).
+- **argmax_final** uses a warp instead of one thread.
+- **Combine** computes the split weights in parallel.
+- `gemv_layout_check.cpp` covers `cm=0/1`.
+- `tp_check` additions:
+  - `--rounds` interleaves configs against clock drift;
+  - options absent from a config reset to config 0's value;
+  - benches of an alternative config only count if its greedy V3 passes;
+  - it reports `gate_30` (short context) and `gate_30_depth` separately.
+- `stage_m4.py` logs `nvidia-smi topo` and picks up the CUPTI path automatically.
+
+### Where the time goes now (v24 trace, slow-P2P box, GPU0, per token, 33.58 ms step)
+| part | time |
+|---|---|
+| gate\|up | 64 x 193 us = 12.4 ms |
+| down | 56 x 97 us + 8 x 115 us (Q4_1) = 6.4 ms |
+| qkvz | 48 x 96 us = 4.6 ms |
+| ssm_out (K5) | 48 x 54 us = 2.6 ms |
+| lm_head | 1.94 ms |
+| qkv_a | 16 x 81 us = 1.3 ms |
+| attn_output | 16 x 40 us = 0.64 ms |
+| AR (`ar_norm_mb`, arpub 1) | 128 x 13-16 us = 1.7-2.0 ms |
+| gdn | 48 x 17.5 us = 0.84 ms |
+| attention (prep + split + combine) at 330 positions | 16 x ~34 us = 0.55 ms |
+| launch gaps | 0.39 ms |
+
+- GEMVs total about 29.8 ms. At lm_head's 268 GB/s the same bytes would take about 27.8 ms, so the remaining per-kernel ramp, tail and epilogue cost is about 2 ms. The worst offenders are ssm_out (13 us over), gate|up (6 us) and attn_output (7 us).
+- No-P2P boxes add `pull` (15-20 us) before every `ar_norm` (7-8 us).
+- At 3.6k context, `attn_split` grows to 50-58 us per layer.
+
+### Measured dead ends (kept as options, default off)
+- **LL all-reduce** (`ll=1`, tagged 8-byte rows, no flags): `ar_norm` 24.7 -> 28.9 us (v14).
+- **AR tail blocks inside the K-split GEMV** (`tail=1`, no `ar_norm` kernel): +6-8 us per AR, because the copy, `fence.sys` and flag sit on the critical path (v17).
+- **Fused attention** (`attnf=1`): 36-40 us vs 34-41 for the three kernels.
+- **Split attention v2** (`attn2=1`; reduce-scatter scores, separate softmax, shared-V P.V): 27.6 vs 20.9 us at short context, 48 vs 48 at depth (v20).
+- **arpub 3** (each of the 20 blocks publishes its own slice with its own flag): `ar_norm` 19.9 vs 15.5 us on a slow-P2P box (v26).
+- **arpub 4** (copy-engine `cudaMemcpyPeerAsync` node): fails inside stream capture. It is now rejected by `set_option`.
+- **No-P2P one-kernel variants**: `pn=1` (`pull_norm`, slice publish with tagged partial sums) took 34 us vs 25 us for pull + ar_norm; `pn=2` (`pull_arn`, a transport block plus norm blocks) took 30.6 vs 27.3 us.
+- **Smaller knobs**:
+  - `spin_ns` nanosleep backoff: no effect.
+  - `pf_gemv` (gate|up tail blocks prefetching down): gate|up slower, down unchanged.
+  - `T4Q_THREADS=256` for the plain GEMVs: neutral.
+  - K5 RPL 1 or 4: neutral.
+
+### Broken or open
+- The gate holds only on P2P boxes, and only just. No-P2P boxes (about 40% of my runs) top out at 29.4.
+- The depth number (29.33 at 3.6k) is below 30. `attn_split` at depth runs at about half the KV bandwidth.
+- Everything from round 1 still applies: no batched prefill, greedy only, Q4_0 only, up to 7 steps past EOS.
+- When an option throws during graph capture, the engine stays in a failed state for the rest of the process. v26's bench loop died that way after arpub 4.
+
+### Next steps
+1. To make 30 robust (no-P2P boxes, depth), the remaining fixed costs are about 2 ms of GEMV ramp and tail and about 2 ms of AR. The candidate that attacks both is a pipelined persistent GEMV: GEMV kernels launched in alternating graph branches, each with at most one block per SM. Each would prefetch its first chunks during the previous kernel's tail and wait on a device flag for x, with dynamic (atomic) tile scheduling. Round 1's `mega` lost 5% mainly to static tile ownership.
+2. Attention at depth: score tiles with `mma.m16n8k16` f16 (Q in fp16, as llama's Turing FA does), or a better split of positions per warp. The v2 kernel was latency-bound in phases I could not explain with the phase probes.
+3. M5 (MTP) is still the big single-stream lever, and batched decode or prefill needs the int8 mma W4A8 path.
