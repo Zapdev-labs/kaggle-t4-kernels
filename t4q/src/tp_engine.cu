@@ -478,6 +478,8 @@ struct Enq {
             if (c->tps->p2p) {
                 p.flag = G.flag + (idx & 1);
             } else if (pn()) {  // fallback with pull_norm: AR + norm in one kernel, launched by pre()
+            } else if (c->tps->fuse == 0 && !mega()) {  // fallback: pull launched by pre() (with the L2 prefetch)
+                p.pull = 1;
             } else {  // fallback: a pull kernel (publishes first if arpub) waits on the host flag, copies into rx
                 tp::pull(G.hflag + (idx & 1), G.hrx + (idx & 1) * D, G.rx + (idx & 1) * D, G.st, idx, G.s, G.part,
                          arpub() && !rows_in_gemv() ? G.peer_rx : nullptr, arpub() ? G.peer_flag : nullptr);
@@ -510,6 +512,15 @@ struct Enq {
     // unfused path: the ARNORM prologue as its own kernel (q8 x to G.xq/G.xm, fp32 to G.xn); returns nullptr so the
     // GEMV reads x from global memory. Its extra blocks prefetch the next GEMV (nxt) into L2.
     const tp::ProArgs* pre(tp::Gpu& G, const tp::ProArgs& p, const tp::FW& nxt) {
+        bool pf_done = false;
+        if (p.pull) {
+            const int idx = p.idx;
+            const tp::Pf pf = pf_for(nxt);
+            tp::pull(G.hflag + (idx & 1), G.hrx + (idx & 1) * D, G.rx + (idx & 1) * D, G.st, idx, G.s, G.part,
+                     arpub() && !rows_in_gemv() ? G.peer_rx : nullptr, arpub() ? G.peer_flag : nullptr, &pf);
+            mark(G, "pull");
+            pf_done = true;
+        }
         if (c->tps->fuse == 3) {  // leader block: [publish,] wait, residual, norm, q8 -> G.xq/G.xm, then xflag
             lead = p;
             lead.xflag = G.xflag;
@@ -544,8 +555,8 @@ struct Enq {
             mark(G, "ar_norm");
             return nullptr;
         }
-        // in fallback mode arnorm() already enqueued the pull and cleared p.flag
-        const tp::Pf pf = pf_for(nxt);
+        // in fallback mode the pull kernel above (or arnorm()) already ran and p.flag is null
+        const tp::Pf pf = pf_done ? tp::Pf{} : pf_for(nxt);
         const bool pub = arpub() && p.add && c->tps->p2p;  // fallback mode published in pull()
         tp::ar_norm(p.h_in, p.h_out, p.add ? G.part : nullptr, G.rx, p.flag ? G.flag : nullptr, G.st, p.idx, p.nw,
                     G.xn, G.xq, G.xm, G.s, &pf, pub && !rows_in_gemv() && !rows_dma() ? G.peer_rx : nullptr,
@@ -697,6 +708,7 @@ struct Enq {
             tp::ProArgs pq = pp ? *pp : tp::ProArgs{};
             pq.sq_xq = G.xq2;
             pq.sq_xm = G.xm2;
+            if (S.pf_gemv) pq.pf_next = pf_for(L.down);  // the down GEMV's first wave, from gate|up's tail
             tp::gemv(L.gateup, G.xq, G.xm, G.y, s, nullptr, nullptr, &pq);
             mark(G, "gemv_gateup+silu_q8");
             tp::ArArgs a;
@@ -1248,6 +1260,16 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
         else if (k == "ll") S.ll = v;
         else if (k == "attnf") S.attnf = v;
         else S.gdnf = v;
+        for (int g = 0; g < 2; g++) {
+            CK(cudaSetDevice(g));
+            if (S.G[g].gexec) { cudaGraphExecDestroy(S.G[g].gexec); S.G[g].gexec = nullptr; }
+            if (S.G[g].graph) { cudaGraphDestroy(S.G[g].graph); S.G[g].graph = nullptr; }
+        }
+        return 0;
+    }
+    if (k == "pf_gemv") {
+        sync_both(c);
+        S.pf_gemv = v;
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
             if (S.G[g].gexec) { cudaGraphExecDestroy(S.G[g].gexec); S.G[g].gexec = nullptr; }

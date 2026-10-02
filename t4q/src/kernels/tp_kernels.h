@@ -20,7 +20,8 @@ void touch(const uint8_t* p, size_t n, int mode, float* sink, cudaStream_t s);  
 // fallback (no P2P): wait for the host-mapped flag of AR idx, copy the 20 KB payload to the local rx slot
 // pub_peer_rx/flag (optional): first publish this GPU's partial (own slot base) to the peer mailbox (slot bases)
 void pull(const unsigned* hflag, const float* hrx, float* rx, StepState* st, int idx, cudaStream_t s,
-          const float* own = nullptr, float* pub_peer_rx = nullptr, unsigned* pub_peer_flag = nullptr);
+          const float* own = nullptr, float* pub_peer_rx = nullptr, unsigned* pub_peer_flag = nullptr,
+          const Pf* pf = nullptr);
 // h = embed(token) (Q4_0 row dequant, bit-exact with ggml)
 // pf (optional): L2 prefetch of the next GEMV's weights by extra blocks (blocks counted in 256-thread units)
 void embed(const uint8_t* embd, StepState* st, const int* prompt, float* h, cudaStream_t s, const Pf* pf = nullptr);

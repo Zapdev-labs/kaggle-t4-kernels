@@ -105,6 +105,10 @@ struct ProArgs {
     // silu-quant epilogue (gate|up rows interleaved by RPL per tile): q8(silu(g) * u) -> sq_xq / sq_xm
     int8_t* sq_xq = nullptr;
     int2* sq_xm = nullptr;
+    // extra blocks after the work blocks (dispatched last, i.e. in the kernel's tail) prefetch the next GEMV's
+    // first-wave chunks into L2 (option pf_kb with the chunk-major layout)
+    Pf pf_next;
+    int pull = 0;  // host only: the fallback pull kernel is deferred to the GEMV launch (so it can prefetch)
 };
 
 // persistent per-layer kernels (option mega): phases separated by grid barriers on a co-resident grid
@@ -261,6 +265,7 @@ struct State {
     int arn = 0;          // ar_norm kernel: 0 = multi-block (20 x 256), 1 = single block (round 1)
     int arpub_auto = 2;   // load-time choice from the rows-to-peer cost (option arpub -1 restores it)
     double ar_rows_cost_us = 0;
+    int pf_gemv = 0;      // 1: gate|up's tail blocks prefetch ffn_down's first wave (needs pf_kb > 0)
     int pf_kb = 0;        // L2 prefetch of the next GEMV during small kernels (0 = off; no gain in M4 v4)
     double ms_graph_capture = 0;
 };

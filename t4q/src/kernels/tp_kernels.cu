@@ -266,6 +266,10 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     const int tid = threadIdx.x, lane = tid & 31, h = lane >> 4, j = lane & 15, wib = tid >> 5;
     const int wpb = blockDim.x >> 5;  // warps per block (8, or 4 for 128-thread plain kernels)
     const int warp = blockIdx.x * wpb + wib;
+    if (pa.pf_next.blocks && (int)blockIdx.x >= (int)gridDim.x - pa.pf_next.blocks) {
+        do_prefetch(pa.pf_next, blockIdx.x - (gridDim.x - pa.pf_next.blocks), pa.pf_next.blocks);
+        return;
+    }
     if (AR && ar.fence == -4 && (int)blockIdx.x >= (int)gridDim.x - ar.tb) {
         __shared__ float tred[8];
         ar_tail(ar, gridDim.x - ar.tb, blockIdx.x - (gridDim.x - ar.tb), tred);
@@ -663,7 +667,9 @@ void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaSt
     }
     const int tail = (AR && ar.fence == -4) ? ar.tb : 0;
     if (tail && tail * threads != 5120) throw std::runtime_error("AR tail: tb * threads != 5120");
-    k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ, CVX><<<blocks + tail, threads, 0, s>>>(a, ar, sg, pa, tpw);
+    if (tail && pa.pf_next.blocks) throw std::runtime_error("gemv: AR tail and prefetch blocks are exclusive");
+    k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ, CVX><<<blocks + tail + pa.pf_next.blocks, threads, 0, s>>>(a, ar, sg, pa,
+                                                                                                    tpw);
 }
 
 }  // namespace
@@ -1794,7 +1800,9 @@ __global__ void k_argmax_final(const float* apart, int row0, float* amb, const u
 }
 
 __global__ void __launch_bounds__(640) k_pull(const unsigned* hflag, const float* hrx, float* rx, StepState* st,
-                                              int idx, const float* own, float* pub_peer_rx, unsigned* pub_peer_flag) {
+                                              int idx, const float* own, float* pub_peer_rx, unsigned* pub_peer_flag,
+                                              const Pf pf) {
+    T4Q_PF_BLOCKS(1)
     __shared__ int ok;
     if (pub_peer_flag)
         publish_partial(own + (idx & 1) * 5120, pub_peer_rx ? pub_peer_rx + (idx & 1) * 5120 : nullptr,
@@ -1830,8 +1838,9 @@ void touch(const uint8_t* p, size_t n, int mode, float* sink, cudaStream_t s) {
 }
 
 void pull(const unsigned* hflag, const float* hrx, float* rx, StepState* st, int idx, cudaStream_t s,
-          const float* own, float* pub_peer_rx, unsigned* pub_peer_flag) {
-    k_pull<<<1, 640, 0, s>>>(hflag, hrx, rx, st, idx, own, pub_peer_rx, pub_peer_flag);
+          const float* own, float* pub_peer_rx, unsigned* pub_peer_flag, const Pf* pf) {
+    const Pf P = pf ? *pf : Pf{};
+    k_pull<<<1 + P.blocks, 640, 0, s>>>(hflag, hrx, rx, st, idx, own, pub_peer_rx, pub_peer_flag, P);
 }
 
 void embed(const uint8_t* embd, StepState* st, const int* prompt, float* h, cudaStream_t s, const Pf* pf) {
