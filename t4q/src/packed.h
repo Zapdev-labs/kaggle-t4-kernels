@@ -1,0 +1,28 @@
+// On-device packed weight formats (M1: row-major planar SoA, lossless; see DESIGN.md section 3.3).
+#pragma once
+#include <cstddef>
+#include <cstdint>
+
+enum PackFmt : int {
+    FMT_F32 = 0,   // float [rows][cols]
+    FMT_P4 = 1,    // Q4_0: codes [rows][cols/2] (ggml nibble order per 32), d fp16 [rows][cols/32]
+    FMT_P4M = 2,   // Q4_1: as P4 plus m fp16 [rows][cols/32]
+    FMT_Q8 = 3,    // Q8_0: int8 codes [rows][cols], d fp16 [rows][cols/32]
+    FMT_K5 = 4,    // Q5_K: qs [rows][cols/2] (128 B / 256), qh [rows][cols/8] (32 B / 256), meta 16 B / 256 (d, dmin, scales[12])
+    FMT_K6 = 5,    // Q6_K: ql [rows][cols/2], qh [rows][cols/4], sc int8 [rows][cols/16] (meta), d fp16 [rows][cols/256]
+};
+
+struct PackedW {
+    int fmt = -1;
+    int64_t rows = 0, cols = 0;
+    uint8_t* codes = nullptr;
+    uint8_t* hi = nullptr;
+    uint16_t* d = nullptr;
+    uint16_t* m = nullptr;
+    uint8_t* meta = nullptr;
+    void* base = nullptr;   // single allocation
+    size_t bytes = 0;
+    int gpu = 0;
+};
+
+const char* pack_fmt_name(int fmt);
