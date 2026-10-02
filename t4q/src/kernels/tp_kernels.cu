@@ -180,10 +180,10 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     __shared__ __align__(16) int8_t s_lo[PRO ? NB * 16 : 16];
     __shared__ __align__(16) int8_t s_hi[PRO ? NB * 16 : 16];
     __shared__ int2 s_mt[PRO ? NB : 1];
-    __shared__ __align__(16) float s_xf[(PRO == PRO_ARNORM || PRO == PRO_GNORM) ? K : 4];
+    __shared__ __align__(16) float s_xf[(PRO == PRO_ARNORM || PRO == PRO_GNORM || (PRO == PRO_LEADER && SEG)) ? K : 4];
     __shared__ float red[128];
     __shared__ int s_flag;
-    __shared__ float sa[SQ ? 8 * RPL : 1];  // SQ: silu(g) * u of the block's 8 * RPL (= 32) outputs
+    __shared__ float sa[SQ ? 8 * 8 * RPL : 1];  // SQ: silu(g) * u of the block's 8 * tpw * RPL outputs (tpw <= 8)
 
     WChunk<FMT, RPL> w[D];
     const bool pre = PRO != PRO_NONE && tbeg < tend && tbeg < a.ntiles;
@@ -254,6 +254,88 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
             }
         }
         __syncthreads();
+    } else if (PRO == PRO_LEADER) {
+        static_assert(PRO != PRO_LEADER || K == 5120, "LEADER prologue needs K = 5120");
+        const unsigned ep = epoch_of(pa.st, pa.idx);
+        if (blockIdx.x == 0) {
+            const bool add = pa.add != 0;
+            if (pa.pub_peer_flag) publish_partial(pa.own, pa.pub_peer_rx, pa.pub_peer_flag, ep);
+            if (pa.flag) {
+                if (tid == 0) {
+                    s_flag = wait_flag(pa.flag, ep);
+                    if (!s_flag) pa.st->err = 1000 + pa.idx;
+                }
+                __syncthreads();
+            }
+            float* xf = SEG ? s_xf : pa.xn_out;  // fp32 x staging (SEG keeps it in smem for the fp32 rows)
+            float4* sx4 = (float4*)xf;
+            float ss = 0.f;
+            float4 xv[5];
+#pragma unroll
+            for (int k = 0; k < 5; k++) xv[k] = ((const float4*)pa.h_in)[tid + 256 * k];
+            if (add) {
+                float4 ov[5], rv[5];
+#pragma unroll
+                for (int k = 0; k < 5; k++) {
+                    ov[k] = ((const float4*)pa.own)[tid + 256 * k];
+                    rv[k] = ld_vol_f4((const float4*)pa.rx + tid + 256 * k);
+                }
+#pragma unroll
+                for (int k = 0; k < 5; k++) {
+                    xv[k].x = xv[k].x + (ov[k].x + rv[k].x);
+                    xv[k].y = xv[k].y + (ov[k].y + rv[k].y);
+                    xv[k].z = xv[k].z + (ov[k].z + rv[k].z);
+                    xv[k].w = xv[k].w + (ov[k].w + rv[k].w);
+                    ((float4*)pa.h_out)[tid + 256 * k] = xv[k];
+                }
+            }
+#pragma unroll
+            for (int k = 0; k < 5; k++) {
+                sx4[tid + 256 * k] = xv[k];
+                ss += xv[k].x * xv[k].x + xv[k].y * xv[k].y + xv[k].z * xv[k].z + xv[k].w * xv[k].w;
+            }
+            ss = block_sum(ss, red);  // barriers publish xf within the block
+            const float scale = rsqrtf(ss / 5120.f + 1e-6f);
+            if (tid < NB) {
+                float v[32];
+                const float4* w4 = (const float4*)pa.nw + tid * 8;
+#pragma unroll
+                for (int e = 0; e < 8; e++) {
+                    const float4 x = sx4[tid * 8 + e], wv = __ldg(w4 + e);
+                    v[4 * e] = (x.x * scale) * wv.x;
+                    v[4 * e + 1] = (x.y * scale) * wv.y;
+                    v[4 * e + 2] = (x.z * scale) * wv.z;
+                    v[4 * e + 3] = (x.w * scale) * wv.w;
+                }
+                quant_group(v, tid, s_lo, s_hi, s_mt);
+                ((int4*)pa.gxq)[2 * tid] = ((const int4*)s_lo)[tid];
+                ((int4*)pa.gxq)[2 * tid + 1] = ((const int4*)s_hi)[tid];
+                pa.gxm[tid] = s_mt[tid];
+#pragma unroll
+                for (int e = 0; e < 8; e++) {
+                    const float4 y = make_float4(v[4 * e], v[4 * e + 1], v[4 * e + 2], v[4 * e + 3]);
+                    sx4[tid * 8 + e] = y;
+                    if (SEG) ((float4*)pa.xn_out)[tid * 8 + e] = y;
+                }
+            }
+            __threadfence();
+            __syncthreads();
+            if (tid == 0) asm volatile("st.volatile.global.u32 [%0], %1;" ::"l"(pa.xflag), "r"(ep) : "memory");
+        } else {
+            if (tid == 0) {
+                s_flag = wait_flag(pa.xflag, ep);
+                if (!s_flag) pa.st->err = 4000 + pa.idx;
+            }
+            __syncthreads();
+            for (int g = tid; g < NB; g += blockDim.x) {  // x from L2 (written during this kernel: bypass L1)
+                ((int4*)s_lo)[g] = __ldcg((const int4*)pa.gxq + 2 * g);
+                ((int4*)s_hi)[g] = __ldcg((const int4*)pa.gxq + 2 * g + 1);
+                s_mt[g] = __ldcg(pa.gxm + g);
+            }
+            if (SEG)
+                for (int i = tid; i < K / 4; i += blockDim.x) ((float4*)s_xf)[i] = __ldcg((const float4*)pa.xn_out + i);
+            __syncthreads();
+        }
     } else if (PRO == PRO_SILU) {
         for (int g = tid; g < NB; g += blockDim.x) {
             float v[32];
@@ -314,7 +396,7 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
         if (SEG && tile >= a.ntiles) {
             const int row = tile - a.ntiles;
             const float4* w4 = (const float4*)(sg.w + (size_t)row * 5120);
-            const float4* x4 = PRO == PRO_ARNORM ? (const float4*)s_xf : (const float4*)sg.x;
+            const float4* x4 = (PRO == PRO_ARNORM || PRO == PRO_LEADER) ? (const float4*)s_xf : (const float4*)sg.x;
             float acc = 0.f;
 #pragma unroll 4
             for (int i = lane; i < 1280; i += 32) {
@@ -373,7 +455,7 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
                 const int row = tile * 2 * RPL + h * RPL + r;
                 if (SQ) {  // half 0 holds gate row r, half 1 the matching up row
                     const float u = __shfl_xor_sync(0xffffffffu, v, 16);
-                    if (lane == 0) sa[wib * RPL + r] = (v / (1.0f + expf(-v))) * u;
+                    if (lane == 0) sa[(tile - blockIdx.x * 8 * tpw) * RPL + r] = (v / (1.0f + expf(-v))) * u;
                 }
                 if (j == 0 && row < a.N) {
                     a.y[(size_t)col * a.ldy + row] = v;
@@ -381,9 +463,11 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
                 }
             }
     }
-    if (SQ) {
+    if (SQ) {  // the block owns outputs [blockIdx.x * tpw * 32, +tpw * 32): tpw q8 groups
         __syncthreads();
-        if (wib == 0) quant_warp(sa[lane], pa.sq_xq + blockIdx.x * 32 + lane, pa.sq_xm + blockIdx.x);
+        if (wib < tpw)
+            quant_warp(sa[wib * 32 + lane], pa.sq_xq + (blockIdx.x * tpw + wib) * 32 + lane,
+                       pa.sq_xm + blockIdx.x * tpw + wib);
     }
     if (AR) {
         __syncthreads();
@@ -420,11 +504,29 @@ void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaSt
     GemvArgs a = make_args(W.L, W.base, xq, xm, y, W.L.N);
     const int ntot = W.L.ntiles + (SEG ? sg.nrows : 0);
     // prologue kernels: co-resident grid (the prologue runs once per block); plain kernels: full grid (M0 policy)
-    const int target = (PRO != PRO_NONE && !SQ) ? std::min((ntot + 7) / 8, g_max_blocks) : (ntot + 7) / 8;
+    // leader prologue: grid must be co-resident (blocks wait on block 0) -> occupancy-checked cap
+    int cap = g_max_blocks;
+    if (PRO == PRO_LEADER) {
+        static int occ[8] = {0};
+        int dev = 0;
+        cudaGetDevice(&dev);
+        if (dev < 8 && !occ[dev]) {
+            cudaFuncSetAttribute(k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ>, cudaFuncAttributePreferredSharedMemoryCarveout,
+                                 100);
+            int nb = 0, nsm = 0;
+            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ>, 256, 0);
+            cudaDeviceGetAttribute(&nsm, cudaDevAttrMultiProcessorCount, dev);
+            occ[dev] = nb * nsm;
+            if (occ[dev] < 1) throw std::runtime_error("leader gemv: zero occupancy");
+        }
+        cap = std::min(cap, occ[dev < 8 ? dev : 0]);
+    }
+    const bool coresident = (PRO != PRO_NONE && !(SQ && PRO != PRO_LEADER));
+    const int target = coresident ? std::min((ntot + 7) / 8, cap) : (ntot + 7) / 8;
     const int tpw = (ntot + 8 * target - 1) / (8 * target);
     const int blocks = (ntot + 8 * tpw - 1) / (8 * tpw);
     if (AR && (W.L.N % 4 || SEG || tpw > 2)) throw std::runtime_error("AR gemv needs N % 4 == 0, no segment, tpw <= 2");
-    if (SQ && (tpw != 1 || RPL != 4 || SEG || AR || W.L.N % 64)) throw std::runtime_error("bad silu-quant gemv");
+    if (SQ && (tpw > 8 || RPL != 4 || SEG || AR || W.L.ntiles % (8 * tpw))) throw std::runtime_error("bad silu-quant gemv");
     static bool attr[8] = {false};  // per device: prefer max shared memory so two prologue blocks fit per SM
     int dev = 0;
     cudaGetDevice(&dev);
@@ -448,7 +550,7 @@ void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t 
     const int f = W.L.fmt, nch = W.L.nch, rpl = W.L.rpl;
     const bool isar = ar != nullptr, isseg = seg != nullptr;
     int pk = PRO_NONE;
-    if (pro) pk = pro->h_in ? PRO_ARNORM : pro->gu ? PRO_SILU : pro->o ? PRO_GNORM : PRO_NONE;
+    if (pro) pk = pro->xflag ? PRO_LEADER : pro->h_in ? PRO_ARNORM : pro->gu ? PRO_SILU : pro->o ? PRO_GNORM : PRO_NONE;
     if (pro && pro->sq_xq) {  // gate|up with the silu-quant epilogue
         if (f == FAST_P4 && rpl == 4 && nch == 10 && !isar && !isseg && pk == PRO_NONE) {
             launch_gemv<FAST_P4, 4, 10, false, false, PRO_NONE, true>(W, xq, xm, y, s, A, S, P);
@@ -456,6 +558,10 @@ void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t 
         }
         if (f == FAST_P4 && rpl == 4 && nch == 10 && !isar && !isseg && pk == PRO_ARNORM) {
             launch_gemv<FAST_P4, 4, 10, false, false, PRO_ARNORM, true>(W, xq, xm, y, s, A, S, P);
+            return;
+        }
+        if (f == FAST_P4 && rpl == 4 && nch == 10 && !isar && !isseg && pk == PRO_LEADER) {
+            launch_gemv<FAST_P4, 4, 10, false, false, PRO_LEADER, true>(W, xq, xm, y, s, A, S, P);
             return;
         }
         throw std::runtime_error("tp::gemv: no silu-quant instantiation");
@@ -468,6 +574,9 @@ void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t 
     T4Q_G(FAST_P4, 4, 10, false, true, PRO_ARNORM)   // DeltaNet qkvz + alpha/beta fp32 rows, AR + attn_norm
     T4Q_G(FAST_P4, 4, 10, false, false, PRO_ARNORM)  // attn q|k|v (attn_norm), ffn gate|up (post_norm)
     T4Q_G(FAST_K6, 2, 10, false, false, PRO_ARNORM)  // lm_head (output_norm)
+    T4Q_G(FAST_P4, 4, 10, false, true, PRO_LEADER)   // leader-block prologue variants (fuse 3)
+    T4Q_G(FAST_P4, 4, 10, false, false, PRO_LEADER)
+    T4Q_G(FAST_K6, 2, 10, false, false, PRO_LEADER)
     T4Q_G(FAST_K5, 2, 6, true, false, PRO_GNORM)     // ssm_out (Q5_K) with gated norm prologue, AR publish
     T4Q_G(FAST_P4, 4, 6, true, false, PRO_NONE)      // attn_output, AR publish
     T4Q_G(FAST_P4, 4, 17, true, false, PRO_SILU)     // ffn_down Q4_0, silu prologue, AR publish

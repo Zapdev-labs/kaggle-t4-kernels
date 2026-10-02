@@ -46,7 +46,7 @@ def main():
     ap.add_argument("--gen", type=int, default=256)
     ap.add_argument("--depth", type=int, default=3584)
     ap.add_argument("--sections", default="v1,v2,v3,v4")
-    ap.add_argument("--configs", default="arpub=1;arpub=0",
+    ap.add_argument("--configs", default="fuse=3;fuse=0",
                     help="';'-separated option sets to bench; the first is the default (validated by V1-V4)")
     a = ap.parse_args()
     secs = set(a.sections.split(","))

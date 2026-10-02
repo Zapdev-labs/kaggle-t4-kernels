@@ -35,7 +35,7 @@ RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
 GGUF = "Qwen3.8-27B-Q4_0.gguf"
-TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584", "--configs", "arpub=1;arpub=2"]
+TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584", "--configs", "fuse=3;fuse=0"]
 
 
 def el():
@@ -324,7 +324,7 @@ def main():
             rc, o = stream([sys.executable, "-u", str(t4q / "tests" / "tp_check.py"), "--model", model, "--work",
                             str(WORK), "--oracle", str(ORC), "--out", str(vout2), "--lib",
                             str(t4q / "build" / "libt4q.so"), "--modes", "graphs", "--sections", "v3", "--gen", "256",
-                            "--depth", "0", "--configs", "arpub=1;arpub=2"], f"tp_check_{vname}.log",
+                            "--depth", "0", "--configs", "fuse=3;fuse=0"], f"tp_check_{vname}.log",
                            timeout=DEADLINE - el() - 60, env=dict(os.environ, **venv))
             v2_ = json.loads(vout2.read_text()) if vout2.exists() else {}
             bench = {}

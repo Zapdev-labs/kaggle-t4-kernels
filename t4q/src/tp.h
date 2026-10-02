@@ -60,7 +60,7 @@ struct Pf {
 };
 
 // GEMV prologues (x is built per block in shared memory, after the first weight chunks are already in flight)
-enum ProKind { PRO_NONE = 0, PRO_ARNORM = 1, PRO_SILU = 2, PRO_GNORM = 3 };
+enum ProKind { PRO_NONE = 0, PRO_ARNORM = 1, PRO_SILU = 2, PRO_GNORM = 3, PRO_LEADER = 4 };
 struct ProArgs {
     // PRO_ARNORM: [wait flag >= epoch(idx)] x = h_in (+ own + rx); block 0 writes h_out = x and xn_out = norm(x) * nw
     const float* h_in = nullptr;
@@ -77,6 +77,14 @@ struct ProArgs {
     const float* gu = nullptr;
     // PRO_GNORM: x = rmsnorm128(o) * gw * silu(z)
     const float *o = nullptr, *z = nullptr, *gw = nullptr;
+    // PRO_LEADER (= ARNORM done once): block 0 [publishes this GPU's partial,] waits, builds x and writes it to
+    // gxq/gxm (+ xn_out fp32), then sets *xflag = epoch; the other blocks (co-resident, first weight chunks already in
+    // flight) wait on xflag and copy x from L2
+    unsigned* xflag = nullptr;
+    int8_t* gxq = nullptr;
+    int2* gxm = nullptr;
+    float* pub_peer_rx = nullptr;     // slot base; nullptr with pub_peer_flag set: flag only
+    unsigned* pub_peer_flag = nullptr;  // slot-offset peer flag; nullptr: no publish
     // silu-quant epilogue (gate|up rows interleaved by RPL per tile): q8(silu(g) * u) -> sq_xq / sq_xm
     int8_t* sq_xq = nullptr;
     int2* sq_xm = nullptr;
@@ -118,6 +126,7 @@ struct Gpu {
     float* rx;       // [2][5120] peer writes its partials here
     unsigned* flag;  // [2] peer-written AR flags, [2..3] argmax flags
     unsigned* cnt;   // [4] block counters
+    unsigned* xflag; // leader-prologue x-ready flag (local)
     float* amb;      // [2 slots][2] argmax mailbox (val, idx bits), peer-written
     float* apart;    // argmax partials [2][NB]
     StepState* st;
@@ -160,8 +169,8 @@ struct State {
     int max_blocks = 80;  // co-resident GEMV blocks (2 per SM)
     bool p2p = true;      // false: host-mapped mailbox fallback
     float* hscratch[2] = {nullptr, nullptr};  // host-mapped AR test targets (self-test timing without P2P)
-    int fuse = 0;         // 0: separate ar_norm / gnorm_q8 / silu_q8 kernels (fastest in M4 v3); 1: all prologues fused;
-                          // 2: only the AR + RMSNorm prologue fused
+    int fuse = 3;         // 0: separate ar_norm kernel; 2: AR + RMSNorm prologue redundantly in every GEMV block;
+                          // 3: leader-block prologue (block 0 does AR + norm, the others prefetch and wait)
     int arpub = 1;        // 1: the consumer kernel publishes this GPU's partial (plain K-split GEMVs; default);
                           // 0: the K-split GEMV epilogue publishes (M2-M4 v5). fuse != 0 forces 0.
     int pf_kb = 0;        // L2 prefetch of the next GEMV during small kernels (0 = off; no gain in M4 v4)

@@ -341,7 +341,8 @@ struct Enq {
         G.ev.push_back(e);
         G.ev_name.push_back(name);
     }
-    bool arpub() const { return c->tps->arpub && !c->tps->fuse; }
+    bool arpub() const { return c->tps->arpub && (c->tps->fuse == 0 || c->tps->fuse == 3); }
+    tp::ProArgs lead;  // storage for the leader-prologue args of the current GEMV
     bool rows_in_gemv() const { return arpub() && c->tps->arpub == 2; }  // arpub 2: GEMV writes rows, consumer flags
     // AR args for a K-split GEMV: nullptr (arpub 1: plain GEMV), rows-only (arpub 2) or full epilogue publish
     const tp::ArArgs* ksplit(tp::Gpu& G, int idx, tp::ArArgs& a) {
@@ -412,7 +413,20 @@ struct Enq {
     // unfused path: the ARNORM prologue as its own kernel (q8 x to G.xq/G.xm, fp32 to G.xn); returns nullptr so the
     // GEMV reads x from global memory. Its extra blocks prefetch the next GEMV (nxt) into L2.
     const tp::ProArgs* pre(tp::Gpu& G, const tp::ProArgs& p, const tp::FW& nxt) {
-        if (c->tps->fuse) return &p;  // fuse 1 and 2 both fuse the AR + norm prologue
+        if (c->tps->fuse == 3) {  // leader block: [publish,] wait, residual, norm, q8 -> G.xq/G.xm, then xflag
+            lead = p;
+            lead.xflag = G.xflag;
+            lead.gxq = G.xq;
+            lead.gxm = G.xm;
+            lead.xn_out = G.xn;
+            if (arpub() && p.add && c->tps->p2p) {
+                const int sl = p.idx & 1;
+                lead.pub_peer_flag = G.peer_flag + sl;
+                lead.pub_peer_rx = rows_in_gemv() ? nullptr : G.peer_rx + sl * D;
+            }
+            return &lead;
+        }
+        if (c->tps->fuse) return &p;  // fuse 2: redundant AR + norm prologue in every block
         // in fallback mode arnorm() already enqueued the pull and cleared p.flag
         const tp::Pf pf = pf_for(nxt);
         const bool pub = arpub() && p.add && c->tps->p2p;  // fallback mode published in pull()
@@ -645,7 +659,7 @@ void tp_load(t4q_ctx* c, const char* path) {
         G.xq = dmalloc<int8_t>(17408); G.xm = dmalloc<int2>(17408 / 32);
         G.xq2 = dmalloc<int8_t>(8704); G.xm2 = dmalloc<int2>(8704 / 32);
         G.part = dmalloc<float>(2 * D); G.rx = dmalloc<float>(2 * D);
-        G.flag = dmalloc<unsigned>(8); G.cnt = dmalloc<unsigned>(8);
+        G.flag = dmalloc<unsigned>(8); G.cnt = dmalloc<unsigned>(8); G.xflag = dmalloc<unsigned>(8);
         G.amb = dmalloc<float>(8); G.apart = dmalloc<float>(2 * 160);
         G.st = dmalloc<tp::StepState>(1);
         G.scratch = dmalloc<float>(5120 + 64);
