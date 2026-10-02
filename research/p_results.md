@@ -93,3 +93,97 @@ A/B results:
 - **AR overlap.** With 2 sub-batches, pp2048 is 604 against 577 for 1 sub-batch at ub 512 (v5). The overlap removes about 1 s of waiting, but the GPUs then run at about 800 instead of about 1080 MHz, the same energy argument as above.
 - **Flash attention** against the SIMT kernel: 634/604 against 555 at pp2048.
 - **Fused q8 producers**: 597 against 594 (v6, within noise; GPU0 was throttled).
+
+# Round 2 (2026-10-02, `otdoges/t4q-p` v7-v17, `otdoges/t4q-pg` v1-v7)
+
+Raw outputs: `kaggle/p/out_v7` ... `kaggle/p/out_v17` and `kaggle/pg/out*`. They are git-ignored but kept on disk.
+
+## Gate: NOT passed
+
+| version | config | pp2048 | pp512 | clocks GPU0 / GPU1 |
+|---|---|---|---|---|
+| v12 | round-1 path (`pf_g8=0`) | 746.8 | 699.0 | ~1035 / 1072 |
+| v12 | gemm9 GA32, fused producers | 859.4 | 762.6 | |
+| v12 | gemm9 GA64, unfused | 925.2 | 799.6 | |
+| v12 | GA0 (per token) | 998.8 | 849.2 | **fails correctness** (L KL 0.31) |
+| v15 | GA64 + fused silu | 887.9 | 779.6 | 1065 / 908 |
+| v16 | + chunked GDN | 920.9 | 819.2 | 875 / 1010 |
+| **v17** | **+ fp16 AR (current defaults)** | **988.6** | **855.4** | 960 / 975 |
+| v17 | same, fp32 AR | 967.7 | 841.1 | |
+
+v17 correctness for the default config:
+
+| prompt | KL(pf0 ‖ pf1) | KL(oracle ‖ pf1) | top-1 | greedy 32 vs pf0 |
+|---|---|---|---|---|
+| P0 | 6.7e-4 | 6.6e-4 | equal | identical |
+| P1 | 1.1e-3 | 7.0e-4 | equal | identical |
+| W | 3.2e-4 | 1.2e-3 | equal | diverges at 25; pf1 matches the oracle for all 32 |
+| L (2048) | 5.4e-4 | 1.3e-3 | equal | identical |
+
+## GEMM: sustained TOPS per GPU, both GPUs loaded, gateup T=2048
+
+| kernel | TOPS | MHz | ops/clk/SM | note |
+|---|---|---|---|---|
+| cuBLAS int8 GemmEx (v7) | 54.9 / 44.6 | 991 / 781 | ~1400 | random int8 data |
+| cuBLASLt int8 COL32 (v7) | 56.4 | 1530 | ~920 | memset data, low toggling, not comparable |
+| cuBLAS fp16 (v7) | 30.4 / 27.2 | 884 / 783 | | |
+| CUTLASS int8 128x256 (v7) | 54.8 / 45.0 | 977 / 759 | 1400 | |
+| CUTLASS int8 128x128 (v7) | 44.3 / 34.8 | 777 / 591 | 1424 | |
+| CUTLASS int4 128x256 (v7) | 125.9 / 121.6 | 1321 / 1254 | 2380 | 59 / 55 W, not at the cap |
+| round-1 W4A8 (`gemm.cuh`) | 22-26 | 815-960 | 670 | |
+| gemm8 (GA32, in-kernel requant) | 26.4 / 27.0 | ~1030 | 650 | v8 |
+| **gemm9 GA64 128x256** | **30.9-33.5** | 990-1080 | 770-780 | production |
+| gemm9 GA32 | 24.2-28.4 | | 690-710 | |
+| gemm10 CUTLASS-style 128x128 GA64/128 | 27.0-28.3 | 811-878 | 805-832 | |
+| gemm11 256x128 | 31.7-33.8 | | 796-814 | |
+| gemm12 2 blocks/SM (128 thr) | 20.5-24.4 | 651-813 | 750-785 | |
+| gemm13 CUTLASS-style, per token (probe) | 37.9-40.0 | 927-994 | 1006-1021 | inaccurate (GA0) |
+| gemm14 GA64 on the CUTLASS pipeline | 15.7-15.9 | | 413-426 | spills 640 B |
+
+gemm9 ablations (v11, timing only, GA64 unless noted):
+
+| variant | TOPS | ops/clk/SM |
+|---|---|---|
+| full | 32.4 | 779 |
+| per-token scale (no FFMA) | 35.2 | 835 |
+| no weight conversion | 31.7 | 757 |
+| no FFMA | 33.9 | 833 |
+| L1-hot loads | 39.1 | 879 |
+| no global loads | 49-50 | 1086 |
+| no global loads, no smem stores or barriers | 67-70 | 1459 |
+| per token, no loads, no stores | 86 | 1605 |
+| pure ldmatrix + mma loop (v9) | 90 | 1599 |
+
+Data toggling (pg v4, gemm9 GA64, TOPS):
+
+| inputs | TOPS |
+|---|---|
+| real-ish data | 31.3 |
+| zero activations | 37.5 |
+| zero weights | 35.4 |
+| constant activations | 35.0 |
+| 7/8 of activation bytes zero | 33.6 |
+
+Per-row requantization error on real Q4_0 tensors (blk.20 ffn_down/gate/qkv, blk.60 ffn_down, blk.0 ffn_down Q4_1). Added variance as a fraction of Q4's own noise variance:
+
+| group size | added variance | rel_y |
+|---|---|---|
+| per row | 0.9-1.7% | 0.84-1.05% |
+| per 256 | 0.6% | |
+
+Group sizes are in elements. rel_y is the relative error in y.
+
+In the kernels, gemm9's rel L2 against the host mirror is 1.0e-4 to 2.3e-4 (fp32 magic-bias accumulation), and against the exact Q4 product 6e-3 (synthetic random weights).
+
+## Chunked DeltaNet (`k_pf_gdnc`, v16)
+- Against the sequential scan on the same inputs (first DeltaNet layer):
+  - o: max error 1e-3 to 4e-3 against max |o| of 3-6;
+  - S: max error 6e-3 to 1.7e-2 against max |S| of 27-41.
+- pp2048 GPU0 time: 224 ms (sequential, 96 blocks) down to 84 ms (24 blocks).
+
+## Kaggle box controls (pg v7)
+- The container runs as root, but:
+  - `nvidia-smi -lgc`, `-rgc` and `-pl` give "insufficient permissions";
+  - `-lmc` is "not supported for GPU";
+  - `-ac` with a 405 MHz memory clock is "not supported" (the only memory application clock is 5001 MHz).
+- So the 70 W cap and the memory clock are fixed.

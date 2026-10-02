@@ -372,3 +372,116 @@ All tok/s are graph-mode decode of 256 tokens after the P0/P1 chat prompts, max_
    - FA output + q8 fused;
    - fp16 AR payload.
 4. **Physics.** On these T4s at 70 W, 1400 tok/s pp2048 probably needs the lossy GEMM options above plus every other part near zero. A realistic exact target is about 800-900.
+
+## 2026-10-02 - P-prefill (round 2), in-kernel W4->int8 GEMM, chunked DeltaNet, fused silu, fp16 AR
+
+**Gate (pp2048 >= 1400 and pp512 >= 1200 tok/s, correctness preserved): NOT passed.** Best verified: **pp2048 988.6, pp512 855.4 tok/s** (`otdoges/t4q-p` v17, P2P box, both GPUs at 960-1050 MHz), correctness passing on every prompt. Round 1 best was 633.8 / 583.5, so this is +56% / +47%. Full tables: `research/p_results.md` (round 2 section).
+
+### What I built
+- **`t4q/src/kernels/gemm8.cuh`**, the new prefill GEMM family.
+  - **`gemm9_kernel`** is the production kernel. It reads the decode weights in place (P4/P4M/K5, rpl 2/4) and converts each 32-block to int8 in fp16x2 while staging. Each row gets one scale, `invs[n] = 127 / max|w[n]|`, computed once per weight by `row_invs_kernel`, so the weight scale leaves the inner loop.
+  - Activations are q8 with one scale per 64 elements (GA 64). That costs one FFMA per output per 64 instead of two per 32. The magic constant handles the int-to-float conversion, with the bias subtracted every 256 k.
+  - Layout: 128 x 256 tile, 8 warps of 64 x 64, hoisted per-thread pointers.
+  - Kernel variants kept for A/B: GA 32 (exact q8 blocks) and GA 0 (per token).
+  - Requantizing to per-row int8 adds about 1% of Q4_0's own noise variance. I measured this on real Qwen3.8 tensors downloaded with HTTP range requests.
+  - Experiments kept in the file, none faster under the cap (see below):
+    - `gemm8_kernel` (first version);
+    - `gemm10` (CUTLASS-style pipeline, 128 x 128);
+    - `gemm11` (256 x 128 tile);
+    - `gemm12` (2 blocks/SM);
+    - `gemm13` (per-token probe);
+    - `gemm14` (GA 64 on the CUTLASS pipeline; it spills).
+- **Fused gate|up epilogue** (`launch9_silu`, option `pf_silu`): the gate|up GEMM writes q8(silu(gate) * up) straight into the down GEMM's input. This removes the 17408-wide fp32 round trip and the silu kernel. Results are bit-identical to the unfused path (same KL).
+- **Chunked DeltaNet** (`k_pf_gdnc`, option `pf_gdnc`): C = 64 on fp16 mma.m16n8k8 with fp32 accumulation.
+  - Formulas: `(I - A) U = b (V - e^G K S0^T)`, `O = e^G Q S0^T + (QK^T * D) U`, `S = e^{G_C} S0 + (e^{G_C - G} U)^T K`.
+  - T = (I - A)^-1 comes from fp32 forward substitution.
+  - The state stays in registers in the accumulator layout, which is also the B-fragment layout that Q S0^T needs.
+  - One block per head.
+  - Option `pf_gdnc_chk` compares it against the sequential scan. Max error relative to max |value|: o about 3e-4 to 1e-3, S about 3e-4 to 6e-4.
+- **fp16 all-reduce partials** (`pf_ar16`): the K-split GEMMs write fp16, the peer copy moves half the bytes, and add_norm sums in fp32.
+- **GA 64 fused producers**: add_norm, silu and gated norm compute the 64-group amax across warp pairs.
+- **`k_pf_ab`**: 128-token tiles, 4-way K split, summed by the scan.
+- New options: `pf_g8`, `pf_ga` (32/64/0), `pf_bn`, `pf_silu`, `pf_gdnc`, `pf_gdnc_chk`, `pf_ar16`, `pf_gdn2`. Defaults: g8 1, ga 64, silu 1, gdnc 1, ar16 1, gdn2 0.
+- Tools:
+  - `t4q/tools/ref_bench.cu`: cuBLAS, cuBLASLt and CUTLASS v3.5.1 (cloned at run time) int8/int4/fp16 references.
+  - `gemm_bench.cu`: gemm8-14 variants, a host mirror check for the requant GEMMs, ablation and data-toggle probes.
+  - `stage_pg.py`: GEMM-only runs on a second kernel id (`otdoges/t4q-pg`), so they can run beside engine runs.
+
+### Verified (all on Kaggle)
+- **Engine speed by version** (correctness passing on all of them):
+
+  | version | change | pp2048 | pp512 |
+  |---|---|---|---|
+  | v12 | gemm9 GA64, unfused | 925 | 800 |
+  | v15 | + fused silu | 888 | 780 (GPU1 throttled to 900 MHz) |
+  | v16 | + chunked GDN | 921 | 819 (GPU0 throttled to 875 MHz) |
+  | v17 | + fp16 AR | **988.6** | **855.4** (both GPUs about 960-1050 MHz) |
+
+  On the v17 box, the round-1 path measured 747/699 in v12.
+- **v17 correctness**, KL(decode path ‖ batched prefill) at the last token:
+
+  | prompt | KL |
+  |---|---|
+  | P0 | 6.7e-4 |
+  | P1 | 1.1e-3 |
+  | W | 3.2e-4 |
+  | L (2048) | 5.4e-4 |
+
+  - Top-1 is equal everywhere.
+  - Greedy 32 tokens are identical to the decode path on P0/P1/L. On W the output matches the oracle and the decode path diverges at its known near-tie (token 25).
+  - KL against llama.cpp's batch logits is 6.6e-4 to 1.3e-3.
+- **Rejected for accuracy**: GA 0 (one activation scale per token) gave L KL 0.31 and greedy diverged at token 1 (v12). Massive activations break per-token int8.
+- **v17 pp2048 profile, GPU0** (2.04 s):
+  - GEMMs 1703 ms: gateup 806, down 354, qkvz 298, ssm_out 122, attn_qkv 86, attn_out 37;
+  - AR wait 105;
+  - GDN 78 (the sequential scan took 224);
+  - ab 53, attention 49, conv 23, gated norm 21.
+
+### Why the gate is still out of reach (measured)
+- **The GEMM is 83% of the time, and the 70 W cap sets its speed.** Sustained TOPS with both GPUs loaded, gateup at T = 2048:
+
+  | kernel | TOPS | clock |
+  |---|---|---|
+  | round 1 W4A8 | 23-26 | |
+  | **gemm9 GA64** | **30.9-33.5** | about 1040 MHz, 775 ops/clk/SM = 38% of peak |
+  | cuBLAS int8 | 45-55 | |
+  | CUTLASS int8 128x256 | 45-55 | 1400 ops/clk/SM |
+  | CUTLASS int4 | 122-126 | at 55-59 W, not capped |
+
+- **Ablation of gemm9** (v11):
+  - full kernel: 32.4 TOPS;
+  - no weight conversion: 31.7;
+  - no FFMA epilogue: 33.9;
+  - L1-hot loads: 39.1;
+  - no global loads: 49-50;
+  - no global loads, no smem stores or barriers: 67-70;
+  - pure ldmatrix + mma loop: 86-90.
+
+  Data movement and the barrier phase cost the most, not the math. All-zero activations gave +17-20% (datapath toggling).
+- **What did not help:**
+  - a CUTLASS-style pipeline on 128 x 128 (27 TOPS, lower clock);
+  - a 256 x 128 tile (no change);
+  - 2 blocks/SM (20-24 TOPS);
+  - interleaved stores (-7%);
+  - GA 64 on the CUTLASS pipeline (spills, 16 TOPS).
+  The per-token CUTLASS-style probe reached 38-40 TOPS but is not accurate.
+- **No clock or power control on Kaggle** (pg v7). `nvidia-smi -lgc`, `-pl` and `-rgc` return "insufficient permissions". `-lmc` is "not supported" on this GPU. `-ac` offers memory 5001 MHz only.
+- **Arithmetic.** 1400 tok/s pp2048 is 1.46 s per ubatch. At 32 TOPS the GEMMs alone take 1.55 s, so the gate needs a GEMM at about 41+ TOPS sustained on the slower GPU plus at most 0.25 s for everything else.
+
+### Broken or open
+- **Box variance is ±7%.** One GPU often runs 15-20% slower (hotter). The fixed TP split then turns into AR wait on the faster GPU (370-400 ms in v13-v15).
+- `k_pf_ab` still takes about 50 ms, 3-4x more than its FLOPs need, and I don't know why yet.
+- `k_pf_gdnc` uses only 24 blocks (one per head) and a sequential 64-step T solve. There is room left (78 ms).
+- gemm14 (accurate GA 64 on the CUTLASS pipeline) is correct but spills 640 B. It needs fewer live registers: read dx per half, move the bias subtraction before the barrier, use quarter tiles.
+- No decode numbers were measured this round. The decode engine is untouched apart from shared headers.
+
+### Next steps
+1. **GEMM**, the only lever big enough for 1400.
+   - Get gemm14 to stop spilling. The per-token probe on the same pipeline ran at 1010 vs 775 ops/clk.
+   - Or try LLM.int8-style outlier extraction: a per-token int8 main GEMM through the CUTLASS-like gemm13 path (38-40 TOPS), plus a small dense fp16 side GEMM over the union of outlier channels per ubatch. Check it with the KL suite; GA 0 alone fails.
+2. **Non-GEMM**, now about 340 ms:
+   - more blocks for `k_pf_gdnc` (split value columns, blocked T inverse);
+   - find the `k_pf_ab` slowdown;
+   - fuse the FA output into the q8 producer;
+   - fuse conv + q/k norm into the chunk kernel's staging.
+3. Keep `pf_ga=64` and check new GEMM ideas with `tests/prefill_check.py`. KL against the decode path has stayed at or below 1.1e-3.

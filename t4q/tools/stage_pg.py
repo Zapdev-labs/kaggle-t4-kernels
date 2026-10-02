@@ -33,7 +33,7 @@ WORK.mkdir(exist_ok=True)
 ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "pg"
-SECTIONS = ["gemm"]
+SECTIONS = ["clk", "gemm"]
 PF_CONFIGS = "pf_g8=1,pf_ga=64,pf_fuse=1;pf_g8=1,pf_ga=32,pf_fuse=1"
 RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
@@ -374,10 +374,10 @@ def summarize_sustain(S):
 
 REF_SUSTAIN = 8
 GEMM_KBU = [2]
-GEMM_TABLE = True
+GEMM_TABLE = False
 GEMM_SASS = ["_ZN3t4q5gemm814gemm14_kernelILi0ELi4EEEvNS0_4ArgsE"]
 GEMM_SUSTAIN = 4
-GEMM_SVARS = "17,39,17,39"
+GEMM_SVARS = "17"
 NVCC = "/usr/local/cuda/bin/nvcc" if os.path.exists("/usr/local/cuda/bin/nvcc") else (shutil.which("nvcc") or "nvcc")
 
 
@@ -388,6 +388,16 @@ def main():
            logname="nvidia_smi.txt")
         mon = clocks_monitor()
         t4q = unpack()
+        if "clk" in SECTIONS:
+            cmds = ["nvidia-smi -q -d SUPPORTED_CLOCKS | head -60", "nvidia-smi -q -d PERFORMANCE",
+                    "id; cat /proc/self/status | grep -i cap", "nvidia-smi -i 0 -lmc 405,405", "nvidia-smi -i 0 -lgc 1590,1590",
+                    "nvidia-smi -i 0 -ac 405,1590", "nvidia-smi -i 0 -pl 70", "nvidia-smi -i 0 -q -d CLOCK | head -40",
+                    "nvidia-smi -i 0 -rmc; nvidia-smi -i 0 -rgc; nvidia-smi -i 0 -rac"]
+            outs = {}
+            for c in cmds:
+                rc, o = sh(c, timeout=60)
+                outs[c] = {"rc": rc, "out": o[-1500:]}
+            result("clk_probe", outs)
         if "ref" in SECTIONS:
             ref_section(t4q)
         if "gemm" in SECTIONS:
