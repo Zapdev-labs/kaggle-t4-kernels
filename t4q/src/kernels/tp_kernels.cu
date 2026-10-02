@@ -91,6 +91,10 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     constexpr int NB = NCH * 16;
     constexpr int K = NCH * 512;
     const int ntot = a.ntiles + (SEG ? sg.nrows : 0);
+    // AR: the launcher guarantees one tile per warp, so a block owns rows [blockIdx.x * 16 * RPL, +16 * RPL); they
+    // are staged here and sent to the peer as a few coalesced float4 PCIe writes (4-byte scattered remote stores
+    // cost ~60 us per 20 KB in M2 v1).
+    __shared__ float sy[AR ? 8 * 2 * RPL : 1];
 
     for (int tile = warp; tile < ntot; tile += nwarps) {
         if (SEG && tile >= a.ntiles) {
@@ -145,12 +149,17 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
                 const int row = tile * 2 * RPL + h * RPL + r;
                 if (j == 0 && row < a.N) {
                     a.y[(size_t)col * a.ldy + row] = v;
-                    if (AR) ar.y_peer[(size_t)col * a.ldy + row] = v;
+                    if (AR) sy[(threadIdx.x >> 5) * 2 * RPL + h * RPL + r] = v;
                 }
             }
     }
     if (AR) {
-        __threadfence_system();
+        __syncthreads();
+        const int row0 = blockIdx.x * 16 * RPL + threadIdx.x * 4;
+        if (threadIdx.x < 4 * RPL && row0 < a.N) {
+            *(float4*)(ar.y_peer + row0) = *(const float4*)(sy + threadIdx.x * 4);
+            __threadfence_system();
+        }
         __syncthreads();
         if (threadIdx.x == 0) {
             const unsigned old = atomicAdd(ar.cnt, 1u);
@@ -168,7 +177,8 @@ void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaSt
                  const SegArgs& sg) {
     GemvArgs a = make_args(W.L, W.base, xq, xm, y, W.L.N);
     const int ntot = W.L.ntiles + (SEG ? sg.nrows : 0);
-    const int blocks = (ntot + 7) / 8;
+    const int blocks = (ntot + 7) / 8;  // full grid: one tile per warp (required by the AR epilogue)
+    if (AR && (W.L.N % 4 || SEG)) throw std::runtime_error("AR gemv needs N % 4 == 0 and no segment");
     k_gemv<FMT, RPL, 1, NCH, AR, SEG><<<blocks, 256, 0, s>>>(a, ar, sg);
 }
 
@@ -420,29 +430,40 @@ __global__ void __launch_bounds__(256) k_attn_split(const float* qa, const __hal
     }
     const __half* K = kc + (size_t)j * max_ctx * 256;
     const __half* Vv = vc + (size_t)j * max_ctx * 256;
-    for (int t = t0 + warp; t < t1; t += 8) {
-        const uint4 kraw = *(const uint4*)(K + (size_t)t * 256 + lane * 8);
-        const uint4 vraw = *(const uint4*)(Vv + (size_t)t * 256 + lane * 8);
-        float k[8], v[8];
-        const __half2* kh = (const __half2*)&kraw;
-        const __half2* vh = (const __half2*)&vraw;
-#pragma unroll
-        for (int i = 0; i < 4; i++) {
-            const float2 kf = __half22float2(kh[i]), vf = __half22float2(vh[i]);
-            k[2 * i] = kf.x; k[2 * i + 1] = kf.y; v[2 * i] = vf.x; v[2 * i + 1] = vf.y;
+    // two positions per warp iteration (both K/V rows in flight before the math)
+    for (int t = t0 + warp; t < t1; t += 16) {
+        const bool two = t + 8 < t1;
+        uint4 kraw[2], vraw[2];
+        kraw[0] = *(const uint4*)(K + (size_t)t * 256 + lane * 8);
+        vraw[0] = *(const uint4*)(Vv + (size_t)t * 256 + lane * 8);
+        if (two) {
+            kraw[1] = *(const uint4*)(K + (size_t)(t + 8) * 256 + lane * 8);
+            vraw[1] = *(const uint4*)(Vv + (size_t)(t + 8) * 256 + lane * 8);
         }
 #pragma unroll
-        for (int h6 = 0; h6 < 6; h6++) {
-            float dot = 0.f;
+        for (int u = 0; u < 2; u++) {
+            if (u == 1 && !two) break;
+            float k[8], v[8];
+            const __half2* kh = (const __half2*)&kraw[u];
+            const __half2* vh = (const __half2*)&vraw[u];
 #pragma unroll
-            for (int i = 0; i < 8; i++) dot += q[h6][i] * k[i];
-            dot = warp_sum(dot) * (1.0f / 16.0f);
-            const float mn = fmaxf(m[h6], dot);
-            const float c = expf(m[h6] - mn), p = expf(dot - mn);
-            l[h6] = l[h6] * c + p;
+            for (int i = 0; i < 4; i++) {
+                const float2 kf = __half22float2(kh[i]), vf = __half22float2(vh[i]);
+                k[2 * i] = kf.x; k[2 * i + 1] = kf.y; v[2 * i] = vf.x; v[2 * i + 1] = vf.y;
+            }
 #pragma unroll
-            for (int i = 0; i < 8; i++) acc[h6][i] = acc[h6][i] * c + p * v[i];
-            m[h6] = mn;
+            for (int h6 = 0; h6 < 6; h6++) {
+                float dot = 0.f;
+#pragma unroll
+                for (int i = 0; i < 8; i++) dot += q[h6][i] * k[i];
+                dot = warp_sum(dot) * (1.0f / 16.0f);
+                const float mn = fmaxf(m[h6], dot);
+                const float c = expf(m[h6] - mn), p = expf(dot - mn);
+                l[h6] = l[h6] * c + p;
+#pragma unroll
+                for (int i = 0; i < 8; i++) acc[h6][i] = acc[h6][i] * c + p * v[i];
+                m[h6] = mn;
+            }
         }
     }
     if (lane == 0) {

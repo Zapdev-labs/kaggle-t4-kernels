@@ -265,9 +265,26 @@ void selftest(t4q_ctx* c) {
         }
         const double rel = maxe / std::max(1e-30, std::sqrt(ss / nchk));
         worst = std::max(worst, rel);
-        char b[256];
-        snprintf(b, sizeof b, "%s{\"w\":\"%s\",\"fmt\":\"%s\",\"N\":%d,\"K\":%d,\"max_err_over_rms\":%.3e}",
-                 k ? "," : "", sp.what.c_str(), fmt_name(W.L.fmt), N, K, rel);
+        // bandwidth of this weight's GEMV (burst, back-to-back, no AR)
+        cudaEvent_t e0, e1;
+        CK(cudaEventCreate(&e0));
+        CK(cudaEventCreate(&e1));
+        for (int it = 0; it < 3; it++) tp::gemv(W, G.xq, G.xm, G.logits, G.s);
+        const int NIT = 20;
+        CK(cudaEventRecord(e0, G.s));
+        for (int it = 0; it < NIT; it++) tp::gemv(W, G.xq, G.xm, G.logits, G.s);
+        CK(cudaEventRecord(e1, G.s));
+        CK(cudaEventSynchronize(e1));
+        float ms = 0;
+        CK(cudaEventElapsedTime(&ms, e0, e1));
+        cudaEventDestroy(e0);
+        cudaEventDestroy(e1);
+        const double us = 1e3 * ms / NIT, gbs = W.L.bytes / (us * 1e3);
+        char b[320];
+        snprintf(b, sizeof b,
+                 "%s{\"w\":\"%s\",\"fmt\":\"%s\",\"N\":%d,\"K\":%d,\"max_err_over_rms\":%.3e,\"us\":%.1f,"
+                 "\"GBps\":%.1f}",
+                 k ? "," : "", sp.what.c_str(), fmt_name(W.L.fmt), N, K, rel, us, gbs);
         js += b;
     }
     char b[128];
