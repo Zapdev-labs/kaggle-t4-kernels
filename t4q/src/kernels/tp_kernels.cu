@@ -81,13 +81,14 @@ __device__ __forceinline__ void quant_warp(float v, int8_t* xq_i, int2* xm_g) {
 }
 __device__ __forceinline__ float h2f_u16(uint16_t b) { return __half2float(__ushort_as_half(b)); }
 
-// extra block b of nb: prefetch the ranges into L2 (128 B lines), then return
+// extra block b of nb: prefetch the ranges into L2, one instruction per 32 B sector (Turing L2 fills sectors; one per
+// 128 B line in M4 v4 showed no gain), then return
 __device__ __forceinline__ void do_prefetch(const Pf& pf, int b, int nb) {
-    const unsigned stride = (unsigned)nb * blockDim.x * 128u;
+    const unsigned stride = (unsigned)nb * blockDim.x * 32u;
 #pragma unroll
     for (int r = 0; r < 4; r++) {
         if (!pf.p[r]) continue;
-        for (unsigned off = ((unsigned)b * blockDim.x + threadIdx.x) * 128u; off < pf.n[r]; off += stride)
+        for (unsigned off = ((unsigned)b * blockDim.x + threadIdx.x) * 32u; off < pf.n[r]; off += stride)
             asm volatile("prefetch.global.L2 [%0];" ::"l"(pf.p[r] + off));
     }
 }
@@ -450,6 +451,15 @@ void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t 
     T4Q_G(FAST_K5, 2, 6, true, false, PRO_NONE)
     T4Q_G(FAST_P4, 4, 17, true, false, PRO_NONE)
     T4Q_G(FAST_P4M, 4, 17, true, false, PRO_NONE)
+    // RPL=2 layouts of the P4/P4M weights (T4Q_RPL_P4=2 A/B)
+    T4Q_G(FAST_P4, 2, 10, false, true, PRO_NONE)
+    T4Q_G(FAST_P4, 2, 10, false, false, PRO_NONE)
+    T4Q_G(FAST_P4, 2, 6, false, false, PRO_NONE)
+    T4Q_G(FAST_P4, 2, 17, false, false, PRO_NONE)
+    T4Q_G(FAST_P4M, 2, 17, false, false, PRO_NONE)
+    T4Q_G(FAST_P4, 2, 6, true, false, PRO_NONE)
+    T4Q_G(FAST_P4, 2, 17, true, false, PRO_NONE)
+    T4Q_G(FAST_P4M, 2, 17, true, false, PRO_NONE)
     // self-test variants (x from global q8, no AR)
     T4Q_G(FAST_P4, 4, 10, false, false, PRO_NONE)
     T4Q_G(FAST_K6, 2, 10, false, false, PRO_NONE)

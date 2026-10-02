@@ -86,6 +86,7 @@ void build_fw(t4q_ctx* c, Stage& sg, int g, tp::FW& W, const std::vector<Piece>&
     for (auto& cr : cols)
         if (cr.first % be || cr.second % be) throw std::runtime_error(std::string("unaligned column split in ") + what);
     if (K % 512) throw std::runtime_error(std::string("K % 512 != 0 in ") + what);
+    if ((ff == FAST_P4 || ff == FAST_P4M) && getenv("T4Q_RPL_P4")) rpl = atoi(getenv("T4Q_RPL_P4"));  // A/B knob
     W.L = make_layout(ff, (int)N, (int)K, rpl);
     CK(cudaSetDevice(g));
     CK(cudaMalloc(&W.base, W.L.bytes));

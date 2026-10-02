@@ -35,7 +35,7 @@ RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
 GGUF = "Qwen3.8-27B-Q4_0.gguf"
-TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584", "--configs", "arpub=1;arpub=0"]
+TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584", "--configs", "arpub=1;arpub=1,pf_kb=2048"]
 
 
 def el():
@@ -315,19 +315,27 @@ def main():
             summ[mode] = sm
         summ["p2p"] = val.get("p2p")
         result("summary", summ)
-        # host-mapped mailbox fallback check (forced on a P2P box): greedy V3 + short bench
-        if val.get("p2p") and DEADLINE - el() > 420:
-            vout2 = OUT / "results_tp_nop2p.json"
+        # variant processes: forced host-mapped fallback (on a P2P box), and RPL=2 P4 layouts; greedy V3 + short bench
+        variants = [("rpl2", {"T4Q_RPL_P4": "2"}, True), ("nop2p", {"T4Q_NO_P2P": "1"}, bool(val.get("p2p")))]
+        for vname, venv, run in variants:
+            if not run or DEADLINE - el() < 420:
+                continue
+            vout2 = OUT / f"results_tp_{vname}.json"
             rc, o = stream([sys.executable, "-u", str(t4q / "tests" / "tp_check.py"), "--model", model, "--work",
                             str(WORK), "--oracle", str(ORC), "--out", str(vout2), "--lib",
-                            str(t4q / "build" / "libt4q.so"), "--modes", "graphs", "--sections", "v3", "--gen", "128",
-                            "--depth", "0"], "tp_check_nop2p.log", timeout=DEADLINE - el() - 60,
-                           env=dict(os.environ, T4Q_NO_P2P="1"))
+                            str(t4q / "build" / "libt4q.so"), "--modes", "graphs", "--sections", "v3", "--gen", "256",
+                            "--depth", "0", "--configs", "arpub=1"], f"tp_check_{vname}.log",
+                           timeout=DEADLINE - el() - 60, env=dict(os.environ, **venv))
             v2_ = json.loads(vout2.read_text()) if vout2.exists() else {}
-            result("nop2p", {"rc": rc, "p2p": v2_.get("p2p"), "V3_pass": v2_.get("graphs", {}).get("V3_pass"),
-                             "V3": {k: v.get("first_divergence") for k, v in v2_.get("graphs", {}).get("V3", {}).items()},
-                             "bench": {k: v.get("decode_tok_s") for k, v in v2_.get("bench", {}).items()
-                                       if isinstance(v, dict)}, "tail": o[-1500:] if rc else ""})
+            bench = {}
+            for k, v in v2_.get("bench", {}).items():
+                if isinstance(v, dict) and "decode_tok_s" in v:
+                    bench[k] = {"tok_s": v["decode_tok_s"], "clocks": clocks_between(v["t0"], v["t1"])}
+            result(vname, {"rc": rc, "p2p": v2_.get("p2p"), "V3_pass": v2_.get("graphs", {}).get("V3_pass"),
+                           "V3": {k: v.get("first_divergence") for k, v in v2_.get("graphs", {}).get("V3", {}).items()},
+                           "bench": bench, "selftest": [{k: x.get(k) for k in ("w", "us", "GBps")}
+                                                        for x in (v2_.get("selftest") or {}).get("tests", [])][:12],
+                           "tail": o[-1500:] if rc else ""})
     except Exception:  # noqa: BLE001
         import traceback
         result("fatal", traceback.format_exc()[-3000:])
