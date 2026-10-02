@@ -284,3 +284,91 @@ All tok/s are graph-mode decode of 256 tokens after the P0/P1 chat prompts, max_
 1. To make 30 robust (no-P2P boxes, depth), the remaining fixed costs are about 2 ms of GEMV ramp and tail and about 2 ms of AR. The candidate that attacks both is a pipelined persistent GEMV: GEMV kernels launched in alternating graph branches, each with at most one block per SM. Each would prefetch its first chunks during the previous kernel's tail and wait on a device flag for x, with dynamic (atomic) tile scheduling. Round 1's `mega` lost 5% mainly to static tile ownership.
 2. Attention at depth: score tiles with `mma.m16n8k16` f16 (Q in fp16, as llama's Turing FA does), or a better split of positions per warp. The v2 kernel was latency-bound in phases I could not explain with the phase probes.
 3. M5 (MTP) is still the big single-stream lever, and batched decode or prefill needs the int8 mma W4A8 path.
+
+## 2026-10-02 - P-prefill (round 1), W4A8 tensor-core GEMM + batched TP prefill
+
+**Gate (pp2048 >= 1400 and pp512 >= 1200 tok/s, correctness preserved): NOT passed.** Best verified: **pp512 583.5, pp2048 633.8 tok/s** (`otdoges/t4q-p` v5, P2P box), with correctness passing on every configuration. llama.cpp `-sm tensor` on Q4_0 does pp512 516. Full tables are in `research/p_results.md`.
+
+### What I built (all under `t4q/`)
+- `src/kernels/gemm.cuh`: W4A8 GEMM on int8 tensor cores (`mma.m8n8k16.u8.s8`).
+  - It reads the decode weights in place (P4/P4M/K5 layouts, rpl 2 or 4, cm 0/1).
+  - The int32 result is converted to float with the magic constant on the accumulator. The exact per-32 epilogue is two FFMAs.
+  - Tiling: 128 x 128 block tiles, ldmatrix fragments, register-staged double buffer.
+  - The prefill q8 quantizer (`quant_rows_kernel`) has a host mirror.
+  - Kept as A/B code: timing-only epilogue variants (`EPI` 0/1), an fp16 HMMA variant (`gemm_f16_kernel`) and an int4 m8n8k32 split-activation variant (`EPI` 3, `quant_rows_i4_kernel`; it has a 4.6e-4 rounding error from its nq constant and is not used).
+- `tools/gemm_bench.cu`: real TP shapes at T 512/2048, an fp64 check on sampled rows, and sustained both-GPU runs per variant with NVML clocks and power.
+- `src/tp_prefill.cu`: batched TP prefill, used by `t4q_prefill` for n >= 2 (option `pf`).
+  - Ubatches (`pf_ub`, default 2048) are split into 2 interleaved sub-batches (`pf_nsub`). The fp32 AR partials go through `cudaMemcpyPeerAsync` on a copy stream, so one sub-batch's copy overlaps the other's compute.
+  - Fused producers (`pf_fuse`): add+RMSNorm, silu*up and the gated norm quantize straight into the GEMM layout.
+  - DeltaNet: conv with decode arithmetic (history from the conv ring, ring updated), then a sequential scan with decode's per-token math. The scan keeps the state in registers in the decode layout, stages inputs through smem, and keeps all 96 blocks resident.
+  - Attention: tensor-core flash attention (`k_pf_fa`, option `pf_fa`) that writes the decode KV cache.
+  - The last prompt token runs as a normal decode step (graph), so StepState, logits and the first generated token come out exactly as the decode engine expects.
+  - Per-op profile: option `pf_prof`, reported in stats as `pf_profile`.
+- API: `t4q_last_logits`. Options: `pf`, `pf_ub`, `pf_nsub`, `pf_fa`, `pf_fuse`, `pf_i4`, `pf_prof`. Stats: `pf_last_batch_s`, `pf_last_total_s`.
+- `tools/oracle_dump.cpp`: new `last` job (last-position logits with the prompt in 512-token batches); `gen` now prefills in 512-token batches, so prompts > 512 work.
+- `tests/prefill_check.py`, compared against the decode path (pf=0) and the llama.cpp oracle:
+  - last-token KL and top-1;
+  - 16 teacher-forced continuation positions;
+  - greedy 32 tokens;
+  - pp512/pp2048 benches per config with a profile run.
+- `tools/stage_p.py`: `SECTIONS` "gemm" (bench only, no download) and "engine" (download, oracle, prefill_check).
+
+### Verified
+- GEMM: rel L2 1.3e-5 to 3.1e-5 against fp64 on the same q8 activations, for every shape and format (v1-v3).
+- Sustained gateup T=2048, both GPUs (v2/v3):
+
+  | variant | TOPS per GPU | MHz |
+  |---|---|---|
+  | exact W4A8 | 23.8-26.0 | 790-980 |
+  | no epilogue at all (timing only) | 27.4-35.3 | 665-875 |
+  | fp16 HMMA | 18.4-19.4 | 960-1016 |
+  | int4 split | 21.8-25.2 | |
+  | W4A4 cost | 24.9-30.4 | |
+
+  All of them sit at the 70 W cap.
+- Engine correctness (v6 default ub 2048; every v5 and v6 config passes), KL(decode path ‖ batched prefill) at the last token:
+
+  | prompt | KL |
+  |---|---|
+  | P0 | 3.4e-5 |
+  | P1 | 6.6e-5 |
+  | W (400) | 3.9e-4 |
+  | L (2048) | 2.3e-4 |
+
+  - Top-1 is equal everywhere.
+  - Greedy 32 tokens match the decode path on P0/P1/L. On W the batched path matches the oracle for all 32, while the decode path diverges at token 25 at a near-tie (gap 0.08).
+  - KL against llama.cpp's batch logits is 1.2e-5 to 8.4e-4 (llama's own batch-vs-tbt floor: 3e-5 on P0/P1, 2.6e-3 on W).
+- Speed by version:
+
+  | version | box | pp512 | pp2048 |
+  |---|---|---|---|
+  | v4 | no P2P | 574 | 551 |
+  | v5 | P2P | 583.5 | 633.8 |
+  | v6 | P2P, GPU0 throttled to 680-750 MHz | 579 | 597 |
+- Profile (v5, pp2048): GEMMs 2.2 s of a 3.2 s batch (gateup 1.0 s), GDN scan 0.33 s, AR wait 0.31 s, flash attention 0.055 s (the SIMT kernel took 0.385 s).
+
+### Why the gate is not reachable with this design (measured)
+- The T4s idle at about 30 W (`clocks.csv`), which leaves about 40 W for compute under the 70 W cap.
+- At about 600 tok/s each GPU spends about 110 mJ per token.
+- The linear layers are 24.3 GOP per token per GPU. Even the timing-only GEMM with no epilogue sustained only 27-35 TOPS, which caps linear alone at 1150-1440 tok/s. The exact kernel's 24-26 TOPS caps it at 990-1070.
+- Overlapping the AR shows the same limit: it removed about 1 s of waiting, but the clocks dropped from about 1080 to about 800 MHz (604 vs 577 tok/s).
+- So prefill speed is energy per token, and 1400 tok/s needs roughly half the current energy per MAC.
+
+### Broken or open
+- The int4-split GEMM path (`pf_i4`) has a 4.6e-4 rounding error (its nq constant -(M + 8 sq) d is not exact). It was no faster, so it is off and untested end to end.
+- The GDN scan is limited by shared-memory wavefronts and shuffles: 285 ms at pp2048 against a ~50 ms FMA floor.
+- `k_pf_ab` (fp32 SIMT, 48 rows) takes 72-111 ms at pp2048.
+- The AR payload is fp32.
+- Prefill speed varies about ±5% with box and GPU temperature; GPU0 often runs 20 C hotter and throttles harder.
+
+### Next steps
+1. **GEMM energy.** Hoist the kb-loop address math (about 90 IMAD/LEA/SEL per 128 IMMA) and try other block shapes and KBU values. Then measure, with prefill_check KL, the bounded-loss options:
+   - per-128 activation groups with a one-FFMA-per-block epilogue (about +10% in the EPI1 test);
+   - per-row-256 int8 requantization of each layer's weights into a scratch buffer, which would approach the no-epilogue 28-35 TOPS.
+2. **GDN.** Either the chunked WY form on tensor cores, or a reduce-scatter layout (8 columns per warp, about 3 shuffles and 1 smem wavefront per column per token).
+3. **Smaller items:**
+   - ab rows on tensor cores, or folded into another kernel;
+   - silu*up + q8 in the gate|up GEMM epilogue (removes the 17408-wide fp32 round trip);
+   - FA output + q8 fused;
+   - fp16 AR payload.
+4. **Physics.** On these T4s at 70 W, 1400 tok/s pp2048 probably needs the lossy GEMM options above plus every other part near zero. A realistic exact target is about 800-900.
