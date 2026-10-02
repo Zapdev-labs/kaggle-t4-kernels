@@ -17,6 +17,11 @@
 //   { float_as_int(d), (s0 & 0xffff) | (s1 << 16) } where s0 = sum q[0..15], s1 = sum q[16..31].
 //
 // Host-side helpers (fp16 conversion, GGUF dequant, host repack, CPU reference) compile with plain g++.
+//
+// Engine usage (measured in M0, research/m0_results.md): repack P4 tensors with RPL=4 (sustained m=4 +20-25% on a
+// power-throttled T4, m=1 within 1-2%), K6 with RPL=2; launch gemv_fast_launch<FMT, RPL, M, K/512, 1, false> with
+// 256 threads and grid = min(ceil(ntiles / 8), occupancy * numSMs) (persistent); XSM=true only for m >= 6.
+// Burst on Kaggle T4: P4 m=1 ~258-263 GB/s, m=4 ~250-258, K6 lm_head m=1 265 GB/s.
 #pragma once
 #include <cstdint>
 #include <cstring>
