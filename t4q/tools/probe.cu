@@ -52,9 +52,11 @@ __host__ __device__ __forceinline__ float payload_val(unsigned ep, int i, int me
 //   produce: block b writes its slice of n floats into peer_rx[slot], fence.sys, then peer_flag[slot][b] = ep
 //   consume: wait until my_flag[slot][0..nb) == ep, then read (all n | own slice) of my_rx[slot] and verify.
 // send_first = 0 makes this GPU wait first (ping-pong responder).
+// agg = 1: two-level flag. Each producer block fences (sys) then bumps a LOCAL atomic counter; the last block of the
+// epoch fences again and writes ONE remote flag (slot word 0). Consumers poll that single flag. No remote atomics.
 __global__ void xchg_kernel(float* peer_rx, unsigned* peer_flag, const float* my_rx, const unsigned* my_flag, int n,
                             int iters, int me, int send_first, int read_all, unsigned long long* tstamp, int* err,
-                            float* sink) {
+                            float* sink, int agg, unsigned* cnt) {
     const int b = blockIdx.x, nb = gridDim.x, tid = threadIdx.x;
     const int per = (n + nb - 1) / nb, lo = min(n, b * per), hi = min(n, lo + per);
     float acc = 0.f;
@@ -71,10 +73,17 @@ __global__ void xchg_kernel(float* peer_rx, unsigned* peer_flag, const float* my
                 __syncthreads();
                 if (tid == 0) {
                     __threadfence_system();
-                    st_vol_u32(peer_flag + slot * MAXB + b, ep);
+                    if (!agg) st_vol_u32(peer_flag + slot * MAXB + b, ep);
+                    else {
+                        const unsigned old = atomicAdd(cnt + slot, 1u);
+                        if ((old + 1u) % (unsigned)nb == 0u) {
+                            __threadfence_system();
+                            st_vol_u32(peer_flag + slot * MAXB, ep);
+                        }
+                    }
                 }
             } else {
-                if (tid < nb) {
+                if (tid < (agg ? 1 : nb)) {
                     long long spins = 0; const unsigned long long t0 = gtimer();
                     while (ld_vol_u32(my_flag + slot * MAXB + tid) != ep) {
                         if ((++spins & 255) == 0 && gtimer() - t0 > WATCHDOG_NS) { atomicExch(err, 1000000); s_abort = 1; break; }
@@ -147,12 +156,15 @@ static void reset_mailbox(Mailbox& M, int n) {
 }
 
 // Runs a mailbox test. pingpong: GPU0 sends first, GPU1 responds -> per-iter time = round trip.
-static void mailbox_test(const char* kind, Mailbox& M, int nbytes, int nb, bool pingpong, int read_all, int iters) {
+static void mailbox_test(const char* kind, Mailbox& M, int nbytes, int nb, bool pingpong, int read_all, int iters,
+                         int agg = 0) {
     const int n = std::max(1, nbytes / 4);
     reset_mailbox(M, std::max(1, 20480 / 4));
     unsigned long long* ts[2]; int* err[2]; float* sink[2]; cudaStream_t st[2]; cudaEvent_t e0[2], e1[2];
+    unsigned* cnt[2];
     for (int g = 0; g < 2; ++g) {
         CK(cudaSetDevice(g));
+        CK(cudaMalloc(&cnt[g], 8)); CK(cudaMemset(cnt[g], 0, 8));
         CK(cudaMalloc(&ts[g], iters * 8)); CK(cudaMalloc(&err[g], 4)); CK(cudaMemset(err[g], 0, 4));
         CK(cudaMalloc(&sink[g], 4)); CK(cudaStreamCreateWithFlags(&st[g], cudaStreamNonBlocking));
         CK(cudaEventCreate(&e0[g])); CK(cudaEventCreate(&e1[g]));
@@ -163,7 +175,7 @@ static void mailbox_test(const char* kind, Mailbox& M, int nbytes, int nb, bool 
         CK(cudaEventRecord(e0[g], st[g]));
         int send_first = pingpong ? (g == 0) : 1;
         xchg_kernel<<<nb, 256, 0, st[g]>>>(M.rx[1 - g], M.flag[1 - g], M.rx[g], M.flag[g], n, iters, g, send_first,
-                                           read_all, ts[g], err[g], sink[g]);
+                                           read_all, ts[g], err[g], sink[g], agg, cnt[g]);
         CK(cudaGetLastError());
         CK(cudaEventRecord(e1[g], st[g]));
     }
@@ -180,14 +192,14 @@ static void mailbox_test(const char* kind, Mailbox& M, int nbytes, int nb, bool 
     double mean = ms[0] * 1e3 / iters;
     // ping-pong: one iteration = round trip, report one-way = rt/2
     double scale = pingpong ? 0.5 : 1.0;
-    printf("P {\"test\":\"mailbox\",\"kind\":\"%s\",\"mode\":\"%s\",\"bytes\":%d,\"blocks\":%d,\"read_all\":%d,"
+    printf("P {\"test\":\"mailbox\",\"kind\":\"%s\",\"mode\":\"%s\",\"agg\":%d,\"bytes\":%d,\"blocks\":%d,\"read_all\":%d,"
            "\"iters\":%d,\"us_mean\":%.2f,\"us_p50\":%.2f,\"us_p90\":%.2f,\"us_p99\":%.2f,\"us_max\":%.2f,"
            "\"errors\":[%d,%d]}\n",
-           kind, pingpong ? "pingpong_oneway" : "exchange", nbytes, nb, read_all, iters, mean * scale,
+           kind, pingpong ? "pingpong_oneway" : "exchange", agg, nbytes, nb, read_all, iters, mean * scale,
            pct(d, 0.5) * scale, pct(d, 0.9) * scale, pct(d, 0.99) * scale, pct(d, 1.0) * scale, errs[0], errs[1]);
     fflush(stdout);
     for (int g = 0; g < 2; ++g) {
-        CK(cudaSetDevice(g)); cudaFree(ts[g]); cudaFree(err[g]); cudaFree(sink[g]); cudaStreamDestroy(st[g]);
+        CK(cudaSetDevice(g)); cudaFree(ts[g]); cudaFree(err[g]); cudaFree(sink[g]); cudaFree(cnt[g]); cudaStreamDestroy(st[g]);
         cudaEventDestroy(e0[g]); cudaEventDestroy(e1[g]);
     }
 }
@@ -383,6 +395,13 @@ int main(int argc, char** argv) {
             mailbox_test("p2p", P, 20480, nb, true, 0, 10000);
             mailbox_test("p2p", P, 10240, nb, true, 0, 10000);
         }
+        // two-level flag (engine pattern: many GEMV-epilogue producer blocks, one remote flag)
+        for (int nb : {8, 40, 64}) {
+            mailbox_test("p2p", P, 20480, nb, true, 0, 10000, 1);
+            mailbox_test("p2p", P, 10240, nb, true, 0, 10000, 1);
+        }
+        mailbox_test("p2p", P, 20480, 40, false, 1, 10000, 1);
+        mailbox_test("p2p", P, 20480, 64, false, 0, 10000, 1);
         for (int nb : {1, 8, 20, 40}) mailbox_test("p2p", P, 20480, nb, false, 1, 10000);
         mailbox_test("p2p", P, 20480, 40, false, 0, 10000);
         mailbox_test("p2p", P, 10240, 40, false, 1, 10000);

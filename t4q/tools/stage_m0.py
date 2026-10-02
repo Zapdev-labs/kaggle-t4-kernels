@@ -128,12 +128,12 @@ def gemv(bdir):
 
 def sustain(bdir):
     """Rotated A/B sustained runs (forward then reverse order) on both GPUs at once; clocks/power via NVML."""
-    cfgs = [
-        "gateup_tp:2,0,0,256,1,4", "gateup_tp:2,1,0,256,1,4", "gateup_tp:4,0,0,256,1,4", "gateup_tp:4,1,0,256,1,4",
-        "gateup_tp:4,1,1,256,1,4",
-        "gateup_tp:2,0,0,256,1,1", "gateup_tp:2,1,0,256,1,1", "gateup_tp:4,1,0,256,1,1",
-        "gateup_tp:2,1,1,256,1,8", "gateup_tp:4,1,1,256,1,8",
-        "lmhead_tp_k6:2,0,0,256,1,1", "lmhead_tp_k6:4,0,0,256,1,1",
+    cfgs = [  # v3: per-shape RPL 2 vs 4 under sustained load (engine repack policy), burst-best launch cfgs
+        "down_tp:2,0,0,128,0,1", "down_tp:4,1,0,256,0,1", "down_tp:2,0,0,128,0,4", "down_tp:4,1,0,256,1,4",
+        "out_tp:2,1,0,128,0,1", "out_tp:4,1,0,256,0,1", "out_tp:2,1,0,128,0,4", "out_tp:4,1,0,128,1,4",
+        "qkvzab_tp:2,0,0,128,0,4", "qkvzab_tp:4,1,0,256,1,4",
+        "gateup_tp:2,0,0,128,0,4", "gateup_tp:4,1,0,256,1,4",
+        "lmhead_tp_k6:2,0,0,128,0,4",
     ]
     arg = ";".join(cfgs)
     procs = [subprocess.Popen([str(bdir / "gemv_bench"), "--dev", str(d), "--sustain", "6", "--reps", "2", "--cfgs", arg],
