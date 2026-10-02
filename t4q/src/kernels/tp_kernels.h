@@ -50,6 +50,10 @@ void ar_norm_mf(const float* h, float* h_out, const float* own, const float* rx,
 void pull_norm(const float* h, float* h_out, const float* own, const float* hrx, const unsigned* htflag,
                const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm, cudaStream_t s,
                float* peer_hrx, unsigned* peer_htflag, float2* ssb);
+// no-P2P AR + norm in one kernel: transport block + 20 norm blocks (option pn 2); rdy: local [2] ready flags
+void pull_arn(const float* h, float* h_out, const float* own, float* rx, const float* hrx, const unsigned* hflag,
+              unsigned* rdy, const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm,
+              cudaStream_t s, float* pub_peer_hrx, unsigned* pub_peer_hflag, const Pf* pf = nullptr);
 // spin-wait backoff (ns) for flag waits on the current device
 void set_spin_ns(int ns);
 void set_attn2(int v);  // 1: split attention v2 (reduce-scatter scores, separate softmax and P.V)

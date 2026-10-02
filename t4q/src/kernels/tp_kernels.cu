@@ -953,6 +953,73 @@ __global__ void __launch_bounds__(256) k_pull_norm(const float* h, float* h_out,
     quant_warp(y, xq + e, xm + (e >> 5));
 }
 
+// No-P2P AR + norm in one kernel (option pn 2): block 0 is the transport (publish this GPU's partial to the peer's
+// host mailbox, wait for the peer's host flag, copy the peer partial from host memory into local rx, set a local
+// ready flag); blocks 1..20 do the k_ar_norm_mb work after the ready flag. Saves the pull -> ar_norm kernel boundary.
+__global__ void __launch_bounds__(256) k_pull_arn(const float* h, float* h_out, const float* own, float* rx,
+                                                  const float* hrx, const unsigned* hflag, unsigned* rdy,
+                                                  StepState* st, int idx, const float* __restrict__ w, float* xn,
+                                                  int8_t* xq, int2* xm, float* pub_peer_hrx, unsigned* pub_peer_hflag,
+                                                  const Pf pf) {
+    T4Q_PF_BLOCKS(ARN_BLOCKS + 1)
+    __shared__ __align__(16) float sx[5120];
+    __shared__ float red[8];
+    __shared__ int s_ok;
+    const int tid = threadIdx.x, slot = idx & 1;
+    const unsigned ep = epoch_of(st, idx);
+    if (blockIdx.x == 0) {
+        if (pub_peer_hflag)
+            publish_partial(own + slot * 5120, pub_peer_hrx ? pub_peer_hrx + slot * 5120 : nullptr,
+                            pub_peer_hflag + slot, ep);
+        if (tid == 0) {
+            s_ok = wait_flag(hflag + slot, ep);
+            if (!s_ok) st->err = 3000 + idx;
+        }
+        __syncthreads();
+        float4 v[5];
+#pragma unroll
+        for (int k = 0; k < 5; k++) v[k] = ld_vol_f4((const float4*)(hrx + slot * 5120) + tid + 256 * k);
+#pragma unroll
+        for (int k = 0; k < 5; k++) ((float4*)(rx + slot * 5120))[tid + 256 * k] = v[k];
+        __threadfence();
+        __syncthreads();
+        if (tid == 0) st_vol_u32(rdy + slot, ep);
+        return;
+    }
+    const int e = (blockIdx.x - 1) * 256 + tid;
+    const float wv = w[e];
+    float4 xv[5], ov[5];
+#pragma unroll
+    for (int k = 0; k < 5; k++) xv[k] = ((const float4*)h)[tid + 256 * k];
+#pragma unroll
+    for (int k = 0; k < 5; k++) ov[k] = ((const float4*)(own + slot * 5120))[tid + 256 * k];
+    if (tid == 0) {
+        s_ok = wait_flag(rdy + slot, ep);
+        if (!s_ok) st->err = 3300 + idx;
+    }
+    __syncthreads();
+    float4 rv[5];
+#pragma unroll
+    for (int k = 0; k < 5; k++) rv[k] = ld_vol_f4((const float4*)(rx + slot * 5120) + tid + 256 * k);
+    float ss = 0.f;
+#pragma unroll
+    for (int k = 0; k < 5; k++) {
+        xv[k].x = xv[k].x + (ov[k].x + rv[k].x);
+        xv[k].y = xv[k].y + (ov[k].y + rv[k].y);
+        xv[k].z = xv[k].z + (ov[k].z + rv[k].z);
+        xv[k].w = xv[k].w + (ov[k].w + rv[k].w);
+        ss += xv[k].x * xv[k].x + xv[k].y * xv[k].y + xv[k].z * xv[k].z + xv[k].w * xv[k].w;
+        ((float4*)sx)[tid + 256 * k] = xv[k];
+    }
+    ss = block_sum(ss, red);
+    const float scale = rsqrtf(ss / 5120.f + 1e-6f);
+    const float x = sx[e];
+    h_out[e] = x;
+    const float y = (x * scale) * wv;
+    xn[e] = y;
+    quant_warp(y, xq + e, xm + (e >> 5));
+}
+
 // LL variant of k_ar_norm: h += own + rxl.value once every tag reached epoch(idx); same arithmetic order
 __global__ void __launch_bounds__(1024) k_ar_norm_ll(const float* h, float* h_out, const float* own, const float2* rxl,
                                                      StepState* st, int idx, const float* __restrict__ w, float* xn,
@@ -1897,6 +1964,14 @@ void pull_norm(const float* h, float* h_out, const float* own, const float* hrx,
                float* peer_hrx, unsigned* peer_htflag, float2* ssb) {
     k_pull_norm<<<ARN_BLOCKS, 256, 0, s>>>(h, h_out, own, hrx, htflag, (StepState*)st, idx, w, xn, xq, xm, peer_hrx,
                                            peer_htflag, ssb);
+}
+
+void pull_arn(const float* h, float* h_out, const float* own, float* rx, const float* hrx, const unsigned* hflag,
+              unsigned* rdy, const StepState* st, int idx, const float* w, float* xn, int8_t* xq, int2* xm,
+              cudaStream_t s, float* pub_peer_hrx, unsigned* pub_peer_hflag, const Pf* pf) {
+    const Pf P = pf ? *pf : Pf{};
+    k_pull_arn<<<ARN_BLOCKS + 1 + P.blocks, 256, 0, s>>>(h, h_out, own, rx, hrx, hflag, rdy, (StepState*)st, idx, w,
+                                                         xn, xq, xm, pub_peer_hrx, pub_peer_hflag, P);
 }
 
 void ar_norm_ll(const float* h, float* h_out, const float* own, const float2* rxl, const StepState* st, int idx,

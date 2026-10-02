@@ -413,7 +413,7 @@ struct Enq {
     // AR args for a K-split GEMV: nullptr (arpub 1: plain GEMV), rows-only (arpub 2) or full epilogue publish
     bool ll() const { return c->tps->ll && c->tps->p2p && c->tps->fuse == 0 && !mega(); }
     bool pn() const {
-        return !c->tps->p2p && c->tps->pn && arpub() && !rows_in_gemv() && c->tps->fuse == 0 && !mega();
+        return !c->tps->p2p && c->tps->pn == 1 && arpub() && !rows_in_gemv() && c->tps->fuse == 0 && !mega();
     }
     bool tail() const { return c->tps->tail && c->tps->p2p && c->tps->fuse == 0 && !mega() && !ll(); }
     // nw_next: the norm weight applied after this AR (tail mode does that norm in the GEMV's tail blocks)
@@ -513,6 +513,15 @@ struct Enq {
     // GEMV reads x from global memory. Its extra blocks prefetch the next GEMV (nxt) into L2.
     const tp::ProArgs* pre(tp::Gpu& G, const tp::ProArgs& p, const tp::FW& nxt) {
         bool pf_done = false;
+        if (p.pull && c->tps->pn == 2 && p.add) {  // transport block + norm blocks in one kernel
+            const int idx = p.idx;
+            const tp::Pf pf = pf_for(nxt);
+            tp::pull_arn(p.h_in, p.h_out, G.part, G.rx, G.hrx, G.hflag, G.xflag + 4, G.st, idx, p.nw, G.xn, G.xq,
+                         G.xm, G.s, arpub() && !rows_in_gemv() ? G.peer_rx : nullptr,
+                         arpub() ? G.peer_flag : nullptr, &pf);
+            mark(G, "pull_arn");
+            return nullptr;
+        }
         if (p.pull) {
             const int idx = p.idx;
             const tp::Pf pf = pf_for(nxt);
