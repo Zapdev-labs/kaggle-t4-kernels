@@ -52,7 +52,13 @@ const GgufTensor* need(t4q_ctx* c, const std::string& n) {
 }
 
 // raw GGUF bytes of local row `lr` (rows are the concatenation of pieces, columns gathered from col ranges)
-size_t gather_row(const std::vector<Piece>& rows, const Cols& cols, int64_t lr, uint8_t* dst) {
+size_t gather_row(const std::vector<Piece>& rows, const Cols& cols, int64_t lr, uint8_t* dst, int il = 0) {
+    if (il > 0) {  // two equal pieces interleaved in groups of il rows
+        const int pi = (int)((lr / il) % 2);
+        lr = (lr / (2 * il)) * il + lr % il;
+        std::vector<Piece> one = {rows[pi]};
+        return gather_row(one, cols, lr, dst, 0);
+    }
     for (const Piece& p : rows) {
         if (lr >= p.nr) { lr -= p.nr; continue; }
         int be, bb;
@@ -70,7 +76,7 @@ size_t gather_row(const std::vector<Piece>& rows, const Cols& cols, int64_t lr, 
 }
 
 void build_fw(t4q_ctx* c, Stage& sg, int g, tp::FW& W, const std::vector<Piece>& rows, const Cols& cols, int rpl,
-              const char* what) {
+              const char* what, int il = 0) {
     tp::Gpu& G = c->tps->G[g];
     const uint32_t type = rows[0].t->type;
     int64_t N = 0, K = 0;
@@ -86,7 +92,9 @@ void build_fw(t4q_ctx* c, Stage& sg, int g, tp::FW& W, const std::vector<Piece>&
     for (auto& cr : cols)
         if (cr.first % be || cr.second % be) throw std::runtime_error(std::string("unaligned column split in ") + what);
     if (K % 512) throw std::runtime_error(std::string("K % 512 != 0 in ") + what);
-    if ((ff == FAST_P4 || ff == FAST_P4M) && getenv("T4Q_RPL_P4")) rpl = atoi(getenv("T4Q_RPL_P4"));  // A/B knob
+    if ((ff == FAST_P4 || ff == FAST_P4M) && getenv("T4Q_RPL_P4") && !il) rpl = atoi(getenv("T4Q_RPL_P4"));  // A/B
+    if (il && (il != rpl || rows.size() != 2 || rows[0].nr != rows[1].nr))
+        throw std::runtime_error(std::string("bad interleave in ") + what);
     W.L = make_layout(ff, (int)N, (int)K, rpl);
     CK(cudaSetDevice(g));
     CK(cudaMalloc(&W.base, W.L.bytes));
@@ -96,7 +104,7 @@ void build_fw(t4q_ctx* c, Stage& sg, int g, tp::FW& W, const std::vector<Piece>&
     for (int64_t r0 = 0; r0 < N; r0 += per) {
         const int64_t n = std::min(per, N - r0);
         CK(cudaStreamSynchronize(G.s));
-        for (int64_t i = 0; i < n; i++) gather_row(rows, cols, r0 + i, sg.pin + (size_t)i * lrb);
+        for (int64_t i = 0; i < n; i++) gather_row(rows, cols, r0 + i, sg.pin + (size_t)i * lrb, il);
         CK(cudaMemcpyAsync(sg.dev[g], sg.pin, (size_t)n * lrb, cudaMemcpyHostToDevice, G.s));
         CK(repack_device_rows(W.L, sg.dev[g], W.base, (int)r0, (int)n, G.s));
     }
@@ -106,6 +114,7 @@ void build_fw(t4q_ctx* c, Stage& sg, int g, tp::FW& W, const std::vector<Piece>&
     spec.what = std::string(what) + "@gpu" + std::to_string(g);
     for (const Piece& p : rows) spec.rows.push_back({p.t, {p.r0, p.nr}});
     spec.cols = cols;
+    spec.interleave = il;
     c->tps->specs.push_back({g, spec});
     c->tps->spec_fw.push_back(&W);
 }
@@ -209,9 +218,10 @@ void load_gpu_layer(t4q_ctx* c, Stage& sg, int g, int il) {
         L.kc = dmalloc<uint16_t>((size_t)2 * c->tps->max_ctx * 256);
         L.vc = dmalloc<uint16_t>((size_t)2 * c->tps->max_ctx * 256);
     }
+    // gate and up rows interleaved by 4 per tile: one GEMV block owns 32 outputs = one q8 group of silu(g) * u
     build_fw(c, sg, g, L.gateup,
              {{need(c, p + "ffn_gate.weight"), 8704 * g, 8704}, {need(c, p + "ffn_up.weight"), 8704 * g, 8704}},
-             {{0, 5120}}, 4, (p + "gateup").c_str());
+             {{0, 5120}}, 4, (p + "gateup").c_str(), 4);
     build_fw(c, sg, g, L.down, {{need(c, p + "ffn_down.weight"), 0, 5120}}, {{8704 * g, 8704}}, 4,
              (p + "ffn_down").c_str());
     if (!st) {  // drop the specs of this layer
@@ -254,7 +264,7 @@ void selftest(t4q_ctx* c) {
         const int nchk = 24;
         for (int i = 0; i < nchk; i++) {
             const int64_t r = i == 0 ? 0 : i == 1 ? N - 1 : (int64_t)(rng() % N);
-            gather_row(rows, sp.cols, r, raw.data());
+            gather_row(rows, sp.cols, r, raw.data(), sp.interleave);
             if (!dequant_row_cpu(rows[0].t->type, raw.data(), w.data(), K)) throw std::runtime_error("selftest dequant");
             double ref = 0;
             for (int e = 0; e < K; e++) {
@@ -286,8 +296,8 @@ void selftest(t4q_ctx* c) {
             sp.what.find("attn_output") != std::string::npos) {
             float* remote = S.p2p ? S.G[1 - g].scratch : S.hscratch[1 - g];
             const struct { const char* nm; float* dst; int fence; } V[4] = {
-                {"remote_sys", remote, 2}, {"remote_gpu", remote, 1}, {"remote_nofence", remote, 0},
-                {"local_sys", G.scratch, 2}};
+                {"remote_sys", remote, 2}, {"remote_gpu", remote, 1}, {"remote_rowsonly", remote, -1},
+                {"staging_only", remote, -2}};
             for (auto& v : V) {
                 tp::ArArgs a;
                 a.y_peer = v.dst; a.cnt = G.cnt; a.peer_flag = (unsigned*)(v.dst + 5120); a.st = G.st; a.idx = 0;
@@ -332,6 +342,15 @@ struct Enq {
         G.ev_name.push_back(name);
     }
     bool arpub() const { return c->tps->arpub && !c->tps->fuse; }
+    bool rows_in_gemv() const { return arpub() && c->tps->arpub == 2; }  // arpub 2: GEMV writes rows, consumer flags
+    // AR args for a K-split GEMV: nullptr (arpub 1: plain GEMV), rows-only (arpub 2) or full epilogue publish
+    const tp::ArArgs* ksplit(tp::Gpu& G, int idx, tp::ArArgs& a) {
+        a = ar(G, idx);
+        if (!arpub()) return &a;
+        if (!rows_in_gemv()) return nullptr;
+        a.fence = -1;
+        return &a;
+    }
     tp::ArArgs ar(tp::Gpu& G, int idx) {
         tp::ArArgs a;
         a.y_peer = G.peer_rx + (idx & 1) * D;
@@ -363,7 +382,7 @@ struct Enq {
                 p.flag = G.flag + (idx & 1);
             } else {  // fallback: a pull kernel (publishes first if arpub) waits on the host flag, copies into rx
                 tp::pull(G.hflag + (idx & 1), G.hrx + (idx & 1) * D, G.rx + (idx & 1) * D, G.st, idx, G.s, G.part,
-                         arpub() ? G.peer_rx : nullptr, arpub() ? G.peer_flag : nullptr);
+                         arpub() && !rows_in_gemv() ? G.peer_rx : nullptr, arpub() ? G.peer_flag : nullptr);
                 mark(G, "pull");
             }
         }
@@ -398,7 +417,8 @@ struct Enq {
         const tp::Pf pf = pf_for(nxt);
         const bool pub = arpub() && p.add && c->tps->p2p;  // fallback mode published in pull()
         tp::ar_norm(p.h_in, p.h_out, p.add ? G.part : nullptr, G.rx, p.flag ? G.flag : nullptr, G.st, p.idx, p.nw,
-                    G.xn, G.xq, G.xm, G.s, &pf, pub ? G.peer_rx : nullptr, pub ? G.peer_flag : nullptr);
+                    G.xn, G.xq, G.xm, G.s, &pf, pub && !rows_in_gemv() ? G.peer_rx : nullptr,
+                    pub ? G.peer_flag : nullptr);
         mark(G, "ar_norm");
         return nullptr;
     }
@@ -425,8 +445,8 @@ struct Enq {
                     tp::gnorm_q8(G.o, G.y + 5120, L.ssm_norm, G.xq, G.xm, s, &pf);
                     mark(G, "gnorm_q8");
                 }
-                tp::ArArgs a = ar(G, idx);
-                tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, arpub() ? nullptr : &a, nullptr,
+                tp::ArArgs a;
+                tp::gemv(L.ssm_out, G.xq, G.xm, G.part + (idx & 1) * D, s, ksplit(G, idx, a), nullptr,
                          S.fuse == 1 ? &pg : nullptr);
                 mark(G, "gemv_ssm_out");
             } else {
@@ -440,25 +460,22 @@ struct Enq {
                 const tp::Pf pf = pf_for(L.wo);
                 tp::attn_combine_q8(G.attn_ws, G.y, G.st, G.xq, G.xm, s, &pf);
                 mark(G, "attn_combine");
-                tp::ArArgs a = ar(G, idx);
-                tp::gemv(L.wo, G.xq, G.xm, G.part + (idx & 1) * D, s, arpub() ? nullptr : &a);
+                tp::ArArgs a;
+                tp::gemv(L.wo, G.xq, G.xm, G.part + (idx & 1) * D, s, ksplit(G, idx, a));
                 mark(G, "gemv_attn_out");
             }
         } else {
             const int idx = 2 * il + 1;
             const tp::ProArgs pa = arnorm(G, 2 * il, L.post_norm);
-            tp::gemv(L.gateup, G.xq, G.xm, G.y, s, nullptr, nullptr, pre(G, pa, L.gateup));
-            mark(G, "gemv_gateup");
-            tp::ProArgs ps;
-            ps.gu = G.y;
-            if (S.fuse != 1) {
-                const tp::Pf pf = pf_for(L.down);
-                tp::silu_q8(G.y, 8704, G.xq, G.xm, s, &pf);
-                mark(G, "silu_q8");
-            }
-            tp::ArArgs a = ar(G, idx);
-            tp::gemv(L.down, G.xq, G.xm, G.part + (idx & 1) * D, s, arpub() ? nullptr : &a, nullptr,
-                     S.fuse == 1 ? &ps : nullptr);
+            // gate|up GEMV with the silu * up + q8 epilogue (x for ffn_down lands in G.xq2 / G.xm2)
+            const tp::ProArgs* pp = pre(G, pa, L.gateup);
+            tp::ProArgs pq = pp ? *pp : tp::ProArgs{};
+            pq.sq_xq = G.xq2;
+            pq.sq_xm = G.xm2;
+            tp::gemv(L.gateup, G.xq, G.xm, G.y, s, nullptr, nullptr, &pq);
+            mark(G, "gemv_gateup+silu_q8");
+            tp::ArArgs a;
+            tp::gemv(L.down, G.xq2, G.xm2, G.part + (idx & 1) * D, s, ksplit(G, idx, a));
             mark(G, "gemv_down");
         }
     }
@@ -626,6 +643,7 @@ void tp_load(t4q_ctx* c, const char* path) {
         G.attn_ws = dmalloc<float>((size_t)2 * tp::NSPLIT * 6 * 258);
         G.logits = dmalloc<float>(124160);
         G.xq = dmalloc<int8_t>(17408); G.xm = dmalloc<int2>(17408 / 32);
+        G.xq2 = dmalloc<int8_t>(8704); G.xm2 = dmalloc<int2>(8704 / 32);
         G.part = dmalloc<float>(2 * D); G.rx = dmalloc<float>(2 * D);
         G.flag = dmalloc<unsigned>(8); G.cnt = dmalloc<unsigned>(8);
         G.amb = dmalloc<float>(8); G.apart = dmalloc<float>(2 * 160);
@@ -804,6 +822,7 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     if (k == "graphs") { S.graphs = v != 0; return 0; }
     if (k == "fuse" || k == "pf_kb" || k == "arpub") {  // kernel structure; graphs are re-captured on the next step
         sync_both(c);
+        if (k == "fuse" && v == 1) throw std::runtime_error("fuse=1 (silu/gnorm prologues) retired in M4 v8");
         if (k == "fuse") S.fuse = v;
         else if (k == "arpub") S.arpub = v;
         else S.pf_kb = v;

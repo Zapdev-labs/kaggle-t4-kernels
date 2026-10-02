@@ -96,9 +96,11 @@ __device__ __forceinline__ void do_prefetch(const Pf& pf, int b, int nb) {
 // coalesced float4 stores, then one system fence + flag (the M0 two-level pattern). Whole block participates.
 __device__ __forceinline__ void publish_partial(const float* own_slot, float* peer_slot, unsigned* peer_flag_slot,
                                                 unsigned epoch) {
-    const float4* src = (const float4*)own_slot;
-    float4* dst = (float4*)peer_slot;
-    for (int i = threadIdx.x; i < 1280; i += blockDim.x) dst[i] = src[i];
+    if (peer_slot) {  // nullptr: the producer GEMV already wrote the rows (arpub 2); only fence + flag here
+        const float4* src = (const float4*)own_slot;
+        float4* dst = (float4*)peer_slot;
+        for (int i = threadIdx.x; i < 1280; i += blockDim.x) dst[i] = src[i];
+    }
     __syncthreads();
     if (threadIdx.x == 0) {
         __threadfence_system();
@@ -161,7 +163,7 @@ __device__ __forceinline__ void quant_smem(float v, int i, int8_t* s_lo, int8_t*
 
 int g_max_blocks = 80;
 
-template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO>
+template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO, bool SQ = false>
 __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs ar, const SegArgs sg, const ProArgs pa,
                                                  int tpw) {
     constexpr int D = 2, M = 1;
@@ -181,6 +183,7 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     __shared__ __align__(16) float s_xf[(PRO == PRO_ARNORM || PRO == PRO_GNORM) ? K : 4];
     __shared__ float red[128];
     __shared__ int s_flag;
+    __shared__ float sa[SQ ? 8 * RPL : 1];  // SQ: silu(g) * u of the block's 8 * RPL (= 32) outputs
 
     WChunk<FMT, RPL> w[D];
     const bool pre = PRO != PRO_NONE && tbeg < tend && tbeg < a.ntiles;
@@ -368,23 +371,33 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
                 v += __shfl_xor_sync(0xffffffffu, v, 2);
                 v += __shfl_xor_sync(0xffffffffu, v, 1);
                 const int row = tile * 2 * RPL + h * RPL + r;
+                if (SQ) {  // half 0 holds gate row r, half 1 the matching up row
+                    const float u = __shfl_xor_sync(0xffffffffu, v, 16);
+                    if (lane == 0) sa[wib * RPL + r] = (v / (1.0f + expf(-v))) * u;
+                }
                 if (j == 0 && row < a.N) {
                     a.y[(size_t)col * a.ldy + row] = v;
                     if (AR) sy[(tile - blockIdx.x * 8 * tpw) * 2 * RPL + h * RPL + r] = v;
                 }
             }
     }
+    if (SQ) {
+        __syncthreads();
+        if (wib == 0) quant_warp(sa[lane], pa.sq_xq + blockIdx.x * 32 + lane, pa.sq_xm + blockIdx.x);
+    }
     if (AR) {
         __syncthreads();
         const int nrow = 8 * tpw * 2 * RPL;
         bool wrote = false;
-        for (int t = tid; t < nrow / 4; t += blockDim.x) {
-            const int row0 = blockIdx.x * nrow + t * 4;
-            if (row0 < a.N) {
-                *(float4*)(ar.y_peer + row0) = *(const float4*)(sy + t * 4);
-                wrote = true;
+        if (ar.fence != -2)
+            for (int t = tid; t < nrow / 4; t += blockDim.x) {
+                const int row0 = blockIdx.x * nrow + t * 4;
+                if (row0 < a.N) {
+                    *(float4*)(ar.y_peer + row0) = *(const float4*)(sy + t * 4);
+                    wrote = true;
+                }
             }
-        }
+        if (ar.fence < 0) return;  // rows only: the consumer kernel publishes the flag
         if (wrote) {
             if (ar.fence == 2) __threadfence_system();
             else if (ar.fence == 1) __threadfence();
@@ -401,24 +414,26 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     }
 }
 
-template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO>
+template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO, bool SQ = false>
 void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t s, const ArArgs& ar,
                  const SegArgs& sg, const ProArgs& pa) {
     GemvArgs a = make_args(W.L, W.base, xq, xm, y, W.L.N);
     const int ntot = W.L.ntiles + (SEG ? sg.nrows : 0);
     // prologue kernels: co-resident grid (the prologue runs once per block); plain kernels: full grid (M0 policy)
-    const int target = PRO != PRO_NONE ? std::min((ntot + 7) / 8, g_max_blocks) : (ntot + 7) / 8;
+    const int target = (PRO != PRO_NONE && !SQ) ? std::min((ntot + 7) / 8, g_max_blocks) : (ntot + 7) / 8;
     const int tpw = (ntot + 8 * target - 1) / (8 * target);
     const int blocks = (ntot + 8 * tpw - 1) / (8 * tpw);
     if (AR && (W.L.N % 4 || SEG || tpw > 2)) throw std::runtime_error("AR gemv needs N % 4 == 0, no segment, tpw <= 2");
+    if (SQ && (tpw != 1 || RPL != 4 || SEG || AR || W.L.N % 64)) throw std::runtime_error("bad silu-quant gemv");
     static bool attr[8] = {false};  // per device: prefer max shared memory so two prologue blocks fit per SM
     int dev = 0;
     cudaGetDevice(&dev);
     if (dev < 8 && !attr[dev]) {
-        cudaFuncSetAttribute(k_gemv<FMT, RPL, NCH, AR, SEG, PRO>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+        cudaFuncSetAttribute(k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ>, cudaFuncAttributePreferredSharedMemoryCarveout,
+                             100);
         attr[dev] = true;
     }
-    k_gemv<FMT, RPL, NCH, AR, SEG, PRO><<<blocks, 256, 0, s>>>(a, ar, sg, pa, tpw);
+    k_gemv<FMT, RPL, NCH, AR, SEG, PRO, SQ><<<blocks, 256, 0, s>>>(a, ar, sg, pa, tpw);
 }
 
 }  // namespace
@@ -434,6 +449,17 @@ void gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream_t 
     const bool isar = ar != nullptr, isseg = seg != nullptr;
     int pk = PRO_NONE;
     if (pro) pk = pro->h_in ? PRO_ARNORM : pro->gu ? PRO_SILU : pro->o ? PRO_GNORM : PRO_NONE;
+    if (pro && pro->sq_xq) {  // gate|up with the silu-quant epilogue
+        if (f == FAST_P4 && rpl == 4 && nch == 10 && !isar && !isseg && pk == PRO_NONE) {
+            launch_gemv<FAST_P4, 4, 10, false, false, PRO_NONE, true>(W, xq, xm, y, s, A, S, P);
+            return;
+        }
+        if (f == FAST_P4 && rpl == 4 && nch == 10 && !isar && !isseg && pk == PRO_ARNORM) {
+            launch_gemv<FAST_P4, 4, 10, false, false, PRO_ARNORM, true>(W, xq, xm, y, s, A, S, P);
+            return;
+        }
+        throw std::runtime_error("tp::gemv: no silu-quant instantiation");
+    }
 #define T4Q_G(FMT, RPL, NCH, AR_, SEG_, PRO_)                                                     \
     if (f == FMT && rpl == RPL && nch == NCH && isar == AR_ && isseg == SEG_ && pk == PRO_) {      \
         launch_gemv<FMT, RPL, NCH, AR_, SEG_, PRO_>(W, xq, xm, y, s, A, S, P);                    \
@@ -499,7 +525,9 @@ __global__ void __launch_bounds__(1024) k_ar_norm(const float* h, float* h_out, 
     __shared__ int s_ok;
     const int tid = threadIdx.x;
     const int slot = idx & 1;
-    if (pub_peer_rx) publish_partial(own + slot * 5120, pub_peer_rx + slot * 5120, pub_peer_flag + slot, epoch_of(st, idx));
+    if (pub_peer_flag)
+        publish_partial(own + slot * 5120, pub_peer_rx ? pub_peer_rx + slot * 5120 : nullptr, pub_peer_flag + slot,
+                        epoch_of(st, idx));
     if (WAIT) {
         if (tid == 0) {
             s_ok = wait_flag(flag + slot, epoch_of(st, idx));
@@ -862,9 +890,9 @@ __global__ void k_argmax_final(const float* apart, int row0, float* amb, const u
 __global__ void __launch_bounds__(640) k_pull(const unsigned* hflag, const float* hrx, float* rx, StepState* st,
                                               int idx, const float* own, float* pub_peer_rx, unsigned* pub_peer_flag) {
     __shared__ int ok;
-    if (pub_peer_rx)
-        publish_partial(own + (idx & 1) * 5120, pub_peer_rx + (idx & 1) * 5120, pub_peer_flag + (idx & 1),
-                        epoch_of(st, idx));
+    if (pub_peer_flag)
+        publish_partial(own + (idx & 1) * 5120, pub_peer_rx ? pub_peer_rx + (idx & 1) * 5120 : nullptr,
+                        pub_peer_flag + (idx & 1), epoch_of(st, idx));
     if (threadIdx.x == 0) {
         ok = wait_flag(hflag, epoch_of(st, idx));
         if (!ok) st->err = 3000 + idx;

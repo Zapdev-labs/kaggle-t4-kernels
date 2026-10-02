@@ -40,7 +40,8 @@ struct ArArgs {
     unsigned* peer_flag = nullptr;  // peer's flag[slot]
     const StepState* st = nullptr;
     int idx = 0;                    // AR index within the step
-    int fence = 2;                  // per-block fence before counting: 2 = system (correct), 1 = gpu, 0 = none (tests)
+    int fence = 2;  // per-block fence before counting: 2 = system (correct), 1 = gpu, 0 = none; -1: staged remote rows
+                    // only (no fence, counter or flag; the consumer publishes the flag); -2: staging only (tests)
 };
 
 struct SegArgs {  // extra fp32 rows (K = 5120) appended to a GEMV launch: y[i] = w[i] . x
@@ -76,6 +77,9 @@ struct ProArgs {
     const float* gu = nullptr;
     // PRO_GNORM: x = rmsnorm128(o) * gw * silu(z)
     const float *o = nullptr, *z = nullptr, *gw = nullptr;
+    // silu-quant epilogue (gate|up rows interleaved by RPL per tile): q8(silu(g) * u) -> sq_xq / sq_xm
+    int8_t* sq_xq = nullptr;
+    int2* sq_xm = nullptr;
 };
 
 struct Layer {
@@ -108,6 +112,8 @@ struct Gpu {
     float *xn, *y, *yab, *o, *qa, *attn_ws, *logits;
     int8_t* xq;
     int2* xm;
+    int8_t* xq2;  // q8 x for ffn_down (written by the gate|up epilogue)
+    int2* xm2;
     float* part;     // [2][5120] own AR partials
     float* rx;       // [2][5120] peer writes its partials here
     unsigned* flag;  // [2] peer-written AR flags, [2..3] argmax flags
@@ -137,6 +143,7 @@ struct ShardSpec {  // how a FW was gathered from GGUF tensors (kept for the sel
     std::string what;
     std::vector<std::pair<const void*, std::pair<int64_t, int64_t>>> rows;  // (GgufTensor*, (row0, nrows))
     std::vector<std::pair<int64_t, int64_t>> cols;                        // (col0, ncols) in elements
+    int interleave = 0;  // > 0: two equal row pieces interleaved in groups of this many rows
 };
 
 struct State {
