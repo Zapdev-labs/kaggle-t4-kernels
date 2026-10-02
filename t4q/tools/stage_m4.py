@@ -316,9 +316,8 @@ def main():
         summ["p2p"] = val.get("p2p")
         result("summary", summ)
         # variant processes: forced host-mapped fallback (on a P2P box), and RPL=2 P4 layouts; greedy V3 + short bench
-        variants = [("t128", {"T4Q_THREADS": "128"}, True), ("rplN2", {"T4Q_RPL_N": "2"}, True),
-                    ("rplN2_t128", {"T4Q_RPL_N": "2", "T4Q_THREADS": "128"}, True),
-                    ("rpl2_t128", {"T4Q_RPL_P4": "2", "T4Q_THREADS": "128"}, True)]
+        variants = [("old_cfg", {"T4Q_RPL_N": "4", "T4Q_THREADS": "256"}, True),
+                    ("nop2p", {"T4Q_NO_P2P": "1"}, bool(val.get("p2p")))]
         for vname, venv, run in variants:
             if not run or DEADLINE - el() < 300:
                 continue

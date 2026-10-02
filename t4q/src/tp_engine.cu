@@ -96,6 +96,7 @@ void build_fw(t4q_ctx* c, Stage& sg, int g, tp::FW& W, const std::vector<Piece>&
         const std::string w(what);
         const bool nsplit = w.find("qkvz") != std::string::npos || w.find("qkv_a") != std::string::npos;
         const bool ksplit = w.find("ffn_down") != std::string::npos || w.find("attn_output") != std::string::npos;
+        if (nsplit) rpl = 2;  // M4 v11 selftest: qkvz 99.6 -> 94.3 us, qkv_a 84.3 -> 83.8 us with 128-thread blocks
         if (getenv("T4Q_RPL_P4")) rpl = atoi(getenv("T4Q_RPL_P4"));
         if (nsplit && getenv("T4Q_RPL_N")) rpl = atoi(getenv("T4Q_RPL_N"));
         if (ksplit && getenv("T4Q_RPL_K")) rpl = atoi(getenv("T4Q_RPL_K"));
@@ -321,9 +322,33 @@ void selftest(t4q_ctx* c) {
                 arj += bb;
             }
         }
+        // L2 warm-up experiment (gateup only): GEMV time after flushing L2, after touching its first 2 MB with real
+        // loads, and after prefetch.global.L2 of the same range
+        if (sp.what.find("gateup") != std::string::npos && g == 0 && sp.what.find("blk.0.") == 0) {
+            const size_t flush_n = 64ull << 20;
+            const uint8_t* other = S.G[g].lm.base ? S.G[g].lm.base : W.base;  // unrelated 64 MB to evict L2
+            double tt[3] = {0, 0, 0};
+            for (int rep = 0; rep < 5; rep++)
+                for (int mode = 0; mode < 3; mode++) {
+                    tp::touch(other, flush_n, 0, G.logits + 124000, G.s);
+                    if (mode == 1) tp::touch(W.base, 2u << 20, 0, G.logits + 124000, G.s);
+                    if (mode == 2) tp::touch(W.base, 2u << 20, 1, G.logits + 124000, G.s);
+                    CK(cudaEventRecord(e0, G.s));
+                    tp::gemv(W, G.xq, G.xm, G.logits, G.s);
+                    CK(cudaEventRecord(e1, G.s));
+                    CK(cudaEventSynchronize(e1));
+                    float m3 = 0;
+                    CK(cudaEventElapsedTime(&m3, e0, e1));
+                    tt[mode] += 1e3 * m3 / 5;
+                }
+            char bb[200];
+            snprintf(bb, sizeof bb, ",\"l2exp_cold_us\":%.1f,\"l2exp_ld2MB_us\":%.1f,\"l2exp_pf2MB_us\":%.1f", tt[0], tt[1],
+                     tt[2]);
+            arj += bb;
+        }
         cudaEventDestroy(e0);
         cudaEventDestroy(e1);
-        char b[640];
+        char b[900];
         snprintf(b, sizeof b,
                  "%s{\"w\":\"%s\",\"fmt\":\"%s\",\"N\":%d,\"K\":%d,\"max_err_over_rms\":%.3e,\"us\":%.1f,"
                  "\"GBps\":%.1f%s}",

@@ -162,7 +162,7 @@ __device__ __forceinline__ void quant_smem(float v, int i, int8_t* s_lo, int8_t*
 }
 
 int g_max_blocks = 80;
-int g_threads = 256;
+int g_threads = 128;  // plain-x GEMV block size (M4 v11 selftest: 128 >= 256 on every shape)
 
 template <int FMT, int RPL, int NCH, bool AR, bool SEG, int PRO, bool SQ = false>
 __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs ar, const SegArgs sg, const ProArgs pa,
@@ -1030,6 +1030,20 @@ __global__ void __launch_bounds__(640) k_pull(const unsigned* hflag, const float
 }
 
 }  // namespace
+
+// L2 warm-up experiment kernels: touch n bytes with real loads (cg) or prefetch instructions
+__global__ void k_touch(const uint8_t* p, size_t n, int mode, float* sink) {
+    unsigned acc = 0;
+    for (size_t off = ((size_t)blockIdx.x * blockDim.x + threadIdx.x) * 32; off < n;
+         off += (size_t)gridDim.x * blockDim.x * 32) {
+        if (mode == 0) acc ^= __ldcg((const unsigned*)(p + off));
+        else asm volatile("prefetch.global.L2 [%0];" ::"l"(p + off));
+    }
+    if (acc == 0x12345678u) sink[0] = 1.f;
+}
+void touch(const uint8_t* p, size_t n, int mode, float* sink, cudaStream_t s) {
+    k_touch<<<80, 256, 0, s>>>(p, n, mode, sink);
+}
 
 void pull(const unsigned* hflag, const float* hrx, float* rx, StepState* st, int idx, cudaStream_t s,
           const float* own, float* pub_peer_rx, unsigned* pub_peer_flag) {
