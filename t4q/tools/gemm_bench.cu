@@ -5,6 +5,7 @@
 //        ./gemm_bench --dev N --sustain SECS [--shape gateup]    back-to-back GEMMs, NVML clocks/power per window
 // Output lines: "CHECK {json}", "R {json}" (one per shape x T), "S {json}" (sustain windows), "SUMMARY {json}".
 #include "../src/kernels/gemm.cuh"
+#include "../src/kernels/gemm8.cuh"
 #include "nvml_lite.h"
 
 #include <algorithm>
@@ -67,7 +68,11 @@ static void gen_gguf(int fmt, int N, int K, std::vector<uint8_t>& out) {
 static NvmlLite g_nvml;
 static int g_dev = 0;
 
-static const char* VNAME[] = {"i8", "i8_epi1", "i8_epi0", "f16", "i4split", "w4a4_timing"};
+static const char* VNAME[] = {"i8", "i8_epi1", "i8_epi0", "f16", "i4split", "w4a4_timing", "g8_256", "g8_128"};
+static float* g_invs = nullptr;
+static float* g_dx = nullptr;
+static const Layout* g_L = nullptr;
+static uint8_t* g_w = nullptr;
 // variant 0: correct W4A8; 1/2: timing-only epilogue variants (P4 rpl 4); 3: fp16 HMMA (P4)
 static cudaError_t launch_var(int var, int fmt, int rpl, const gemm::GemmArgs& a, const __half* xh, cudaStream_t st) {
     if (var == 0) return gemm::gemm_launch_fmt(fmt, rpl, a, st);
@@ -77,6 +82,10 @@ static cudaError_t launch_var(int var, int fmt, int rpl, const gemm::GemmArgs& a
     if (var == 4 && fmt == FAST_P4 && rpl == 2) return gemm::gemm_launch<FAST_P4, 2, 3>(a, st);
     if (var == 4 && fmt == FAST_P4M && rpl == 4) return gemm::gemm_launch<FAST_P4M, 4, 3>(a, st);
     if (var == 5 && fmt == FAST_P4 && rpl == 4) return gemm::gemm_launch<FAST_P4, 4, 4>(a, st);
+    if (var == 6 || var == 7) {
+        gemm8::Args a8 = gemm8::make_args(*g_L, g_w, g_invs, a.xq, g_dx, a.y, a.ldy, a.T, a.Tp);
+        return gemm8::launch(fmt, rpl, var == 6 ? 256 : 128, a8, st);
+    }
     if (var == 3 && fmt == FAST_P4) {
         static int attr = 0;
         if (!attr) {
@@ -87,6 +96,54 @@ static cudaError_t launch_var(int var, int fmt, int rpl, const gemm::GemmArgs& a
         return rpl == 4 ? gemm::gemm_f16_launch<4>(a, xh, st) : gemm::gemm_f16_launch<2>(a, xh, st);
     }
     return cudaErrorInvalidValue;
+}
+
+// host mirror of gemm8's per-row requantization of one GGUF row (natural order) -> w8, given invs
+static void g8_row_host(int fmt, const uint8_t* row, int K, float invs, std::vector<int>& w8) {
+    w8.resize(K);
+    auto rnd = [](double v) { return (int)std::nearbyint(v); };
+    if (fmt == FAST_P4) {
+        for (int b = 0; b < K / 32; ++b) {
+            const uint8_t* p = row + 18 * b; uint16_t dh; memcpy(&dh, p, 2);
+            const float av = h2f_host(dh) * invs;
+            const double r = h2f_host(f2h_host(av)), r16 = h2f_host(f2h_host(av * 0.0625f));
+            for (int j = 0; j < 16; ++j) {
+                w8[32 * b + j] = rnd(((p[2 + j] & 15) - 8) * r);
+                w8[32 * b + 16 + j] = rnd(16.0 * ((p[2 + j] >> 4) - 8) * r16);
+            }
+        }
+        return;
+    }
+    std::vector<float> wf(K);  // reconstruct per-block (A, B) from the dequantized row: w = A q + B
+    if (fmt == FAST_P4M) {
+        for (int b = 0; b < K / 32; ++b) {
+            const uint8_t* p = row + 20 * b; uint16_t dh, mh; memcpy(&dh, p, 2); memcpy(&mh, p + 2, 2);
+            const float A = h2f_host(dh), B = h2f_host(mh);
+            const double a = h2f_host(f2h_host(A * invs)), a16 = h2f_host(f2h_host(A * invs * 0.0625f)), bb = h2f_host(f2h_host(B * invs));
+            for (int j = 0; j < 16; ++j) {
+                const float t0 = h2f_host(f2h_host((float)((p[4 + j] & 15) * a + bb)));
+                const float t1 = h2f_host(f2h_host((float)(16.0 * (p[4 + j] >> 4) * a16 + bb)));
+                w8[32 * b + j] = rnd(t0);
+                w8[32 * b + 16 + j] = rnd(t1);
+            }
+        }
+        return;
+    }
+    // K5
+    uint8_t q[256]; int sc[8], mn[8];
+    for (int sb = 0; sb < K / 256; ++sb) {
+        const uint8_t* p = row + 176 * sb; uint16_t dh, mh; memcpy(&dh, p, 2); memcpy(&mh, p + 2, 2);
+        q5k_codes(p, q, sc, mn);
+        for (int sub = 0; sub < 8; ++sub) {
+            const float A = h2f_host(dh) * (float)sc[sub], B = -h2f_host(mh) * (float)mn[sub];
+            const double a = h2f_host(f2h_host(A * invs)), a16 = h2f_host(f2h_host(A * invs * 0.0625f)), bb = h2f_host(f2h_host(B * invs));
+            for (int e = 0; e < 32; ++e) {
+                const int qq = q[32 * sub + e];
+                const float t = e < 16 ? h2f_host(f2h_host((float)(qq * a + bb))) : h2f_host(f2h_host((float)(16.0 * qq * a16 + bb)));
+                w8[256 * sb + 32 * sub + e] = rnd(t);
+            }
+        }
+    }
 }
 
 struct Dev {
@@ -151,7 +208,7 @@ int main(int argc, char** argv) {
         for (int k = 0; k < Kmax; ++k) hx[(size_t)t * Kmax + k] = rndn() * ((k % 397) == 5 ? 30.f : 1.f);
 
     bool all_ok = true;
-    double tot_time[8] = {0}, tot_ops[8] = {0};
+    double tot_time[8] = {0}, tot_ops[8] = {0}, tot8_time[8][2] = {{0}};
     for (const Shape& sh : SHAPES) {
         if (!only.empty() && only != sh.name) continue;
         const int N = sh.N, K = sh.K, fmt = sh.fmt;
@@ -258,6 +315,87 @@ int main(int argc, char** argv) {
             fflush(stdout);
             tot_time[ti] += us * sh.per_layer_count;
             tot_ops[ti] += 2.0 * N * K * T * sh.per_layer_count;
+            // ---- gemm8: in-kernel per-row int8 requant (correctness vs its host mirror and vs exact Q4, timing BN 256/128)
+            {
+                CK(cudaMalloc(&g_invs, (size_t)N * 4));
+                CK(cudaMalloc(&g_dx, (size_t)(K / 32) * Tp * 4));
+                g_L = &L; g_w = D.w;
+                gemm8::Args a8 = gemm8::make_args(L, D.w, g_invs, D.xq, g_dx, D.y, N, T, Tp);
+                CK(gemm8::row_invs(fmt, sh.rpl, a8, g_invs, st));
+                gemm8::quant8(D.x, K, T, Tp, K, D.xq, g_dx, st);
+                CK(cudaStreamSynchronize(st));
+                for (int bn : {256, 128}) {
+                    if (Tp % bn) continue;
+                    CK(cudaMemset(D.y, 0, (size_t)T * N * 4));
+                    CK(gemm8::launch(fmt, sh.rpl, bn, a8, st));
+                    CK(cudaStreamSynchronize(st));
+                    if (ti == 0 || T == Ts.back()) {
+                        const int nb = K / 32;
+                        std::vector<int8_t> xq((size_t)Tp * K);
+                        std::vector<float> dxh((size_t)nb * Tp), invh(N), y((size_t)T * N);
+                        CK(cudaMemcpy(xq.data(), D.xq, xq.size(), cudaMemcpyDeviceToHost));
+                        CK(cudaMemcpy(dxh.data(), g_dx, dxh.size() * 4, cudaMemcpyDeviceToHost));
+                        CK(cudaMemcpy(invh.data(), g_invs, N * 4, cudaMemcpyDeviceToHost));
+                        CK(cudaMemcpy(y.data(), D.y, y.size() * 4, cudaMemcpyDeviceToHost));
+                        const size_t rb = src_row_bytes(fmt, K);
+                        double e2 = 0, r2 = 0, eq2 = 0, emax = 0;
+                        long inv_mis = 0;
+                        std::vector<int> w8; std::vector<float> w(K);
+                        int nrow = 0;
+                        for (int r = 0; r < N; r += (r < N - 16 ? 41 : 1)) {
+                            dequant_row_host(fmt, src.data() + (size_t)r * rb, K, w.data());
+                            const float ih = gemm8::row_invs_host(w.data(), K);
+                            // device invs uses the per-block bound (8|d| etc.), the host the actual max: report both
+                            if (fmt == FAST_P4 ? false : std::fabs(ih - invh[r]) > 1e-3f * ih) inv_mis++;
+                            g8_row_host(fmt, src.data() + (size_t)r * rb, K, invh[r], w8);
+                            ++nrow;
+                            for (int t = 0; t < T; t += (t < T - 3 ? 53 : 1)) {
+                                double s8 = 0, sq = 0;
+                                for (int b = 0; b < nb; ++b) {
+                                    long si = 0;
+                                    double sqb = 0;
+                                    for (int i = 0; i < 32; ++i) {
+                                        const int xv = xq[(size_t)t * K + 32 * b + i];
+                                        si += (long)w8[32 * b + i] * xv;
+                                        sqb += (double)w[32 * b + i] * xv;
+                                    }
+                                    s8 += (double)si * dxh[(size_t)b * Tp + t];
+                                    sq += sqb * dxh[(size_t)b * Tp + t];
+                                }
+                                s8 /= invh[r];
+                                const double g = y[(size_t)t * N + r];
+                                e2 += (g - s8) * (g - s8); r2 += s8 * s8; eq2 += (g - sq) * (g - sq);
+                                emax = std::max(emax, std::fabs(g - s8));
+                            }
+                        }
+                        const double rel = std::sqrt(e2 / r2), relq = std::sqrt(eq2 / r2);
+                        const bool ok = rel < 2e-3 && relq < 5e-2 && std::isfinite(rel);
+                        all_ok = all_ok && ok;
+                        printf("CHECK {\"shape\":\"%s\",\"variant\":\"g8_%d\",\"T\":%d,\"rel_l2_vs_mirror\":%.3e,"
+                               "\"rel_l2_vs_q4\":%.3e,\"max_err_over_rms\":%.3e,\"inv_mismatch\":%ld,\"rows\":%d,\"ok\":%d}\n",
+                               sh.name, bn, T, rel, relq, emax / std::sqrt(r2 / std::max(1, nrow)), inv_mis, nrow, (int)ok);
+                        fflush(stdout);
+                    }
+                    const int R = reps > 0 ? reps : (T >= 2048 ? 6 : 20);
+                    for (int w2 = 0; w2 < 2; ++w2) CK(gemm8::launch(fmt, sh.rpl, bn, a8, st));
+                    CK(cudaEventRecord(e0, st));
+                    for (int r = 0; r < R; ++r) CK(gemm8::launch(fmt, sh.rpl, bn, a8, st));
+                    CK(cudaEventRecord(e1, st));
+                    auto smp3 = g_nvml.sample(g_dev);
+                    CK(cudaEventSynchronize(e1));
+                    float ms3 = 0; CK(cudaEventElapsedTime(&ms3, e0, e1));
+                    const double us3 = ms3 * 1e3 / R, tops3 = 2.0 * N * K * T / (us3 * 1e-6) / 1e12;
+                    printf("RV {\"shape\":\"%s\",\"variant\":\"g8_%d\",\"T\":%d,\"us\":%.1f,\"TOPS\":%.2f,\"sm_mhz\":%u,"
+                           "\"power_w\":%.1f,\"ops_per_clk_sm\":%.0f}\n", sh.name, bn, T, us3, tops3, smp3.sm, smp3.mw / 1000.0,
+                           smp3.sm ? tops3 * 1e12 / (smp3.sm * 1e6) / 40.0 : 0.0);
+                    fflush(stdout);
+                    tot8_time[ti][bn == 256 ? 0 : 1] += us3 * sh.per_layer_count;
+                }
+                CK(cudaFree(g_invs)); CK(cudaFree(g_dx)); g_invs = nullptr; g_dx = nullptr;
+                gemm::quant_rows(D.x, K, T, Tp, K, D.xq, D.xs, D.xsum, st);  // restore the gemm.cuh activations
+                CK(gemm::gemm_launch_fmt(fmt, sh.rpl, a, st));
+                CK(cudaStreamSynchronize(st));
+            }
             // ---- other variants: fp16 HMMA (correctness vs fp32 x), timing-only epilogue variants on gateup
             std::vector<float> y8;
             {
@@ -331,8 +469,11 @@ int main(int argc, char** argv) {
         printf("SUMMARY {\"all_ok\":%d", (int)all_ok);
         for (size_t ti = 0; ti < Ts.size(); ++ti) {
             const double s = tot_time[ti] * 1e-6;
-            printf(",\"T%d\":{\"linear_ms_per_gpu\":%.1f,\"TOPS\":%.2f,\"linear_only_tok_s\":%.0f}", Ts[ti], s * 1e3,
-                   tot_ops[ti] / s / 1e12, Ts[ti] / s);
+            const double s8a = tot8_time[ti][0] * 1e-6, s8b = tot8_time[ti][1] * 1e-6;
+            printf(",\"T%d\":{\"linear_ms_per_gpu\":%.1f,\"TOPS\":%.2f,\"linear_only_tok_s\":%.0f,\"g8_256_ms\":%.1f,"
+                   "\"g8_256_TOPS\":%.2f,\"g8_128_ms\":%.1f,\"g8_128_TOPS\":%.2f}", Ts[ti], s * 1e3,
+                   tot_ops[ti] / s / 1e12, Ts[ti] / s, s8a * 1e3, s8a > 0 ? tot_ops[ti] / s8a / 1e12 : 0.0, s8b * 1e3,
+                   s8b > 0 ? tot_ops[ti] / s8b / 1e12 : 0.0);
         }
         printf("}\n");
         fflush(stdout);
@@ -354,8 +495,16 @@ int main(int argc, char** argv) {
         gemm::quant_rows(D.x, K, T, Tp, K, D.xq, D.xs, D.xsum, st);
         gemm::to_f16_perm_kernel<<<(Tp * (K / 32) + 127) / 128, 128, 0, st>>>(D.x, K, T, Tp, K, D.xh);
         gemm::GemmArgs a = gemm::make_args(L, D.w, D.xq, D.xs, D.xsum, D.y, N, T, Tp);
+        CK(cudaMalloc(&g_invs, (size_t)N * 4));
+        CK(cudaMalloc(&g_dx, (size_t)(K / 32) * Tp * 4));
+        g_L = &L; g_w = D.w;
+        {
+            gemm8::Args a8 = gemm8::make_args(L, D.w, g_invs, D.xq, g_dx, D.y, N, T, Tp);
+            CK(gemm8::row_invs(sh.fmt, sh.rpl, a8, g_invs, st));
+        }
         for (int var : svars) {
-        if (var >= 4) gemm::quant_rows_i4_kernel<<<(Tp * (K / 32) + 127) / 128, 128, 0, st>>>(D.x, K, T, Tp, K, D.xq, D.xs, D.xsum);
+        if (var >= 6) gemm8::quant8(D.x, K, T, Tp, K, D.xq, g_dx, st);
+        else if (var >= 4) gemm::quant_rows_i4_kernel<<<(Tp * (K / 32) + 127) / 128, 128, 0, st>>>(D.x, K, T, Tp, K, D.xq, D.xs, D.xsum);
         else gemm::quant_rows(D.x, K, T, Tp, K, D.xq, D.xs, D.xsum, st);
         auto t0 = std::chrono::steady_clock::now();
         int win = 0;

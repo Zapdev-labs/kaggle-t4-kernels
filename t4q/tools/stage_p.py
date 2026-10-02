@@ -33,7 +33,7 @@ WORK.mkdir(exist_ok=True)
 ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "p"
-SECTIONS = ["engine"]
+SECTIONS = ["gemm"]
 PF_CONFIGS = "pf_ub=2048,pf_nsub=2,pf_fa=1,pf_fuse=1;pf_ub=512,pf_nsub=2,pf_fa=1,pf_fuse=1;pf_ub=1024,pf_nsub=2,pf_fa=1,pf_fuse=1;pf_ub=2048,pf_nsub=2,pf_fa=1,pf_fuse=0"
 RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
@@ -320,9 +320,59 @@ def gemm_section(t4q):
         result("gemm_sustain", {"build": f"u{best}", "per_dev": summ})
 
 
+def ref_section(t4q):
+    """cuBLAS / CUTLASS reference GEMMs (tools/ref_bench.cu): burst on dev0, then sustained on both GPUs at once."""
+    bdir = W / "rb"
+    bdir.mkdir(exist_ok=True)
+    rc, o = sh("git clone -q --depth 1 --branch v3.5.1 https://github.com/NVIDIA/cutlass.git " + str(W / "cutlass"),
+               timeout=300, logname="cutlass_clone.txt")
+    have_cut = (W / "cutlass" / "include" / "cutlass" / "gemm" / "device" / "gemm.h").exists()
+    src = str(t4q / "tools" / "ref_bench.cu")
+    flags = [NVCC, "-O3", "-std=c++17", "-arch=sm_75", src, "-lcublas", "-lcublasLt", "-ldl"]
+    builds = [("blas", flags + ["-o", str(bdir / "ref_blas")])]
+    if have_cut:
+        builds.append(("cut", flags + ["-DT4Q_CUTLASS", "-I" + str(W / "cutlass" / "include"), "-o", str(bdir / "ref_cut")]))
+    procs = [(n, subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)) for n, c in builds]
+    built = []
+    for n, p in procs:
+        o, _ = p.communicate(timeout=1200)
+        (LOGS / f"build_ref_{n}.txt").write_text(o)
+        if p.returncode == 0:
+            built.append(n)
+        else:
+            log(f"ref build {n} failed:\n{o[-3000:]}")
+    result("ref_build", {"built": built, "cutlass": have_cut, "secs": el()})
+    if not built:
+        return
+    exe = str(bdir / ("ref_cut" if "cut" in built else "ref_blas"))
+    rc, o = stream([exe, "--dev", "0"], "ref_burst_dev0.txt", timeout=600)
+    result("ref_burst", [json.loads(l[2:]) for l in o.splitlines() if l.startswith("B ")])
+    procs = [subprocess.Popen([exe, "--dev", str(d), "--sustain", str(REF_SUSTAIN)], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True) for d in (0, 1)]
+    S = []
+    for d, p in enumerate(procs):
+        o, _ = p.communicate(timeout=1200)
+        (LOGS / f"ref_sustain_dev{d}.txt").write_text(o)
+        S += [json.loads(l[2:]) for l in o.splitlines() if l.startswith("S ")]
+    result("ref_sustain", summarize_sustain(S))
+
+
+def summarize_sustain(S):
+    agg = {}
+    for s in S:
+        if s["t"] < 2:
+            continue
+        agg.setdefault(f'{s.get("variant")}_dev{s["dev"]}', []).append((s["TOPS"], s["sm_mhz"], s["power_w"], s["temp"]))
+    return {d: {"windows": len(v), "TOPS_mean": round(sum(x[0] for x in v) / len(v), 2),
+                "TOPS_min": round(min(x[0] for x in v), 2), "sm_mhz_mean": round(sum(x[1] for x in v) / len(v)),
+                "sm_mhz_min": min(x[1] for x in v), "power_w_mean": round(sum(x[2] for x in v) / len(v), 1),
+                "temp_max": max(x[3] for x in v)} for d, v in agg.items() if v}
+
+
+REF_SUSTAIN = 8
 GEMM_KBU = [2]
 GEMM_SUSTAIN = 10
-GEMM_SVARS = "0,4,5,2"
+GEMM_SVARS = "6,7,0"
 NVCC = "/usr/local/cuda/bin/nvcc" if os.path.exists("/usr/local/cuda/bin/nvcc") else (shutil.which("nvcc") or "nvcc")
 
 
@@ -333,6 +383,8 @@ def main():
            logname="nvidia_smi.txt")
         mon = clocks_monitor()
         t4q = unpack()
+        if "ref" in SECTIONS:
+            ref_section(t4q)
         if "gemm" in SECTIONS:
             gemm_section(t4q)
         if "engine" not in SECTIONS:
