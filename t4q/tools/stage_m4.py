@@ -35,10 +35,10 @@ RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
 GGUF = "Qwen3.8-27B-Q4_0.gguf"
-CONFIGS = "arpub=2,gdnf=1,attnf=0,p4u=1,tail=0;arpub=2,gdnf=1,attnf=1,p4u=1,tail=0"
+CONFIGS = "arpub=-1,gdnf=1,attnf=0,p4u=1;arpub=1,gdnf=1,attnf=0,p4u=1;arpub=2,gdnf=1,attnf=0,p4u=1"
 TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584", "--configs", CONFIGS, "--rounds", "2",
            "--trace", "24", "--trace_dir", str(OUT / "traces")]
-VARIANT_CONFIGS = "arpub=2,gdnf=1,attnf=0,p4u=1,tail=0"
+VARIANT_CONFIGS = "arpub=-1,gdnf=1,attnf=0,p4u=1"
 
 
 def el():
@@ -264,7 +264,8 @@ def prepare_inputs(t4q):
 def main():
     mon = None
     try:
-        sh("nvidia-smi", logname="nvidia_smi.txt")
+        sh("nvidia-smi; nvidia-smi topo -m; nvidia-smi topo -p2p w; nvidia-smi -q -d CLOCK,POWER | head -80",
+           logname="nvidia_smi.txt")
         mon = clocks_monitor()
         t4q = unpack()
         th = threading.Thread(target=downloader, daemon=True)

@@ -1033,6 +1033,44 @@ void tp_load(t4q_ctx* c, const char* path) {
     for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); CK(cudaFree(sg.dev[g])); }
     CK(cudaFreeHost(sg.pin));
     selftest(c);
+    // AR transport: rows written to the peer from the K-split GEMV blocks (arpub 2) cost ~3 us per GEMV on some boxes
+    // and 15-30 us on others (slow P2P writes, M4 v17/v18). Measure on ssm_out and pick the consumer-side copy
+    // (arpub 1: one coalesced 20 KB copy in ar_norm) when the rows are slow.
+    if (S.p2p) {
+        double plain = -1, rows = -1;
+        for (size_t k = 0; k < S.specs.size(); k++) {
+            const tp::FW& W = *S.spec_fw[k];
+            if (S.specs[k].second.what.find("ssm_out") == std::string::npos) continue;
+            float* remote = S.G[1 - S.specs[k].first].scratch;
+            tp::Gpu& G = S.G[S.specs[k].first];
+            CK(cudaSetDevice(S.specs[k].first));
+            cudaEvent_t e0, e1;
+            CK(cudaEventCreate(&e0));
+            CK(cudaEventCreate(&e1));
+            for (int mode = 0; mode < 2; mode++) {
+                tp::ArArgs a;
+                a.y_peer = remote; a.cnt = G.cnt; a.peer_flag = (unsigned*)(remote + 5120); a.st = G.st; a.fence = -1;
+                for (int it = 0; it < 3; it++) tp::gemv(W, G.xq, G.xm, G.logits, G.s, mode ? &a : nullptr);
+                CK(cudaEventRecord(e0, G.s));
+                for (int it = 0; it < 20; it++) tp::gemv(W, G.xq, G.xm, G.logits, G.s, mode ? &a : nullptr);
+                CK(cudaEventRecord(e1, G.s));
+                CK(cudaEventSynchronize(e1));
+                float ms = 0;
+                CK(cudaEventElapsedTime(&ms, e0, e1));
+                (mode ? rows : plain) = 1e3 * ms / 20;
+            }
+            cudaEventDestroy(e0);
+            cudaEventDestroy(e1);
+            break;
+        }
+        S.ar_rows_cost_us = rows - plain;
+        S.arpub_auto = (plain > 0 && rows - plain > 10.0) ? 1 : 2;
+        if (getenv("T4Q_ARPUB")) S.arpub_auto = atoi(getenv("T4Q_ARPUB"));
+        S.arpub = S.arpub_auto;
+        if (c->params.verbose)
+            fprintf(stderr, "[t4q-tp] AR rows cost %.1f us (ssm_out plain %.1f) -> arpub %d\n", rows - plain, plain,
+                    S.arpub);
+    }
     for (int g = 0; g < 2; g++) {
         CK(cudaSetDevice(g));
         size_t fr, tot;
@@ -1194,7 +1232,7 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
         if (k == "mega") S.mega = v;
         if (k == "fuse" && v == 1) throw std::runtime_error("fuse=1 (silu/gnorm prologues) retired in M4 v8");
         if (k == "fuse") S.fuse = v;
-        else if (k == "arpub") S.arpub = v;
+        else if (k == "arpub") S.arpub = v < 0 ? S.arpub_auto : v;
         else S.pf_kb = v;
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
@@ -1317,9 +1355,10 @@ std::string tp_stats_json(t4q_ctx* c) {
     char b[512];
     snprintf(b, sizeof b,
              ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"arpub\": %d, \"mega\": %d, \"pf_kb\": %d, \"graphs\": %d, "
-             "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"attnf\": %d, \"p4u\": %d, \"cm\": %d, \"tail\": %d, \"graph_capture_ms\": %.1f",
+             "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"attnf\": %d, \"p4u\": %d, \"cm\": %d, \"tail\": %d, \"arpub_auto\": %d, \"ar_rows_cost_us\": %.1f, "
+             "\"graph_capture_ms\": %.1f",
              (int)S.p2p, S.fuse, S.arpub, S.mega, S.pf_kb, (int)S.graphs, S.ll, S.gdnf, S.spin_ns, S.arn, S.attnf,
-             S.p4u, S.G[0].lm.L.cm, S.tail,
+             S.p4u, S.G[0].lm.L.cm, S.tail, S.arpub_auto, S.ar_rows_cost_us,
              S.ms_graph_capture);
     std::string s = b;
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;

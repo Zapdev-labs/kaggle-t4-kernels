@@ -253,6 +253,8 @@ struct State {
     int p4u = 1;          // 1: P4 GEMVs with the unsigned high-nibble dp4a path (default; bit-identical)
     int tail = 0;         // 1: AR + norm in tail blocks of the K-split GEMVs (no ar_norm kernels; P2P only)
     int arn = 0;          // ar_norm kernel: 0 = multi-block (20 x 256), 1 = single block (round 1)
+    int arpub_auto = 2;   // load-time choice from the rows-to-peer cost (option arpub -1 restores it)
+    double ar_rows_cost_us = 0;
     int pf_kb = 0;        // L2 prefetch of the next GEMV during small kernels (0 = off; no gain in M4 v4)
     double ms_graph_capture = 0;
 };
