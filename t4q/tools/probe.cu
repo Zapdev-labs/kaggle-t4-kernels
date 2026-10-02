@@ -379,6 +379,10 @@ int main(int argc, char** argv) {
         memcpy_peer_test(20480);
         Mailbox P; alloc_mailbox(P, false, 20480 / 4);
         for (int bytes : {4, 10240, 20480}) mailbox_test("p2p", P, bytes, 1, true, 1, 10000);
+        for (int nb : {8, 40}) {  // parallel writers: one-way latency of a 10/20 KB payload split over nb blocks
+            mailbox_test("p2p", P, 20480, nb, true, 0, 10000);
+            mailbox_test("p2p", P, 10240, nb, true, 0, 10000);
+        }
         for (int nb : {1, 8, 20, 40}) mailbox_test("p2p", P, 20480, nb, false, 1, 10000);
         mailbox_test("p2p", P, 20480, 40, false, 0, 10000);
         mailbox_test("p2p", P, 10240, 40, false, 1, 10000);

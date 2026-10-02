@@ -126,18 +126,31 @@ def gemv(bdir):
     return summ[0] if summ else None, rows
 
 
-def sustain(bdir, cfg):
-    out = {}
-    for shape, m in [("gateup_tp", 1), ("gateup_tp", 4), ("lmhead_tp_k6", 1)]:
-        c = cfg if shape.startswith("gateup") else "2,4,0,256,1"
-        procs = [subprocess.Popen([str(bdir / "gemv_bench"), "--dev", str(d), "--sustain", "10", "--shape", shape, "--cfg",
-                                   f"{c},{m}"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) for d in (0, 1)]
-        for d, p in enumerate(procs):
-            o, _ = p.communicate(timeout=120)
-            (LOGS / f"sustain_{shape}_m{m}_dev{d}.txt").write_text(o)
-            j = parse_json_lines(o, "SUSTAIN")
-            out[f"{shape}_m{m}_dev{d}"] = j[0] if j else o[-500:]
+def sustain(bdir):
+    """Rotated A/B sustained runs (forward then reverse order) on both GPUs at once; clocks/power via NVML."""
+    cfgs = [
+        "gateup_tp:2,0,0,256,1,4", "gateup_tp:2,1,0,256,1,4", "gateup_tp:4,0,0,256,1,4", "gateup_tp:4,1,0,256,1,4",
+        "gateup_tp:4,1,1,256,1,4",
+        "gateup_tp:2,0,0,256,1,1", "gateup_tp:2,1,0,256,1,1", "gateup_tp:4,1,0,256,1,1",
+        "gateup_tp:2,1,1,256,1,8", "gateup_tp:4,1,1,256,1,8",
+        "lmhead_tp_k6:2,0,0,256,1,1", "lmhead_tp_k6:4,0,0,256,1,1",
+    ]
+    arg = ";".join(cfgs)
+    procs = [subprocess.Popen([str(bdir / "gemv_bench"), "--dev", str(d), "--sustain", "6", "--reps", "2", "--cfgs", arg],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) for d in (0, 1)]
+    out = []
+    for d, p in enumerate(procs):
+        o, _ = p.communicate(timeout=900)
+        (LOGS / f"sustain_dev{d}.txt").write_text(o)
+        out += parse_json_lines(o, "SUSTAIN")
     result("gemv_sustain_both_gpus", out)
+    # compact table: per (dev, shape, m, cfg): mean over reps
+    agg = {}
+    for j in out:
+        k = f"dev{j['dev']} {j['shape']} m{j['m']} cfg={j['cfg']}"
+        agg.setdefault(k, []).append((j["GBps_median"], j["sm_mhz_median"], j["power_w_median"], j["bytes_per_sm_clk_median"]))
+    table = {k: [round(sum(x[i] for x in v) / len(v), 2) for i in range(4)] for k, v in agg.items()}
+    result("gemv_sustain_table[GBps,MHz,W,B/clk/SM]", table)
 
 
 def nccl_libs():
@@ -187,8 +200,13 @@ def choose_ar(P, nccl):
         if n.get("dtype") == "f32" and n.get("correct") == 1:
             cands.append({"path": "nccl", "env": n.get("env"), "lib": n.get("lib"), "us_p50": n["sync_us_p50"],
                           "us_p99": n["sync_us_p99"], "pipelined_us": n["pipelined_us"], "src": "host-synced allreduce"})
+    for p in P:  # one-way latency with parallel writers (the producer side of the fused AR)
+        if p.get("test") == "mailbox" and p.get("mode") == "pingpong_oneway" and sum(p.get("errors", [1])) == 0:
+            cands.append({"path": f"oneway_{p['kind']}", "bytes": p["bytes"], "blocks": p["blocks"], "us_p50": p["us_p50"],
+                          "us_p99": p["us_p99"], "src": "pingpong one-way (info)"})
     cands.sort(key=lambda c: c["us_p50"])
-    return {"chosen": cands[0] if cands else None, "candidates": cands}
+    ex = [c for c in cands if not c["path"].startswith("oneway")]
+    return {"chosen": ex[0] if ex else None, "candidates": cands}
 
 
 def main():
@@ -203,10 +221,7 @@ def main():
             result("fatal", "build failed")
             return
         summ, rows = gemv(bdir)
-        cfg = "2,4,0,256,1"
-        if summ and summ.get("mix_single_cfg"):
-            cfg = summ["mix_single_cfg"][0]["cfg"]
-        sustain(bdir, cfg)
+        sustain(bdir)
         P, nccl = probe(bdir)
         ar = choose_ar(P, nccl)
         result("allreduce_choice", ar)
@@ -229,7 +244,7 @@ def main():
     finally:
         mon.terminate()
         print("RESULTS_BEGIN")
-        print(json.dumps({k: RESULTS.get(k) for k in ["build", "gemv_checks", "gemv_summary", "gemv_sustain_both_gpus",
+        print(json.dumps({k: RESULTS.get(k) for k in ["build", "gemv_checks", "gemv_summary", "gemv_sustain_table[GBps,MHz,W,B/clk/SM]",
                                                        "allreduce_choice", "gate"]}, indent=1)[:60000])
         print("RESULTS_END", flush=True)
 

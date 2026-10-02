@@ -3,7 +3,7 @@
 // Build (parts compile in parallel, each instantiates one format/K):
 //   for p in 0 1 2 3 4 5: nvcc -O3 -std=c++17 -arch=sm_75 -DPART=$p -c gemv_bench.cu -o gb$p.o
 //   nvcc -arch=sm_75 gb*.o -o gemv_bench -ldl -lpthread
-// Run: ./gemv_bench [--dev N] [--quick] [--shape name] | ./gemv_bench --sustain SECS --dev N --shape name --cfg rpl,minb,xsm,thr,gmode,m
+// Run: ./gemv_bench [--dev N] [--quick] [--shape name] | ./gemv_bench --sustain SECS --dev N --shape name --cfgs 'shape:rpl,cvt,xsm,thr,gmode,m;...' [--reps 2]
 // Output: lines "R {json}" per measurement, "CHECK {json}" per correctness check, "SUMMARY {json}" at the end.
 #include "../src/kernels/gemv.cuh"
 #include "nvml_lite.h"
@@ -23,21 +23,24 @@ using namespace t4q::gemv;
 
 typedef cudaError_t (*LaunchFn)(const GemvArgs&, int, int, cudaStream_t);
 typedef int (*OccFn)(int);
-struct KEntry { int fmt, nch, m, rpl, D, xsm; LaunchFn fn; OccFn occ; };
+struct KEntry { int fmt, nch, m, rpl, cvt, xsm; LaunchFn fn; OccFn occ; };
 
-template <int FMT, int NCH, int RPL, int D, bool XSM, int... Ms>
+template <int FMT, int NCH, int RPL, int CVT, bool XSM, int... Ms>
 static void reg_ms(std::vector<KEntry>& v, std::integer_sequence<int, Ms...>) {
-    (v.push_back(KEntry{FMT, NCH, Ms + 1, RPL, D, XSM ? 1 : 0, &gemv_fast_launch<FMT, RPL, Ms + 1, NCH, D, XSM>,
-                        &gemv_fast_occupancy<FMT, RPL, Ms + 1, NCH, D, XSM>}),
+    (v.push_back(KEntry{FMT, NCH, Ms + 1, RPL, CVT, XSM ? 1 : 0, &gemv_fast_launch<FMT, RPL, Ms + 1, NCH, CVT, XSM>,
+                        &gemv_fast_occupancy<FMT, RPL, Ms + 1, NCH, CVT, XSM>}),
      ...);
 }
+// RPL {2, 4} x CVT {0 = I2F, 1 = magic (P4/Q8 only)} x XSM {0, 1}. (Round 1 showed RPL 1 and a 64-register cap lose.)
 template <int FMT, int NCH>
 static void reg_fmt(std::vector<KEntry>& v) {
     auto s = std::make_integer_sequence<int, 8>{};
-    reg_ms<FMT, NCH, 1, 2, false>(v, s); reg_ms<FMT, NCH, 1, 4, false>(v, s);
-    reg_ms<FMT, NCH, 2, 2, false>(v, s); reg_ms<FMT, NCH, 2, 4, false>(v, s);
-    reg_ms<FMT, NCH, 1, 2, true>(v, s);  reg_ms<FMT, NCH, 1, 4, true>(v, s);
-    reg_ms<FMT, NCH, 2, 2, true>(v, s);  reg_ms<FMT, NCH, 2, 4, true>(v, s);
+    reg_ms<FMT, NCH, 2, 0, false>(v, s); reg_ms<FMT, NCH, 4, 0, false>(v, s);
+    reg_ms<FMT, NCH, 2, 0, true>(v, s);  reg_ms<FMT, NCH, 4, 0, true>(v, s);
+    if (FMT != FAST_K6) {
+        reg_ms<FMT, NCH, 2, 1, false>(v, s); reg_ms<FMT, NCH, 4, 1, false>(v, s);
+        reg_ms<FMT, NCH, 2, 1, true>(v, s);  reg_ms<FMT, NCH, 4, 1, true>(v, s);
+    }
 }
 
 void reg_part1(std::vector<KEntry>& v);
@@ -152,15 +155,15 @@ static std::vector<KEntry> g_k;
 static NvmlLite g_nvml;
 static int g_dev = 0, g_sms = 40;
 
-static const KEntry* find_k(int fmt, int nch, int m, int rpl, int D, int xsm) {
+static const KEntry* find_k(int fmt, int nch, int m, int rpl, int cvt, int xsm) {
     for (auto& k : g_k)
-        if (k.fmt == fmt && k.nch == nch && k.m == m && k.rpl == rpl && k.D == D && k.xsm == xsm) return &k;
+        if (k.fmt == fmt && k.nch == nch && k.m == m && k.rpl == rpl && k.cvt == cvt && k.xsm == xsm) return &k;
     return nullptr;
 }
 
 struct Bufs {
-    Layout L[3];                      // by rpl index 1,2
-    std::vector<uint8_t*> w[3];       // rotation copies
+    Layout L[5];                      // by rpl index 2,4
+    std::vector<uint8_t*> w[5];       // rotation copies
     int8_t* xq = nullptr; int2* xm = nullptr; float* y = nullptr;
 };
 
@@ -198,12 +201,12 @@ static Meas time_cfg(const KEntry* k, Bufs& B, int rpl, int threads, int grid, d
     return m;
 }
 
-struct Best { double gbps = 0, us = 0; int rpl = 0, D = 0, xsm = 0, thr = 0, gmode = 0, grid = 0; };
+struct Best { double gbps = 0, us = 0; int rpl = 0, cvt = 0, xsm = 0, thr = 0, gmode = 0, grid = 0; };
 
 // Sustained load: run one config back-to-back for `secs`, sample NVML every ~100 ms, report windowed GB/s + clocks.
-static int run_sustain(const Shape& S, double secs, int rpl, int D, int xsm, int thr, int gmode, int m) {
+static int run_sustain(const Shape& S, double secs, int rpl, int cvt, int xsm, int thr, int gmode, int m) {
     const int nch = S.K / 512, K = S.K, N = S.N, nb = K / 32;
-    const KEntry* k = find_k(S.fmt, nch, m, rpl, D, xsm);
+    const KEntry* k = find_k(S.fmt, nch, m, rpl, cvt, xsm);
     if (!k) { printf("SUSTAIN_ERR no kernel\n"); return 1; }
     Layout L = make_layout(S.fmt, N, K, rpl);
     int nc = (int)std::max<size_t>(2, (size_t)(96e6 / L.bytes) + 1);
@@ -245,11 +248,15 @@ static int run_sustain(const Shape& S, double secs, int rpl, int D, int xsm, int
     double gmin = gb.empty() ? 0 : *std::min_element(gb.begin(), gb.end());
     double cmin = cd.empty() ? 0 : *std::min_element(cd.begin(), cd.end());
     char rs[128]; nvml_reason_str(reasons, rs, sizeof rs);
+    // per-window bytes per SM cycle (clock-normalised efficiency), median
+    std::vector<double> bpc;
+    for (size_t i = 0; i < gb.size(); ++i) if (clk[i] > 0) bpc.push_back(gb[i] * 1e3 / (clk[i] * (double)g_sms));
     printf("SUSTAIN {\"dev\":%d,\"shape\":\"%s\",\"m\":%d,\"cfg\":\"%d,%d,%d,%d,%d\",\"secs\":%.1f,\"windows\":%zu,"
            "\"GBps_median\":%.1f,\"GBps_min\":%.1f,\"GBps_last\":%.1f,\"sm_mhz_median\":%.0f,\"sm_mhz_min\":%.0f,"
-           "\"power_w_median\":%.1f,\"temp_max\":%u,\"reasons_mask\":%llu,\"reasons\":\"%s\"}\n",
-           g_dev, S.name, m, rpl, D, xsm, thr, gmode, secs, gb.size(), med(gb), gmin, gb.empty() ? 0 : gb.back(),
-           med(cd), cmin, med(pd) / 1000.0, tmax, reasons, rs);
+           "\"power_w_median\":%.1f,\"temp_max\":%u,\"bytes_per_sm_clk_median\":%.2f,\"reasons_mask\":%llu,"
+           "\"reasons\":\"%s\"}\n",
+           g_dev, S.name, m, rpl, cvt, xsm, thr, gmode, secs, gb.size(), med(gb), gmin, gb.empty() ? 0 : gb.back(),
+           med(cd), cmin, med(pd) / 1000.0, tmax, med(bpc), reasons, rs);
     fflush(stdout);
     for (auto p : w) cudaFree(p);
     cudaFree(d_x); cudaFree(xq); cudaFree(xm); cudaFree(y);
@@ -257,14 +264,15 @@ static int run_sustain(const Shape& S, double secs, int rpl, int D, int xsm, int
 }
 
 int main(int argc, char** argv) {
-    bool quick = false; std::string only; double sustain = 0; int cr = 2, cD = 4, cx = 0, ct = 256, cg = 0, cm = 1;
+    bool quick = false; std::string only, cfgs; double sustain = 0; int reps = 1;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--dev") g_dev = atoi(argv[++i]);
         else if (a == "--quick") quick = true;
         else if (a == "--shape") only = argv[++i];
         else if (a == "--sustain") sustain = atof(argv[++i]);
-        else if (a == "--cfg") sscanf(argv[++i], "%d,%d,%d,%d,%d,%d", &cr, &cD, &cx, &ct, &cg, &cm);
+        else if (a == "--cfg" || a == "--cfgs") cfgs = argv[++i];  // "rpl,cvt,xsm,thr,gmode,m;..."
+        else if (a == "--reps") reps = atoi(argv[++i]);
     }
     reg_part1(g_k); reg_part2(g_k); reg_part3(g_k); reg_part4(g_k); reg_part5(g_k);
     CK(cudaSetDevice(g_dev));
@@ -273,10 +281,24 @@ int main(int argc, char** argv) {
     g_nvml.init();
     printf("INFO dev=%d name=%s sms=%d kernels=%zu nvml=%d\n", g_dev, prop.name, g_sms, g_k.size(), (int)g_nvml.ok);
     if (sustain > 0) {
-        for (const Shape& S : SHAPES)
-            if (only == S.name) return run_sustain(S, sustain, cr, cD, cx, ct, cg, cm);
-        printf("SUSTAIN_ERR unknown shape\n");
-        return 1;
+        // --shape may be overridden per cfg: "shape:rpl,cvt,xsm,thr,gmode,m"
+        std::vector<std::string> list; size_t p0 = 0;
+        while (p0 <= cfgs.size()) { size_t p1 = cfgs.find(';', p0); if (p1 == std::string::npos) p1 = cfgs.size();
+            if (p1 > p0) list.push_back(cfgs.substr(p0, p1 - p0)); p0 = p1 + 1; }
+        int rc = 0;
+        for (int rep = 0; rep < reps; ++rep)
+            for (size_t ii = 0; ii < list.size(); ++ii) {
+                std::string c = list[rep % 2 ? list.size() - 1 - ii : ii], sh = only;
+                size_t colon = c.find(':');
+                if (colon != std::string::npos) { sh = c.substr(0, colon); c = c.substr(colon + 1); }
+                int r_ = 2, v_ = 0, x_ = 0, t_ = 256, g_ = 1, m_ = 1;
+                sscanf(c.c_str(), "%d,%d,%d,%d,%d,%d", &r_, &v_, &x_, &t_, &g_, &m_);
+                bool found = false;
+                for (const Shape& S : SHAPES)
+                    if (sh == S.name) { found = true; rc |= run_sustain(S, sustain, r_, v_, x_, t_, g_, m_); }
+                if (!found) { printf("SUSTAIN_ERR unknown shape %s\n", sh.c_str()); rc = 1; }
+            }
+        return rc;
     }
 
     std::string summary = "{\"dev\":" + std::to_string(g_dev) + ",\"shapes\":[";
@@ -296,7 +318,7 @@ int main(int argc, char** argv) {
         uint8_t* d_src = nullptr; CK(cudaMalloc(&d_src, src.size()));
         CK(cudaMemcpy(d_src, src.data(), src.size(), cudaMemcpyHostToDevice));
         bool repack_ok = true;
-        for (int rpl = 1; rpl <= 2; ++rpl) {
+        for (int rpl : {2, 4}) {
             B.L[rpl] = make_layout(S.fmt, S.N, S.K, rpl);
             const Layout& L = B.L[rpl];
             std::vector<uint8_t> hp(L.bytes);
@@ -340,8 +362,8 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < xm.size(); ++i) qmis += xm[i] != hm[i];
 
         Ref R; cpu_reference(S.fmt, N, K, src, xq, xm, x, R);
-        // golden: rpl 2, D 4, no xsm, 256 thr, full grid, m = 8
-        const KEntry* gk = find_k(S.fmt, nch, 8, 2, 4, 0);
+        // golden: rpl 2, I2F, no xsm, 256 thr, full grid, m = 8
+        const KEntry* gk = find_k(S.fmt, nch, 8, 2, 0, 0);
         {
             GemvArgs a = make_args(B.L[2], B.w[2][0], B.xq, B.xm, B.y, N);
             int grid = grid_for(gk, B.L[2], 256, 0, nullptr);
@@ -377,8 +399,8 @@ int main(int argc, char** argv) {
         const double target_ms = quick ? 10 : 25;
         for (int mi = 0; mi < nm; ++mi) {
             int m = ml[mi];
-            for (int rpl = 1; rpl <= 2; ++rpl)
-                for (int D : {2, 4})
+            for (int rpl : {2, 4})
+                for (int D : {0, 1})  // CVT
                     for (int xsm = 0; xsm <= 1; ++xsm)
                         for (int thr : {128, 256})
                             for (int gmode = 0; gmode <= 1; ++gmode) {
@@ -399,13 +421,13 @@ int main(int argc, char** argv) {
                                 Meas me = time_cfg(k, B, rpl, thr, grid, target_ms);
                                 ++nmeas;
                                 auto smp = g_nvml.sample(g_dev);
-                                printf("R {\"shape\":\"%s\",\"fmt\":\"%s\",\"K\":%d,\"N\":%d,\"m\":%d,\"rpl\":%d,\"minb\":%d,"
+                                printf("R {\"shape\":\"%s\",\"fmt\":\"%s\",\"K\":%d,\"N\":%d,\"m\":%d,\"rpl\":%d,\"cvt\":%d,"
                                        "\"xsm\":%d,\"thr\":%d,\"gmode\":%d,\"grid\":%d,\"occ\":%d,\"us\":%.2f,\"GBps\":%.1f,"
                                        "\"bitexact\":%d,\"sm_mhz\":%u}\n",
                                        S.name, fmt_name(S.fmt), K, N, m, rpl, D, xsm, thr, gmode, grid, occ, me.us,
                                        me.gbps, 1 - bm, smp.sm);
                                 if (!bm && me.gbps > best[m].gbps) {
-                                    best[m].gbps = me.gbps; best[m].us = me.us; best[m].rpl = rpl; best[m].D = D;
+                                    best[m].gbps = me.gbps; best[m].us = me.us; best[m].rpl = rpl; best[m].cvt = D;
                                     best[m].xsm = xsm; best[m].thr = thr; best[m].gmode = gmode; best[m].grid = grid;
                                 }
                                 if (!bm && S.count_per_token > 0) {
@@ -438,7 +460,7 @@ int main(int argc, char** argv) {
         for (int m = 1; m <= 8; ++m) {
             if (best[m].gbps <= 0) continue;
             snprintf(buf, sizeof buf, "%s{\"m\":%d,\"GBps\":%.1f,\"us\":%.2f,\"cfg\":\"%d,%d,%d,%d,%d\",\"grid\":%d}",
-                     fb ? "" : ",", m, best[m].gbps, best[m].us, best[m].rpl, best[m].D, best[m].xsm, best[m].thr,
+                     fb ? "" : ",", m, best[m].gbps, best[m].us, best[m].rpl, best[m].cvt, best[m].xsm, best[m].thr,
                      best[m].gmode, best[m].grid);
             summary += buf; fb = false;
         }
@@ -447,7 +469,7 @@ int main(int argc, char** argv) {
         for (int m = 1; m <= 8; ++m) if (best[m].gbps > 0) printf(" m%d=%.1f", m, best[m].gbps);
         printf("\n"); fflush(stdout);
         // free
-        for (int r = 1; r <= 2; ++r) for (auto p : B.w[r]) cudaFree(p);
+        for (int r : {2, 4}) for (auto p : B.w[r]) cudaFree(p);
         cudaFree(B.xq); cudaFree(B.xm); cudaFree(B.y); cudaFree(d_x);
     }
     summary += "],\"mix_best_per_shape\":{";

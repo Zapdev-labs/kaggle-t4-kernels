@@ -129,7 +129,7 @@ static int run(int fmt, int N, int K, int rpl, int M) {
 
 int main() {
     int bad = 0;
-    for (int rpl = 1; rpl <= 2; ++rpl) {
+    for (int rpl : {1, 2, 4}) {
         bad += run(FAST_P4, 37, 1536, rpl, 3);
         bad += run(FAST_P4, 20, 8704, rpl, 2);
         bad += run(FAST_Q8, 21, 1024, rpl, 3);

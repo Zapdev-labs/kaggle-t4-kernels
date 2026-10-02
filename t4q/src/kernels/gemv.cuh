@@ -236,10 +236,18 @@ __device__ __forceinline__ float h2f_bits(uint32_t b) { return __half2float(__us
 template <int FMT, int RPL>
 struct WChunk {
     int4 q[RPL][FMT == FAST_Q8 ? 2 : 1];
-    uint2 hb[RPL];        // K6 high bits
-    uint32_t dd;          // RPL fp16 scales (P4/Q8: per 32; K6: per 256)
-    uint32_t sc;          // K6: RPL x 2 int8
+    uint2 hb[RPL];                 // K6 high bits
+    uint32_t dd[(RPL + 1) / 2];    // RPL fp16 scales (P4/Q8: per 32; K6: per 256), two per word
+    uint32_t sc[(RPL + 1) / 2];    // K6: RPL x 2 int8, one row per 16-bit half
 };
+
+// RPL x 16-bit values at p (2*RPL bytes, naturally aligned) -> out[(RPL+1)/2] words
+template <int RPL>
+__device__ __forceinline__ void ldg_halves(uint32_t* out, const void* p) {
+    if (RPL == 1) out[0] = ldg_nc_u16(p);
+    else if (RPL == 2) out[0] = ldg_nc_u32(p);
+    else { uint2 v = ldg_nc_v2(p); out[0] = v.x; out[1] = v.y; }
+}
 
 template <int FMT, int RPL, int NCH>
 __device__ __forceinline__ void load_chunk(WChunk<FMT, RPL>& w, const GemvArgs& a, int tile, int c, int lane) {
@@ -252,21 +260,21 @@ __device__ __forceinline__ void load_chunk(WChunk<FMT, RPL>& w, const GemvArgs& 
     if (FMT == FAST_K6) {
 #pragma unroll
         for (int r = 0; r < RPL; ++r) w.hb[r] = ldg_nc_v2(a.qh + (tc * RPL + r) * 256 + lane * 8);
-        const uint8_t* scp = a.sc + (tc * 32 + lane) * RPL * 2;
-        w.sc = RPL == 2 ? ldg_nc_u32(scp) : ldg_nc_u16(scp);
+        ldg_halves<RPL>(w.sc, a.sc + (tc * 32 + lane) * RPL * 2);
         const int h = lane >> 4, j = lane & 15;
-        const uint16_t* dp = a.d + ((tc * 2 + h) * 2 + (j >> 3)) * RPL;
-        w.dd = RPL == 2 ? ldg_nc_u32(dp) : ldg_nc_u16(dp);
+        ldg_halves<RPL>(w.dd, a.d + ((tc * 2 + h) * 2 + (j >> 3)) * RPL);
     } else {
-        const uint16_t* dp = a.d + (tc * 32 + lane) * RPL;
-        w.dd = RPL == 2 ? ldg_nc_u32(dp) : ldg_nc_u16(dp);
+        ldg_halves<RPL>(w.dd, a.d + (tc * 32 + lane) * RPL);
     }
 }
 
 // one 32-weight group of one row against one activation column
-template <int FMT>
+// CVT 0: s -> float via I2F. CVT 1 (P4/Q8 only): exact magic-number conversion, |s| < 2^22 guaranteed for these
+// formats, folds the -8*S offset into the integer add: __int_as_float(0x4B400000 + s + off) - 12582912 == (float)(s+off).
+// Both give bit-identical results. moff = 0x4B400000 - 8*(s0+s1) (P4) or 0x4B400000 (Q8), precomputed per column.
+template <int FMT, int CVT>
 __device__ __forceinline__ float group_dot(const int4* q, uint2 hb, uint32_t dd16, uint32_t sc16, const int4& xl,
-                                           const int4& xh, float xd, int s0, int s1) {
+                                           const int4& xh, float xd, int s0, int s1, int moff) {
     if (FMT == FAST_P4) {
         const int m = 0x0F0F0F0F;
         int s = __dp4a(q[0].x & m, xl.x, 0);
@@ -277,6 +285,7 @@ __device__ __forceinline__ float group_dot(const int4* q, uint2 hb, uint32_t dd1
         s = __dp4a((q[0].y >> 4) & m, xh.y, s);
         s = __dp4a((q[0].z >> 4) & m, xh.z, s);
         s = __dp4a((q[0].w >> 4) & m, xh.w, s);
+        if (CVT) return h2f_bits(dd16) * (xd * (__int_as_float(s + moff) - 12582912.f));
         s -= 8 * (s0 + s1);
         return h2f_bits(dd16) * (xd * (float)s);
     } else if (FMT == FAST_Q8) {
@@ -288,6 +297,7 @@ __device__ __forceinline__ float group_dot(const int4* q, uint2 hb, uint32_t dd1
         s = __dp4a(q[1].y, xh.y, s);
         s = __dp4a(q[1].z, xh.z, s);
         s = __dp4a(q[1].w, xh.w, s);
+        if (CVT) return h2f_bits(dd16) * (xd * (__int_as_float(s + moff) - 12582912.f));
         return h2f_bits(dd16) * (xd * (float)s);
     } else {
         const int m = 0x0F0F0F0F, mh = 0x30303030;
@@ -309,9 +319,11 @@ __device__ __forceinline__ float group_dot(const int4* q, uint2 hb, uint32_t dd1
 // smem bytes for XSM variant: lo plane + hi plane (16 B each per group) + meta (8 B per group)
 static inline size_t xsm_bytes(int M, int K) { return (size_t)M * (K / 32) * 40; }
 
-// MINB: __launch_bounds__(256, MINB) -> register cap 128 (MINB 2) or 64 (MINB 4); controls warps (bytes) in flight.
-template <int FMT, int RPL, int M, int NCH, int MINB, bool XSM>
-__global__ void __launch_bounds__(256, MINB) gemv_fast_kernel(const GemvArgs a) {
+// Template: FMT, RPL (rows per half-warp: 1, 2, 4), M columns (1..8), NCH = K/512, CVT (see group_dot; ignored for K6),
+// XSM (stage x in shared memory once per block; persistent grids). Register cap 128 (__launch_bounds__(256, 2)); a
+// 64-register cap measured worse on every shape in M0 round 1.
+template <int FMT, int RPL, int M, int NCH, int CVT, bool XSM>
+__global__ void __launch_bounds__(256, 2) gemv_fast_kernel(const GemvArgs a) {
     constexpr int D = 2;  // register ring depth (nvcc schedules the loads itself; D has no measurable effect)
     extern __shared__ int4 s_x[];
     const int lane = threadIdx.x & 31, h = lane >> 4, j = lane & 15;
@@ -361,10 +373,12 @@ __global__ void __launch_bounds__(256, MINB) gemv_fast_kernel(const GemvArgs a) 
                 }
                 const float xd = __int_as_float(mt.x);
                 const int s0 = (int)(short)(mt.y & 0xffff), s1 = mt.y >> 16;
+                const int moff = FMT == FAST_P4 ? 0x4B400000 - 8 * (s0 + s1) : 0x4B400000;
 #pragma unroll
                 for (int r = 0; r < RPL; ++r)
-                    acc[r][col] += group_dot<FMT>(cur.q[r], cur.hb[r], cur.dd >> (16 * r),
-                                                  FMT == FAST_K6 ? (cur.sc >> (16 * r)) : 0u, xl, xh, xd, s0, s1);
+                    acc[r][col] += group_dot<FMT, CVT>(cur.q[r], cur.hb[r], cur.dd[r >> 1] >> (16 * (r & 1)),
+                                                       FMT == FAST_K6 ? (cur.sc[r >> 1] >> (16 * (r & 1))) : 0u, xl,
+                                                       xh, xd, s0, s1, moff);
             }
         }
 #pragma unroll
@@ -382,9 +396,9 @@ __global__ void __launch_bounds__(256, MINB) gemv_fast_kernel(const GemvArgs a) 
     }
 }
 
-template <int FMT, int RPL, int M, int NCH, int MINB, bool XSM>
+template <int FMT, int RPL, int M, int NCH, int CVT, bool XSM>
 static cudaError_t gemv_fast_launch(const GemvArgs& a, int blocks, int threads, cudaStream_t s) {
-    auto k = gemv_fast_kernel<FMT, RPL, M, NCH, MINB, XSM>;
+    auto k = gemv_fast_kernel<FMT, RPL, M, NCH, CVT, XSM>;
     size_t smem = XSM ? xsm_bytes(M, a.K) : 0;
     static int attr_done = 0;  // per instantiation (and per device in practice: both T4s identical)
     if (smem > 48 * 1024 && !attr_done) {
@@ -396,11 +410,11 @@ static cudaError_t gemv_fast_launch(const GemvArgs& a, int blocks, int threads, 
     return cudaGetLastError();
 }
 
-template <int FMT, int RPL, int M, int NCH, int MINB, bool XSM>
+template <int FMT, int RPL, int M, int NCH, int CVT, bool XSM>
 static int gemv_fast_occupancy(int threads) {
     int nb = 0;
     size_t smem = XSM ? (size_t)M * NCH * 16 * 40 : 0;
-    auto k = gemv_fast_kernel<FMT, RPL, M, NCH, MINB, XSM>;
+    auto k = gemv_fast_kernel<FMT, RPL, M, NCH, CVT, XSM>;
     if (smem > 48 * 1024) cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, 64 * 1024);
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, k, threads, smem);
     return nb;
