@@ -1190,14 +1190,34 @@ int tp_logits(t4q_ctx* c, const int32_t* ids, int n, float* out) {
     return 0;
 }
 
+int tp_prefill_batched(t4q_ctx* c, const int32_t* ids, int n, void (*run_last_step)(t4q_ctx*));
+
 int tp_prefill(t4q_ctx* c, const int32_t* ids, int n) {
     set_prompt(c, ids, n);
+    if (c->tps->pf_on && n >= 2 && !c->dump_on) {
+        auto t0 = Clock::now();
+        tp_prefill_batched(c, ids, n, &run_step);
+        c->step_s += secs(t0);
+        check_err(c);
+        c->have_logits = true;
+        return 0;
+    }
     auto t0 = Clock::now();
     for (int i = 0; i < n; i++) run_step(c);
     sync_both(c);
     c->step_s += secs(t0);
     check_err(c);
     c->have_logits = true;
+    return 0;
+}
+
+int tp_last_logits(t4q_ctx* c, float* out) {
+    tp::State& S = *c->tps;
+    sync_both(c);
+    for (int g = 0; g < 2; g++) {
+        CK(cudaSetDevice(g));
+        CK(cudaMemcpy(out + (size_t)124160 * g, S.G[g].logits, 124160 * 4, cudaMemcpyDeviceToHost));
+    }
     return 0;
 }
 
@@ -1241,6 +1261,10 @@ int tp_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop, int 
 int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     tp::State& S = *c->tps;
     if (k == "graphs") { S.graphs = v != 0; return 0; }
+    if (k == "pf") { S.pf_on = v; return 0; }
+    if (k == "pf_ub") { if (v < 1 || v > 4096) throw std::runtime_error("pf_ub out of range"); S.pf_ub = v; return 0; }
+    if (k == "pf_i4") { S.pf_i4 = v; return 0; }
+    if (k == "pf_prof") { S.pf_prof = v; return 0; }
     if (k == "spin_ns") {
         S.spin_ns = v;
         for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); tp::set_spin_ns(v); }
@@ -1424,17 +1448,19 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
 
 std::string tp_stats_json(t4q_ctx* c) {
     tp::State& S = *c->tps;
-    char b[512];
+    char b[1024];
     snprintf(b, sizeof b,
              ", \"tp\": 1, \"p2p\": %d, \"fuse\": %d, \"arpub\": %d, \"mega\": %d, \"pf_kb\": %d, \"graphs\": %d, "
              "\"ll\": %d, \"gdnf\": %d, \"spin_ns\": %d, \"arn\": %d, \"attnf\": %d, \"p4u\": %d, \"cm\": %d, \"tail\": %d, \"arpub_auto\": %d, \"ar_rows_cost_us\": %.1f, \"attn2\": %d, \"sqt\": %d, \"pn\": %d, "
-             "\"graph_capture_ms\": %.1f",
+             "\"graph_capture_ms\": %.1f, \"pf\": %d, \"pf_ub\": %d, \"pf_i4\": %d, \"pf_last_n\": %d, "
+             "\"pf_last_batch_s\": %.4f, \"pf_last_total_s\": %.4f",
              (int)S.p2p, S.fuse, S.arpub, S.mega, S.pf_kb, (int)S.graphs, S.ll, S.gdnf, S.spin_ns, S.arn, S.attnf,
              S.p4u, S.G[0].lm.L.cm, S.tail, S.arpub_auto, S.ar_rows_cost_us, S.attn2, S.sqt, S.pn,
-             S.ms_graph_capture);
+             S.ms_graph_capture, S.pf_on, S.pf_ub, S.pf_i4, S.pf_last_n, S.pf_last_batch_s, S.pf_last_total_s);
     std::string s = b;
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;
     if (!S.prof_json.empty()) s += ", \"profile\": " + S.prof_json;
+    if (!S.pf_json.empty()) s += ", \"pf_profile\": " + S.pf_json;
     if (!S.trace_json.empty()) s += ", \"trace\": " + S.trace_json;
     if (!S.dbg_json.empty()) s += ", \"dbgts\": " + S.dbg_json;
     return s;

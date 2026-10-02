@@ -51,6 +51,14 @@ int t4q_logits(t4q_ctx* c, const int32_t* ids, int n, float* out) {
     API_CATCH(-1)
 }
 
+int t4q_last_logits(t4q_ctx* c, float* out) {
+    API_TRY
+    if (c->tps) return tp_last_logits(c, out);
+    memcpy(out, c->h_logits, (size_t)hp::V * 4);
+    return 0;
+    API_CATCH(-1)
+}
+
 int t4q_prefill(t4q_ctx* c, const int32_t* ids, int n) {
     if (c->tps) {
         API_TRY

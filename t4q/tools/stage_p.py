@@ -33,7 +33,8 @@ WORK.mkdir(exist_ok=True)
 ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "p"
-SECTIONS = ["gemm"]
+SECTIONS = ["engine"]
+PF_CONFIGS = "pf_i4=0,pf_ub=512;pf_i4=0,pf_ub=2048"
 RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
@@ -229,7 +230,6 @@ def prepare_inputs(t4q):
     tok = Tokenizer()
     log("tokenizer:", tok.kind)
     import numpy as np
-    man = {"seqs": [], "gens": [], "dump": None}
     jobs = []
     texts = {}
     for name, p in PROMPTS.items():
@@ -242,27 +242,22 @@ def prepare_inputs(t4q):
             x = x[:400]
             txt = tok.decode(x)
         ids[name] = np.asarray(x, dtype=np.int32)
-        ids[name].tofile(WORK / f"{name}.i32")
-        (WORK / f"{name}.txt").write_text(txt)
-        jobs.append(f"tok {name} {WORK / (name + '.txt')} {WORK / (name + '.i32')}")
+    # L: >= 2048 tokens of mixed text (wiki paragraphs and the two coding prompts, numbered sections)
+    parts, k = [], 0
+    while sum(len(x) for x in parts) < 2100:
+        k += 1
+        parts.append(tok.encode(f"\n\nSection {k}. " + (WIKI if k % 3 else PROMPTS["P0"] + " " + PROMPTS["P1"])))
+    ids["L"] = np.concatenate(parts)[:2048].astype(np.int32)
+    for name, x in ids.items():
+        x.tofile(WORK / f"{name}.i32")
     for name in ("P0", "P1", "W"):
-        T = 100000  # token-by-token oracle for every position after the first
-        man["seqs"].append({"name": name, "ids": f"{name}.i32", "tbt": T})
-        jobs.append(f"seq {name} {WORK / (name + '.i32')} {T}")
-    for name in ("P0", "P1"):
-        man["gens"].append({"name": "gen_" + name, "ids": f"{name}.i32", "n": 128})
-        jobs.append(f"gen gen_{name} {WORK / (name + '.i32')} 128")
-    ids["D"] = ids["P0"][:12]
-    ids["D"].tofile(WORK / "D.i32")
-    layers = ",".join(str(i) for i in range(64))
-    man["dump"] = {"name": "D", "ids": "D.i32", "layers": layers}
-    jobs.append(f"dump D {WORK / 'D.i32'} {layers}")
-    jobs.append(f"dumpb D {WORK / 'D.i32'} {layers}")
-    (WORK / "manifest.json").write_text(json.dumps(man, indent=1))
+        jobs.append(f"seq {name} {WORK / (name + '.i32')} 1")
+    for name in ("P0", "P1", "W", "L"):
+        jobs.append(f"last {name} {WORK / (name + '.i32')} 0")
+    for name, n in (("P0", 64), ("P1", 64), ("W", 32), ("L", 32)):
+        jobs.append(f"gen gen_{name} {WORK / (name + '.i32')} {n}")
     (WORK / "jobs.txt").write_text("\n".join(jobs) + "\n")
-    result("inputs", {k: int(len(v)) for k, v in ids.items()} | {"tokenizer": tok.kind,
-                                                                  "P0_head": texts["P0"][:120]})
-
+    result("inputs", {k: int(len(v)) for k, v in ids.items()} | {"tokenizer": tok.kind})
 
 def gemm_section(t4q):
     bdir = W / "gb"
@@ -376,53 +371,19 @@ def main():
                               "lines": [ln for ln in o.splitlines() if ln.startswith("ORACLE")][-40:],
                               "tail": o[-2500:] if rc else ""})
         t = time.time()
-        vout = OUT / "results_tp.json"
+        vout = OUT / "results_pf.json"
         remaining = DEADLINE - el() - 60
-        rc, o = stream([sys.executable, "-u", str(t4q / "tests" / "tp_check.py"), "--model", model, "--work", str(WORK),
-                        "--oracle", str(ORC), "--out", str(vout), "--lib", str(t4q / "build" / "libt4q.so")] + TP_ARGS,
-                       "tp_check.log", timeout=max(300, remaining))
+        rc, o = stream([sys.executable, "-u", str(t4q / "tests" / "prefill_check.py"), "--model", model, "--work",
+                        str(WORK), "--oracle", str(ORC), "--out", str(vout), "--lib", str(t4q / "build" / "libt4q.so"),
+                        "--configs", PF_CONFIGS, "--bench_n", "512,2048", "--reps", "2"],
+                       "prefill_check.log", timeout=max(300, remaining))
         val = json.loads(vout.read_text()) if vout.exists() else {}
-        result("tp_check", {"rc": rc, "secs": round(time.time() - t), "tail": o[-3000:] if rc else ""})
-        for k, v in val.get("bench", {}).items():
+        for k, v in (val.get("bench") or {}).items():
             if isinstance(v, dict) and "t0" in v:
                 v["clocks"] = clocks_between(v["t0"], v["t1"])
-        summ = {k: val.get(k) for k in ("load_s", "vram_used_mib", "correct", "gate_detail", "best_decode_tok_s",
-                                         "depth_decode_tok_s", "gate_30", "V1", "V4_graphs_vs_eager_logits_bitident",
-                                         "V4_graphs_vs_eager_greedy_identical", "V1_error", "V4_error",
-                                         "profile_at_depth", "final_stats", "V3_alt", "gate_30_depth", "trace", "dbgts")}
-        summ["selftest_worst"] = (val.get("selftest") or {}).get("worst")
-        summ["bench"] = val.get("bench")
-        for mode in ("eager", "graphs"):
-            M = val.get(mode, {})
-            sm = {k: M.get(k) for k in ("V2", "V2_kl_over_floor", "V2_pass", "V3_pass", "V2_error", "V3_error")}
-            if "V3" in M:
-                sm["V3"] = {k: {kk: vv for kk, vv in v.items() if not kk.endswith("_text")} for k, v in M["V3"].items()}
-            summ[mode] = sm
-        summ["p2p"] = val.get("p2p")
-        result("summary", summ)
-        # variant processes: forced host-mapped fallback (on a P2P box), and RPL=2 P4 layouts; greedy V3 + short bench
-        variants = [("nop2p", {"T4Q_NO_P2P": "1"}, bool(val.get("p2p")))]
-        for vname, venv, run in variants:
-            if not run or DEADLINE - el() < 300:
-                continue
-            vout2 = OUT / f"results_tp_{vname}.json"
-            (OUT / "traces" / vname).mkdir(parents=True, exist_ok=True)
-            rc, o = stream([sys.executable, "-u", str(t4q / "tests" / "tp_check.py"), "--model", model, "--work",
-                            str(WORK), "--oracle", str(ORC), "--out", str(vout2), "--lib",
-                            str(t4q / "build" / "libt4q.so"), "--modes", "graphs", "--sections", "v3", "--gen", "256",
-                            "--depth", "0", "--configs", VARIANT_CONFIGS, "--trace", "24", "--trace_dir",
-                            str(OUT / "traces" / vname)], f"tp_check_{vname}.log",
-                           timeout=DEADLINE - el() - 60, env=dict(os.environ, **venv))
-            v2_ = json.loads(vout2.read_text()) if vout2.exists() else {}
-            bench = {}
-            for k, v in v2_.get("bench", {}).items():
-                if isinstance(v, dict) and "decode_tok_s" in v:
-                    bench[k] = {"tok_s": v["decode_tok_s"], "clocks": clocks_between(v["t0"], v["t1"])}
-            result(vname, {"rc": rc, "p2p": v2_.get("p2p"), "V3_pass": v2_.get("graphs", {}).get("V3_pass"),
-                           "V3": {k: v.get("first_divergence") for k, v in v2_.get("graphs", {}).get("V3", {}).items()},
-                           "bench": bench, "selftest": [{k: x.get(k) for k in ("w", "us", "GBps")}
-                                                        for x in (v2_.get("selftest") or {}).get("tests", [])][:12],
-                           "tail": o[-1500:] if rc else ""})
+        result("prefill_check", {"rc": rc, "secs": round(time.time() - t), "tail": o[-3000:] if rc else ""})
+        result("summary", {k: val.get(k) for k in ("load_s", "p2p", "selftest_worst", "correct_pass", "best_pp", "gate",
+                                                   "correct", "bench")})
     except Exception:  # noqa: BLE001
         import traceback
         result("fatal", traceback.format_exc()[-3000:])

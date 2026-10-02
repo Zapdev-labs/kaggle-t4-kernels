@@ -269,6 +269,15 @@ struct State {
     int pf_gemv = 0;      // 1: gate|up's tail blocks prefetch ffn_down's first wave (needs pf_kb > 0)
     int pf_kb = 0;        // L2 prefetch of the next GEMV during small kernels (0 = off; no gain in M4 v4)
     double ms_graph_capture = 0;
+    // batched prefill (tp_prefill.cu)
+    void* pf = nullptr;   // buffers
+    int pf_on = 1;        // 1: t4q_prefill uses the batched path for n >= 2 (0: decode steps)
+    int pf_ub = 512;      // ubatch tokens
+    int pf_i4 = 0;        // 1: int4 tensor-core path (m8n8k32, split int8 activations) for P4/P4M GEMMs
+    int pf_prof = 0;      // 1: per-op event profile of GPU0 (ms per op class) in stats "pf_profile"
+    std::string pf_json;
+    double pf_last_batch_s = 0, pf_last_total_s = 0;
+    int pf_last_n = 0;
 };
 
 }  // namespace tp

@@ -18,6 +18,8 @@ int  t4q_prefill(t4q_ctx*, const int32_t* ids, int n);                 /* return
 int  t4q_generate(t4q_ctx*, int32_t* out, int max_new, const t4q_sampling*, const int32_t* stop, int n_stop);
 /* debug: feed n tokens at the current position, write n x n_vocab fp32 logits (out may be NULL) */
 int  t4q_logits(t4q_ctx*, const int32_t* ids, int n, float* out);
+/* logits of the last processed position (after t4q_prefill / t4q_logits); out holds n_vocab floats */
+int  t4q_last_logits(t4q_ctx*, float* out);
 /* named intermediate from the last token step while dump mode is on; returns element count or -1 */
 int  t4q_dump(t4q_ctx*, const char* name, int layer, float* out, size_t cap);
 void t4q_set_dump(t4q_ctx*, int on);

@@ -8,6 +8,8 @@
 //   dump <name> <ids.i32> <layers>     -> <name>.dump.bin: named intermediates (cb_eval) for layers (comma list),
 //                                         token-by-token, captured at positions 0, 1 and n-1
 //   tok  <name> <text.txt> <ids.i32>   -> compares llama_tokenize(text, parse_special) with the id file
+//   last <name> <ids.i32> <unused>     -> <name>.last.f32: logits of the last position (prompt in 512-token batches)
+#include <algorithm>
 #include <cfloat>
 #include <chrono>
 #include <cmath>
@@ -103,6 +105,17 @@ static int decode(llama_context* ctx, const std::vector<int32_t>& toks, int pos0
 
 static void clear(llama_context* ctx) { llama_memory_clear(llama_get_memory(ctx), true); }
 
+// prompt longer than one batch: 512-token batches (llama.cpp's MMQ batch path), logits for the last token
+static int decode_chunked(llama_context* ctx, const std::vector<int32_t>& toks, int pos0) {
+    const int n = (int)toks.size();
+    for (int b = 0; b < n; b += 512) {
+        const int e = std::min(n, b + 512);
+        std::vector<int32_t> part(toks.begin() + b, toks.begin() + e);
+        if (decode(ctx, part, pos0 + b, false)) return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 4) { fprintf(stderr, "usage: %s model jobs outdir [layer|tensor]\n", argv[0]); return 2; }
     const std::string out = argv[3];
@@ -161,11 +174,18 @@ int main(int argc, char** argv) {
                 memcpy(tb.data() + (size_t)i * V, llama_get_logits_ith(ctx, 0), V * 4);
             }
             write_f32(out + "/" + name + ".tbt.f32", tb);
+        } else if (kind == "last") {
+            std::vector<int32_t> ids = read_ids(file);
+            clear(ctx);
+            if (decode_chunked(ctx, ids, 0)) { fprintf(stderr, "ORACLE_ERROR last decode failed\n"); return 1; }
+            std::vector<float> lg(V);
+            memcpy(lg.data(), llama_get_logits_ith(ctx, -1), V * 4);
+            write_f32(out + "/" + name + ".last.f32", lg);
         } else if (kind == "gen") {
             std::vector<int32_t> ids = read_ids(file);
             const int ng = atoi(arg.c_str());
             clear(ctx);
-            if (decode(ctx, ids, 0, false)) { fprintf(stderr, "ORACLE_ERROR decode failed\n"); return 1; }
+            if (decode_chunked(ctx, ids, 0)) { fprintf(stderr, "ORACLE_ERROR decode failed\n"); return 1; }
             std::vector<int32_t> gen;
             FILE* tf = fopen((out + "/" + name + ".gen.txt").c_str(), "w");
             int pos = (int)ids.size();

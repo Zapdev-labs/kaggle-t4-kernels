@@ -28,6 +28,7 @@ class T4Q:
         L.t4q_load.argtypes = [C.c_char_p, C.POINTER(Params)]
         L.t4q_logits.argtypes = [C.c_void_p, C.POINTER(C.c_int32), C.c_int, C.POINTER(C.c_float)]
         L.t4q_prefill.argtypes = [C.c_void_p, C.POINTER(C.c_int32), C.c_int]
+        L.t4q_last_logits.argtypes = [C.c_void_p, C.POINTER(C.c_float)]
         L.t4q_generate.argtypes = [C.c_void_p, C.POINTER(C.c_int32), C.c_int, C.POINTER(Sampling),
                                    C.POINTER(C.c_int32), C.c_int]
         L.t4q_dump.argtypes = [C.c_void_p, C.c_char_p, C.c_int, C.POINTER(C.c_float), C.c_size_t]
@@ -69,6 +70,11 @@ class T4Q:
     def prefill(self, ids):
         ids = np.ascontiguousarray(ids, dtype=np.int32)
         self._err(self.lib.t4q_prefill(self.ctx, ids.ctypes.data_as(C.POINTER(C.c_int32)), len(ids)), "t4q_prefill")
+
+    def last_logits(self):
+        out = np.empty(self.n_vocab, dtype=np.float32)
+        self._err(self.lib.t4q_last_logits(self.ctx, out.ctypes.data_as(C.POINTER(C.c_float))), "t4q_last_logits")
+        return out
 
     def generate(self, max_new, stop=()):
         out = np.zeros(max_new, dtype=np.int32)
