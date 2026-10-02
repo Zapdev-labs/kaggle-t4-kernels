@@ -42,6 +42,8 @@ void ar_norm_ll(const float* h, float* h_out, const float* own, const float2* rx
 void set_arn(int v);
 // spin-wait backoff (ns) for flag waits on the current device
 void set_spin_ns(int ns);
+// phase-timing buffer (u64[128], nullptr = off) for the current device
+void set_dbg(unsigned long long* p);
 // gated RMSNorm (o, z) -> q8 for ssm_out
 void gnorm_q8(const float* o, const float* z, const float* w, int8_t* xq, int2* xm, cudaStream_t s,
               const Pf* pf = nullptr);

@@ -35,10 +35,10 @@ RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
 GGUF = "Qwen3.8-27B-Q4_0.gguf"
-CONFIGS = "arpub=2,gdnf=1,attnf=1,p4u=1,tail=1;arpub=2,gdnf=1,attnf=1,p4u=1,tail=0;arpub=2,gdnf=1,attnf=0,p4u=1,tail=1"
+CONFIGS = "arpub=2,gdnf=1,attnf=0,p4u=1,tail=0;arpub=2,gdnf=1,attnf=1,p4u=1,tail=0"
 TP_ARGS = ["--modes", "eager,graphs", "--gen", "256", "--depth", "3584", "--configs", CONFIGS, "--rounds", "2",
            "--trace", "24", "--trace_dir", str(OUT / "traces")]
-VARIANT_CONFIGS = "arpub=2,gdnf=1,attnf=1,p4u=1,tail=1"
+VARIANT_CONFIGS = "arpub=2,gdnf=1,attnf=0,p4u=1,tail=0"
 
 
 def el():
@@ -314,7 +314,7 @@ def main():
         summ = {k: val.get(k) for k in ("load_s", "vram_used_mib", "correct", "gate_detail", "best_decode_tok_s",
                                          "depth_decode_tok_s", "gate_30", "V1", "V4_graphs_vs_eager_logits_bitident",
                                          "V4_graphs_vs_eager_greedy_identical", "V1_error", "V4_error",
-                                         "profile_at_depth", "final_stats", "V3_alt", "gate_30_depth", "trace")}
+                                         "profile_at_depth", "final_stats", "V3_alt", "gate_30_depth", "trace", "dbgts")}
         summ["selftest_worst"] = (val.get("selftest") or {}).get("worst")
         summ["bench"] = val.get("bench")
         for mode in ("eager", "graphs"):
@@ -326,7 +326,7 @@ def main():
         summ["p2p"] = val.get("p2p")
         result("summary", summ)
         # variant processes: forced host-mapped fallback (on a P2P box), and RPL=2 P4 layouts; greedy V3 + short bench
-        variants = [("nop2p", {"T4Q_NO_P2P": "1"}, bool(val.get("p2p")))]
+        variants = []
         for vname, venv, run in variants:
             if not run or DEADLINE - el() < 300:
                 continue

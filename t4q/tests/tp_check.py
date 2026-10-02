@@ -170,6 +170,9 @@ def main():
                 os.environ["T4Q_TRACE_OUT"] = os.path.join(a.trace_dir, f"trace_{key}.json")
             eng.set_option("trace", nsteps)
             R.setdefault("trace", {})[key] = eng.stats().get("trace")
+            eng.set_option("dbgts", 8)
+            R.setdefault("dbgts", {})[key] = eng.stats().get("dbgts")
+            log("dbgts", key, json.dumps(R["dbgts"][key]))
             log("trace", key, json.dumps(R["trace"][key])[:3000])
         except Exception:  # noqa: BLE001
             R.setdefault("trace", {})[key] = {"error": traceback.format_exc()[-1500:]}
@@ -230,7 +233,7 @@ def main():
                 eng.prefill(body)
                 tp_ = time.time() - t0
                 B["depth_prefill_via_decode_tok_s"] = round(len(body) / tp_, 2)
-                ngen = max(16, min(128, (4096 - len(body) - 8 - 16) // len(cfgs)))
+                ngen = max(16, min(128, (4096 - len(body) - 8 - 32) // len(cfgs)))
                 for fi, (fz, opts) in enumerate(cfgs):
                     apply(opts)
                     eng.set_option("graphs", 1 if mode == "graphs" else 0)

@@ -19,6 +19,16 @@ __device__ __forceinline__ unsigned long long gtimer() {
     asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
     return t;
 }
+// phase timing (option dbgts): block (0,0) thread 0 adds globaltimer offsets from its own start into d_dbg[base + k]
+__device__ unsigned long long* d_dbg = nullptr;
+#define DBG_T0 \
+    unsigned long long _dbg_t0 = 0; \
+    unsigned long long* _dbg = (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0) ? d_dbg : nullptr; \
+    if (_dbg) _dbg_t0 = gtimer();
+#define DBG_PH(base, k) \
+    if (_dbg) atomicAdd(_dbg + (base) + (k), gtimer() - _dbg_t0);
+#define DBG_N(base) \
+    if (_dbg) atomicAdd(_dbg + (base) + 15, 1ull);
 __device__ __forceinline__ unsigned ld_vol_u32(const unsigned* p) {
     unsigned v;
     asm volatile("ld.volatile.global.u32 %0, [%1];" : "=r"(v) : "l"(p));
@@ -652,7 +662,7 @@ void launch_gemv(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaSt
 
 }  // namespace
 
-int g_p4u = 0;  // 1: P4 GEMVs use the unsigned high-nibble dp4a path (bit-identical, fewer instructions)
+int g_p4u = 1;  // 1: P4 GEMVs use the unsigned high-nibble dp4a path (bit-identical, fewer instructions)
 void set_p4u(int v) { g_p4u = v; }
 void set_max_blocks(int n) { g_max_blocks = n; }
 int gemv_threads() { return g_threads; }
@@ -740,6 +750,7 @@ namespace {
 
 __global__ void k_embed(const uint8_t* __restrict__ embd, const StepState* st, const int* prompt, float* h, const Pf pf) {
     T4Q_PF_BLOCKS(20)
+    DBG_T0
     const int pos = st->pos;
     int tok = pos < st->n_prompt ? prompt[pos] : st->token;
     if (tok < 0 || tok >= 248320) tok = 0;
@@ -749,6 +760,8 @@ __global__ void k_embed(const uint8_t* __restrict__ embd, const StepState* st, c
     const int e = i & 31;
     const int q = e < 16 ? (b[2 + e] & 15) : (b[2 + e - 16] >> 4);
     h[i] = __fmul_rn((float)(q - 8), d);
+    DBG_PH(96, 0)
+    DBG_N(96)
 }
 
 template <bool WAIT>
@@ -812,6 +825,7 @@ __global__ void __launch_bounds__(256) k_ar_norm_mb(const float* h, float* h_out
     const int tid = threadIdx.x;
     const int slot = idx & 1;
     const int e = blockIdx.x * 256 + tid;
+    DBG_T0
     const float wv = w[e];  // independent of the wait: issue early
     if (pub_peer_flag && blockIdx.x == 0)
         publish_partial(own + slot * 5120, pub_peer_rx ? pub_peer_rx + slot * 5120 : nullptr, pub_peer_flag + slot,
@@ -842,6 +856,7 @@ __global__ void __launch_bounds__(256) k_ar_norm_mb(const float* h, float* h_out
             xv[k].w = xv[k].w + (ov[k].w + rv[k].w);
         }
     }
+    DBG_PH(64, 0)
     float ss = 0.f;
 #pragma unroll
     for (int k = 0; k < 5; k++) {
@@ -849,12 +864,15 @@ __global__ void __launch_bounds__(256) k_ar_norm_mb(const float* h, float* h_out
         ((float4*)sx)[tid + 256 * k] = xv[k];
     }
     ss = block_sum(ss, red);  // its barriers also publish sx
+    DBG_PH(64, 1)
     const float scale = rsqrtf(ss / 5120.f + 1e-6f);
     const float x = sx[e];
     if (own) h_out[e] = x;
     const float y = (x * scale) * wv;
     xn[e] = y;
     quant_warp(y, xq + e, xm + (e >> 5));
+    DBG_PH(64, 2)
+    DBG_N(64)
 }
 
 // LL variant of k_ar_norm: h += own + rxl.value once every tag reached epoch(idx); same arithmetic order
@@ -903,6 +921,7 @@ __device__ __forceinline__ void d_gdn(const float* __restrict__ y, const float* 
     __shared__ float sq[128], sk[128], sv[32], red[8];
     const int vl = bx >> 2, sl = bx & 3, kl = vl & 7, tid = threadIdx.x;
     const int lane = tid & 31, warp = tid >> 5;
+    DBG_T0
     const int pos = st->pos;
     const int p0 = (pos + 1) & 3, p1 = (pos + 2) & 3, p2 = (pos + 3) & 3, pw = pos & 3;  // pos-3, pos-2, pos-1, pos
     // state rows first: their DRAM latency overlaps the conv / L2-norm phase
@@ -937,6 +956,7 @@ __device__ __forceinline__ void d_gdn(const float* __restrict__ y, const float* 
         if (tid < 128) sq[tid] = val;
         else sk[tid - 128] = val;
     }
+    DBG_PH(48, 0)
     if (tid < 32) {
         const int ch = 2048 + vl * 128 + sl * 32 + tid;
         const float x = __ldcg(y + ch);
@@ -950,6 +970,7 @@ __device__ __forceinline__ void d_gdn(const float* __restrict__ y, const float* 
         ring[pw * 5120 + ch] = x;
     }
     __syncthreads();
+    DBG_PH(48, 1)
     const float beta = 1.0f / (1.0f + expf(-yb));
     const float xg = ya_ + dtv;
     const float sp = xg > 20.0f ? xg : logf(1.0f + expf(xg));
@@ -976,7 +997,10 @@ __device__ __forceinline__ void d_gdn(const float* __restrict__ y, const float* 
         a = warp_sum(a);
         if (lane == 0) o[vl * 128 + col] = a * (1.0f / sqrtf(128.0f));
     }
+    DBG_PH(48, 2)
+    DBG_N(48)
 }
+
 __global__ void __launch_bounds__(256) k_gdn(const float* __restrict__ y, const float* __restrict__ yab, float* ring,
                                              const float* __restrict__ cw, const float* __restrict__ ssm_a,
                                              const float* __restrict__ ssm_dt, float* S, float* o,
@@ -1041,6 +1065,7 @@ __device__ __forceinline__ void d_attn_prep(const float* ya, const float* qw, co
     __shared__ float red[8];
     __shared__ float yv[256];
     const int b = bx, d = threadIdx.x;
+    DBG_T0
     const int pos = st->pos;
     const bool isq = b < 12;
     const float* src = isq ? ya + b * 512 : ya + 6144 + (b - 12) * 256;
@@ -1069,7 +1094,10 @@ __device__ __forceinline__ void d_attn_prep(const float* ya, const float* qw, co
         else if (d >= 64) kd[d] = __float2half_rn(yv[d]);
         vc[((size_t)kv * max_ctx + pos) * 256 + d] = __float2half_rn(__ldcg(ya + 6656 + kv * 256 + d));
     }
+    DBG_PH(32, 0)
+    DBG_N(32)
 }
+
 __global__ void k_attn_prep(const float* ya, const float* qw, const float* kw, float* qa, __half* kc, __half* vc,
                             int max_ctx, const StepState* st, float theta_scale) { d_attn_prep(ya, qw, kw, qa, kc, vc, max_ctx, st, theta_scale, blockIdx.x); }
 
@@ -1082,9 +1110,11 @@ __device__ __forceinline__ void d_attn_split(const float* qa, const __half* kc, 
     __shared__ float sacc[8][256];
     const int j = bx, sidx = by;
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, hg = warp >> 2, wq = warp & 3;
+    DBG_T0
     const int n_kv = st->pos + 1;
     const int chunk = (n_kv + NSPLIT - 1) / NSPLIT;
     const int t0 = sidx * chunk, t1 = min(n_kv, t0 + chunk);
+    DBG_PH(0, 0)
     float q[3][8];
 #pragma unroll
     for (int hh = 0; hh < 3; hh++) {
@@ -1093,6 +1123,7 @@ __device__ __forceinline__ void d_attn_split(const float* qa, const __half* kc, 
         q[hh][0] = a.x; q[hh][1] = a.y; q[hh][2] = a.z; q[hh][3] = a.w;
         q[hh][4] = b.x; q[hh][5] = b.y; q[hh][6] = b.z; q[hh][7] = b.w;
     }
+    DBG_PH(0, 1)
     float m[3], l[3], acc[3][8];
 #pragma unroll
     for (int hh = 0; hh < 3; hh++) {
@@ -1137,6 +1168,7 @@ __device__ __forceinline__ void d_attn_split(const float* qa, const __half* kc, 
             }
         }
     }
+    DBG_PH(0, 2)
     if (lane == 0) {
 #pragma unroll
         for (int hh = 0; hh < 3; hh++) { sm_m[warp][hh] = m[hh]; sm_l[warp][hh] = l[hh]; }
@@ -1170,7 +1202,10 @@ __device__ __forceinline__ void d_attn_split(const float* qa, const __half* kc, 
         }
         __syncthreads();
     }
+    DBG_PH(0, 3)
+    DBG_N(0)
 }
+
 __global__ void __launch_bounds__(256, 2) k_attn_split(const float* qa, const __half* kc, const __half* vc, float* ws,
                                                        int max_ctx, const StepState* st) { d_attn_split(qa, kc, vc, ws, max_ctx, st, blockIdx.x, blockIdx.y); }
 
@@ -1395,12 +1430,14 @@ __global__ void __launch_bounds__(256, 2) k_attn_fused(const float* ya, const fl
 __device__ __forceinline__ void d_attn_combine_q8(const float* ws, const float* ya, const StepState* st,
                                                          int8_t* xq, int2* xm, const Pf pf, int bx) {
     const int hl = bx, d = threadIdx.x, j = hl / 6, h6 = hl % 6;
+    DBG_T0
     const int n_kv = st->pos + 1;
     const int chunk = (n_kv + NSPLIT - 1) / NSPLIT;
     const int nsp = (n_kv + chunk - 1) / chunk;  // splits with at least one position
     float M = -FLT_MAX;
 #pragma unroll 8
     for (int s = 0; s < nsp; s++) M = fmaxf(M, __ldcg(ws + ((size_t)(j * NSPLIT + s) * 6 + h6) * 258));
+    DBG_PH(16, 0)
     float num = 0.f, den = 0.f;
 #pragma unroll 8
     for (int s = 0; s < nsp; s++) {
@@ -1409,11 +1446,15 @@ __device__ __forceinline__ void d_attn_combine_q8(const float* ws, const float* 
         num += wgt * __ldcg(p + 2 + d);
         den += wgt * __ldcg(p + 1);
     }
+    DBG_PH(16, 1)
     const float att = num / den;
     const float g = __ldcg(ya + hl * 512 + 256 + d);
     const float val = att * (1.0f / (1.0f + expf(-g)));
     quant_warp(val, xq + hl * 256 + d, xm + hl * 8 + (d >> 5));
+    DBG_PH(16, 2)
+    DBG_N(16)
 }
+
 __global__ void __launch_bounds__(256) k_attn_combine_q8(const float* ws, const float* ya, const StepState* st,
                                                          int8_t* xq, int2* xm, const Pf pf) {
     T4Q_PF_BLOCKS(12)
@@ -1590,6 +1631,7 @@ void ar_norm_ll(const float* h, float* h_out, const float* own, const float2* rx
 }
 
 void set_spin_ns(int ns) { cudaMemcpyToSymbol(d_spin_ns, &ns, sizeof ns); }
+void set_dbg(unsigned long long* p) { cudaMemcpyToSymbol(d_dbg, &p, sizeof p); }
 
 void gnorm_q8(const float* o, const float* z, const float* w, int8_t* xq, int2* xm, cudaStream_t s, const Pf* pf) {
     const Pf P = pf ? *pf : Pf{};

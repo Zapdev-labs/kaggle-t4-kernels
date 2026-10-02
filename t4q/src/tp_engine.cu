@@ -247,6 +247,7 @@ void selftest(t4q_ctx* c) {
     std::mt19937 rng(1234);
     std::normal_distribution<float> nd(0.f, 1.f);
     double worst = 0;
+    tp::set_p4u(0);  // reference path; the p4u path is compared against it per P4 weight and restored after
     for (size_t k = 0; k < S.specs.size(); k++) {
         const int g = S.specs[k].first;
         const tp::ShardSpec& sp = S.specs[k].second;
@@ -317,7 +318,7 @@ void selftest(t4q_ctx* c) {
             CK(cudaEventSynchronize(e1));
             float ms3 = 0;
             CK(cudaEventElapsedTime(&ms3, e0, e1));
-            tp::set_p4u(S.p4u);
+            tp::set_p4u(0);
             char bb[96];
             snprintf(bb, sizeof bb, ",\"p4u_same\":%s,\"p4u_us\":%.1f", same ? "true" : "false", 1e3 * ms3 / NIT);
             p4j = bb;
@@ -382,6 +383,7 @@ void selftest(t4q_ctx* c) {
     char b[128];
     snprintf(b, sizeof b, "], \"worst\": %.3e, \"pass\": %s}", worst, worst < 1e-4 ? "true" : "false");
     S.selftest_json = "{\"tests\": " + js + b;
+    tp::set_p4u(S.p4u);
     if (c->params.verbose) fprintf(stderr, "[t4q-tp] selftest %s\n", S.selftest_json.c_str());
 }
 
@@ -1201,6 +1203,50 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
         }
         return 0;
     }
+    if (k == "dbgts") {  // globaltimer phase offsets of block 0 in the instrumented small kernels over v steps
+        sync_both(c);
+        if (c->pos + v > S.max_ctx) throw std::runtime_error("dbgts: context full");
+        if (S.graphs && !S.G[0].gexec) capture_graphs(c);
+        unsigned long long* buf[2];
+        for (int g = 0; g < 2; g++) {
+            CK(cudaSetDevice(g));
+            CK(cudaMalloc(&buf[g], 128 * 8));
+            CK(cudaMemset(buf[g], 0, 128 * 8));
+            tp::set_dbg(buf[g]);
+            CK(cudaDeviceSynchronize());
+        }
+        for (int i = 0; i < v; i++) run_step(c);
+        sync_both(c);
+        std::string js = "{";
+        const char* names[7] = {"attn_split", "attn_combine", "attn_prep", "gdn", "ar_norm_mb", "attn_fused", "embed"};
+        for (int g = 0; g < 2; g++) {
+            unsigned long long h[128];
+            CK(cudaSetDevice(g));
+            tp::set_dbg(nullptr);
+            CK(cudaMemcpy(h, buf[g], 128 * 8, cudaMemcpyDeviceToHost));
+            CK(cudaFree(buf[g]));
+            js += std::string(g ? ", " : "") + "\"gpu" + std::to_string(g) + "\": {";
+            bool first = true;
+            for (int b = 0; b < 7; b++) {
+                const unsigned long long n = h[b * 16 + 15];
+                if (!n) continue;
+                js += std::string(first ? "" : ", ") + "\"" + names[b] + "\": [" + std::to_string(n);
+                for (int k2 = 0; k2 < 8; k2++) {
+                    if (!h[b * 16 + k2]) break;
+                    char bb[32];
+                    snprintf(bb, sizeof bb, ", %.2f", 1e-3 * h[b * 16 + k2] / n);
+                    js += bb;
+                }
+                js += "]";
+                first = false;
+            }
+            js += "}";
+        }
+        js += "}";
+        S.dbg_json = js;
+        check_err(c);
+        return 0;
+    }
     if (k == "trace") {  // CUPTI timeline of v steps in the current mode (state advances by v tokens)
         trace_steps(c, std::max(2, v));
         return 0;
@@ -1279,5 +1325,6 @@ std::string tp_stats_json(t4q_ctx* c) {
     if (!S.selftest_json.empty()) s += ", \"selftest\": " + S.selftest_json;
     if (!S.prof_json.empty()) s += ", \"profile\": " + S.prof_json;
     if (!S.trace_json.empty()) s += ", \"trace\": " + S.trace_json;
+    if (!S.dbg_json.empty()) s += ", \"dbgts\": " + S.dbg_json;
     return s;
 }
