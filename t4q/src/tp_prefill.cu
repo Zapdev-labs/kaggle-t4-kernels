@@ -1789,6 +1789,7 @@ struct PfRun {
     bool rotw(const tp::FW& W) const { return rot && (rmask & wbit(W)); }
     int emax = 7;
     int pfk = 0;            // gemm9 L2 weight prefetch distance in 32-blocks (batched decode option bd_pfk)
+    int lbm = 1;            // gemm9 line-batched weight loads at BN <= 64 (batched decode option bd_lbm)
     int ksplit = 1;         // batched decode: split-K slices for the K-split GEMMs (fp32 slices in kscr, summed by ksum)
     float* kscr[2] = {nullptr, nullptr};
     bool p2p_part = false;  // batched decode: fp16 K-split GEMM partials also stored straight into the peer's rx slot
@@ -1813,7 +1814,17 @@ struct PfRun {
     // profiling (option pf_prof): events on GPU0's stream after each op group, named by the op that just ended
     std::vector<cudaEvent_t>* ev = nullptr;
     std::vector<const char*>* evn = nullptr;
+    std::vector<cudaEvent_t>* ev1 = nullptr;  // batched decode: GPU1 events as well
+    std::vector<const char*>* evn1 = nullptr;
     void mark(int g, const char* name) {
+        if (g == 1 && ev1) {
+            cudaEvent_t e;
+            CK(cudaEventCreate(&e));
+            CK(cudaEventRecord(e, c->tps->G[1].s));
+            ev1->push_back(e);
+            evn1->push_back(name);
+            return;
+        }
         if (!ev || g != 0) return;
         cudaEvent_t e;
         CK(cudaEventCreate(&e));
@@ -1916,6 +1927,7 @@ struct PfRun {
             gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, B.xq, B.dx, nullptr, 0, Ts, Tps);
             a8.oq = B.xq2; a8.odx = B.dx2;
             a8.pfk = pfk;
+            a8.lbm = lbm;
             e = gemm8::launch9_silu(W.L.fmt, W.L.rpl, a8, G.s, bn_div(Tps, 256));
         } else if (g8) {
             gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, in2 ? B.xq2 : B.xq, in2 ? B.dx2 : B.dx,
@@ -1926,6 +1938,7 @@ struct PfRun {
                 if (p2p_part) a8.yh2 = (__half*)P->G[1 - g].rx[ar & 1] + (size_t)st0[s] * ldy;  // send() copies nothing
             }
             a8.pfk = pfk;
+            a8.lbm = lbm;
             const int pbn = c->tps->pf_bn;
             const int bn = Tps < 128 ? bn_div(Tps, 64) : pbn ? pbn : (Tps >= 512 ? 256 : 128);
             if (y == B.part && ksplit > 1 && kscr[g] && W.L.K % (256 * ksplit) == 0) {  // split-K, then a fixed-order sum

@@ -232,12 +232,13 @@ def sec_bench(eng, tok, a):
                 eng.set_option("bd_prof", 1)
                 for _ in range(2):
                     eng.batch_step(slots)
-                prof = (eng.stats().get("batch") or {}).get("profile") or {}
+                bst = eng.stats().get("batch") or {}
                 eng.set_option("bd_prof", 0)
-                prof = {k: round(v[0] / 2, 2) for k, v in prof.items()}  # ms per step (GPU0 events)
+                prof = {k: round(v[0] / 2, 2) for k, v in (bst.get("profile") or {}).items()}  # ms per step, GPU0
+                prof1 = {k: round(v[0] / 2, 2) for k, v in (bst.get("profile1") or {}).items()}  # GPU1
                 rk["runs"][f"B{B}|{opts}"] = {"B": B, "opts": opts, "ms_per_step": round(ms, 2),
                                               "agg_tok_s": round(B * 1e3 / ms, 1), "enqueue_ms": round(1e3 * enq / n, 2),
-                                              "t0": t0, "t1": t1, "profile_ms": prof}
+                                              "t0": t0, "t1": t1, "profile_ms": prof, "profile1_ms": prof1}
                 log(f"  B={B} [{opts}]: {ms:.1f} ms/step, {B * 1e3 / ms:.1f} tok/s aggregate, enqueue "
                     f"{1e3 * enq / n:.1f} ms; profile {prof}")
                 res[key] = rk
@@ -275,6 +276,7 @@ def sec_e2e(eng, tok, a):
     prompts = code_prompts(tok, a.e2e_n, a.e2e_prompt)
     log("e2e prompts", len(prompts), "mean tokens", float(np.mean([len(p) for p in prompts])))
     ctx = max(len(p) for p in prompts) + a.e2e_gen + 8
+    apply(eng, a.e2e_opts)
     sched = Scheduler(eng, a.e2e_n, ctx, a.e2e_sf16, prefill_per_iter=a.e2e_prefill_per_iter)
     reqs = [Request(p, max_new=a.e2e_gen, ignore_eos=True) for p in prompts]
     t0 = time.time()
@@ -291,7 +293,7 @@ def sec_e2e(eng, tok, a):
                 "decode_steps": st["steps"], "decode_agg_tok_s": round(st["decode_tokens"] / max(st["step_s"], 1e-9), 1),
                 "prefill_tok_s": round(st["prefill_tokens"] / max(st["prefill_s"], 1e-9), 1),
                 "max_batch": st["max_batch"], "ttft_mean_s": round(float(np.mean([r.t_first - r.t_submit for r in reqs])), 2),
-                "slot_ctx": ctx, "state_f16": a.e2e_sf16, "t0": t0, "t1": t1,
+                "slot_ctx": ctx, "state_f16": a.e2e_sf16, "opts": a.e2e_opts, "t0": t0, "t1": t1,
                 "sample": tok.decode(reqs[0].out[:120])[:500]}
     save()
     log("e2e", json.dumps({k: v for k, v in R["e2e"].items() if k != "sample"}))
@@ -366,16 +368,16 @@ def main():
     ap.add_argument("--gen", type=int, default=128)
     ap.add_argument("--tf", type=int, default=16)
     ap.add_argument("--slot_ctx", type=int, default=1024)
-    ap.add_argument("--correct_configs", default="bd_head=1,bd_pfk=16,bd_ksplit=2|0;bd_head=1,bd_pfk=16,bd_ksplit=2|1;"
-                                                 "bd_head=1,bd_pfk=0,bd_ksplit=2|1;bd_head=1,bd_pfk=0,bd_ksplit=1|1")
-    ap.add_argument("--bench", default="1000:64:1088:1:1,16,32,64::bd_pfk=0,bd_ksplit=1/bd_pfk=16,bd_ksplit=1/"
-                                       "bd_pfk=16,bd_ksplit=2/bd_pfk=32,bd_ksplit=2;"
-                                       "4000:32:4128:1:8,16,32:1024:bd_pfk=0,bd_ksplit=1/bd_pfk=16,bd_ksplit=2")
+    ap.add_argument("--correct_configs", default="bd_head=1,bd_lbm=1|0;bd_head=1,bd_lbm=1|1;bd_head=1,bd_lbm=0|1;"
+                                                 "bd_head=0,bd_lbm=1,bd_p2p=1|1")
+    ap.add_argument("--bench", default="1000:64:1088:1:1,16,32,64::bd_lbm=0/bd_lbm=1/bd_lbm=1,bd_p2p=1;"
+                                       "4000:32:4128:1:16,32:1024:bd_lbm=0,bd_p2p=0/bd_lbm=1,bd_p2p=0/bd_lbm=1,bd_p2p=1")
     ap.add_argument("--steps", type=int, default=12)
     ap.add_argument("--e2e_n", type=int, default=32)
     ap.add_argument("--e2e_prompt", type=int, default=500)
     ap.add_argument("--e2e_gen", type=int, default=512)
     ap.add_argument("--e2e_sf16", type=int, default=1)
+    ap.add_argument("--e2e_opts", default="bd_lbm=1,bd_p2p=0,pf_ub=2048")
     ap.add_argument("--e2e_prefill_per_iter", type=int, default=64)
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--max_ctx", type=int, default=4224)

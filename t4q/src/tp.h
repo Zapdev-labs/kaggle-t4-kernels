@@ -330,8 +330,9 @@ struct State {
     int bd_head = 1;      // lm_head: 1 = gemm9 on Q6_K (per-row int8 requant, GA64 activations); 0 = dp4a GEMV, 8 columns per pass
     int bd_ch = 128;      // attention positions per split block (fixed, so results do not depend on B)
     int bd_prof = 0;      // 1: per-op event profile of GPU0 per step, accumulated in stats "bd_profile"
-    int bd_pfk = 16;      // gemm9 L2 prefetch distance of the weight planes in 32-blocks (0 = off) for batched decode
-    int bd_ksplit = 2;    // split-K slices for the K-split GEMMs (down, ssm_out, attn_output: N = 5120 gives 40 blocks)
+    int bd_pfk = 0;       // gemm9 L2 prefetch distance of the weight planes in 32-blocks (0 = off) for batched decode
+    int bd_lbm = 1;       // gemm9 line-batched weight loads at 32/64-token tiles (4 stages' code groups per load batch)
+    int bd_ksplit = 1;    // split-K slices for the K-split GEMMs (down, ssm_out, attn_output: N = 5120 gives 40 blocks)
     int bd_p2p = 0;       // 1: K-split GEMM epilogues store the fp16 all-reduce partials into the peer's mailbox (P2P)
                           //    instead of a copy-engine transfer after the GEMM (needs P2P)
     std::string bd_json;

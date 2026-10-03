@@ -76,6 +76,7 @@ struct Args {
     float* odx = nullptr;  // [N/128][Tp] (64-feature groups)
     __half* yh = nullptr;  // if set: fp16 output yh[t * ldy + n] instead of y (no accumulate)
     __half* yh2 = nullptr; // gemm9: second copy of the fp16 output (the peer GPU's all-reduce mailbox, P2P stores)
+    int lbm = 1;           // gemm9 BN <= 64: line-batched weight loads (WLine)
     int pfk = 0;           // gemm9: L2 prefetch of the weight planes this many 32-blocks ahead (0 = off)
     int kz = 1;            // gemm9 split-K: grid.z K slices (K / kz a multiple of 256); slice z writes fp32 y + z * zs
     long long zs = 0;
@@ -537,6 +538,74 @@ __device__ __forceinline__ void stage_load9(Stage<BN>& S, const WPtr<FMT, RPL>& 
     }
 }
 
+// Line-batched weight loads (small token tiles, batched decode): a thread's code groups of 4 consecutive stages share
+// one 128-B line with its blk partner (lanes jj..jj+7). Loading them one stage at a time spreads the 4 sector requests
+// of a line over 4 stages; at BN 32/64 the GEMM then streams weights at ~105 GB/s (t4q-b v2/v3). Here the 4 stages'
+// code groups and scales are loaded together (once per 4 stages, one stage ahead of first use) and handed out per stage.
+template <int FMT>
+struct WLine {
+    int4 q[4];
+    uint32_t sa[4];  // P4 / P4M: fp16 d; K5: {sc, mn}; K6: {sc lo, sc hi}
+    uint32_t sb[4];  // P4M: fp16 m
+    uint32_t dd;     // K5: {d, dmin}; K6: fp16 d (per 256: shared by the 4 stages)
+    uint32_t h[4], h2[4];  // K5 high bits; K6 high-bit planes
+};
+template <int FMT, int RPL>
+__device__ __forceinline__ void wline_load(WLine<FMT>& L, const WPtr<FMT, RPL>& P, int kb) {
+    const int c = kb >> 4, jj = kb & 15;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) L.q[i] = gemv::ldg_nc_v4(P.code + c * P.cs_code + (jj + 2 * i) * 16);
+#pragma unroll
+    for (int i = 0; i < 4; ++i) L.sa[i] = (uint32_t)__ldg((const unsigned short*)(P.sa + c * P.cs_s + (jj + 2 * i) * RPL * 2));
+    if (FMT == gemv::FAST_P4M) {
+#pragma unroll
+        for (int i = 0; i < 4; ++i) L.sb[i] = (uint32_t)__ldg((const unsigned short*)(P.sb + c * P.cs_s + (jj + 2 * i) * RPL * 2));
+    }
+    if (FMT == gemv::FAST_K5) {
+        L.dd = __ldg((const unsigned int*)(P.sb + c * P.cs_d + (jj >> 3) * RPL * 4));
+#pragma unroll
+        for (int i = 0; i < 4; ++i) L.h[i] = __ldg((const unsigned int*)(P.hq + c * P.cs_h + (jj + 2 * i) * 4));
+    }
+    if (FMT == gemv::FAST_K6) {
+        L.dd = (uint32_t)__ldg((const unsigned short*)(P.sb + c * P.cs_d + (jj >> 3) * RPL * 2));
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            const uint2 hh = __ldg((const uint2*)(P.hq + c * P.cs_h + (jj + 2 * i) * 8));
+            L.h[i] = hh.x; L.h2[i] = hh.y;
+        }
+    }
+}
+__device__ __forceinline__ uint32_t sel4(const uint32_t* a, int i) { return i == 0 ? a[0] : i == 1 ? a[1] : i == 2 ? a[2] : a[3]; }
+template <int FMT, int BN>
+__device__ __forceinline__ void wline_take(Stage<BN>& S, const WLine<FMT>& L, int i) {
+    S.wq.x = i == 0 ? L.q[0].x : i == 1 ? L.q[1].x : i == 2 ? L.q[2].x : L.q[3].x;
+    S.wq.y = i == 0 ? L.q[0].y : i == 1 ? L.q[1].y : i == 2 ? L.q[2].y : L.q[3].y;
+    S.wq.z = i == 0 ? L.q[0].z : i == 1 ? L.q[1].z : i == 2 ? L.q[2].z : L.q[3].z;
+    S.wq.w = i == 0 ? L.q[0].w : i == 1 ? L.q[1].w : i == 2 ? L.q[2].w : L.q[3].w;
+    S.s0 = sel4(L.sa, i);
+    if (FMT == gemv::FAST_P4M) S.s1 = sel4(L.sb, i);
+    if (FMT == gemv::FAST_K5) { S.s1 = L.dd; S.hb = sel4(L.h, i); }
+    if (FMT == gemv::FAST_K6) { S.s1 = L.dd; S.hb = sel4(L.h, i); S.hb2 = sel4(L.h2, i); }
+}
+// activation part of stage_load9 (line-batched mode)
+template <int BN, int GA>
+__device__ __forceinline__ void stage_loadx(Stage<BN>& S, const int8_t* xb, long long xstep, const float* dxb,
+                                            long long tps, int kb0, int tid) {
+    const int8_t* xp = xb + kb0 * 32;
+#pragma unroll
+    for (int i = 0; i < Cfg<BN>::NXA; ++i)
+        if (!Cfg<BN>::XP || tid + i * NT < BN * 4) S.xa[i] = __ldg((const int4*)(xp + i * xstep));
+    if (GA != 0 && tid < BN / 2) {
+        if (GA == 32) {
+            S.dx0 = __ldg((const float2*)(dxb + kb0 * tps));
+            S.dx1 = __ldg((const float2*)(dxb + (kb0 + 1) * tps));
+        } else {
+            S.dx0 = __ldg((const float2*)(dxb + (kb0 >> 1) * tps));
+            S.dx1 = make_float2(0.f, 0.f);
+        }
+    }
+}
+
 template <int FMT, int RPL, int BN, int GA, int AB = 0>
 __global__ void __launch_bounds__(NT, BN <= 64 ? 2 : 1) gemm9_kernel(const Args a) {
     using C = Cfg<BN>;
@@ -566,7 +635,15 @@ __global__ void __launch_bounds__(NT, BN <= 64 ? 2 : 1) gemm9_kernel(const Args 
     Stage<BN> S;
     S.dx0 = S.dx1 = make_float2(0.f, 0.f);
     float2 bkeep = make_float2(0.f, 0.f);
-    stage_load9<FMT, RPL, BN, GA, AB & 4>(S, P, xb, xstep, dxb, tps, kbase, tid);
+    const bool LBM = BN <= 64 && (AB & 12) == 0 && a.lbm;  // line-batched weight loads (see WLine)
+    WLine<FMT> WL;
+    if (LBM) {
+        wline_load<FMT, RPL>(WL, P, kbase);
+        wline_take<FMT, BN>(S, WL, 0);
+        stage_loadx<BN, GA>(S, xb, xstep, dxb, tps, kbase, tid);
+    } else {
+        stage_load9<FMT, RPL, BN, GA, AB & 4>(S, P, xb, xstep, dxb, tps, kbase, tid);
+    }
     stage_store<FMT, BN, AB & 1>(S, smem, invs_st, bkeep, 0, tid);
     __syncthreads();
 
@@ -579,7 +656,16 @@ __global__ void __launch_bounds__(NT, BN <= 64 ? 2 : 1) gemm9_kernel(const Args 
     int buf = 0;
     for (int kb0 = 0; kb0 < nkb; kb0 += 2) {
         const bool more = kb0 + 2 < nkb;
-        if (more) stage_load9<FMT, RPL, BN, GA, AB>(S, P, xb, xstep, dxb, tps, kbase + kb0 + 2, tid, pfk, kend);
+        if (more) {
+            if (LBM) {
+                const int i = ((kb0 + 2) >> 1) & 3;
+                wline_take<FMT, BN>(S, WL, i);
+                if (i == 3 && kb0 + 4 < nkb) wline_load<FMT, RPL>(WL, P, kbase + kb0 + 4);  // next 4 stages
+                stage_loadx<BN, GA>(S, xb, xstep, dxb, tps, kbase + kb0 + 2, tid);
+            } else {
+                stage_load9<FMT, RPL, BN, GA, AB>(S, P, xb, xstep, dxb, tps, kbase + kb0 + 2, tid, pfk, kend);
+            }
+        }
         const unsigned char* B = smem + ((AB & 16) ? 0 : buf) * C::BYTES;
         if (GA == 64 || GA == 0) {
             uint32_t af[4][8];

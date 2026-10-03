@@ -44,7 +44,7 @@ struct Bd {
     std::vector<int> last_slots;
     double step_s = 0, prefill_s = 0, enqueue_s = 0;
     long steps = 0, rows = 0, prefills = 0;
-    std::vector<std::pair<std::string, std::pair<double, int>>> prof;
+    std::vector<std::pair<std::string, std::pair<double, int>>> prof, prof1;  // GPU0 / GPU1 per-op ms
     size_t bytes = 0;
 };
 
@@ -483,6 +483,7 @@ struct BdRun : PfRun {
             gemm8::quant8(B.xn, D, T, Tp, D, B.xq, B.dx, G.s, 64);
             gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, B.xq, B.dx, Q.logits, 124160, T, Tp);
             a8.pfk = pfk;
+            a8.lbm = lbm;
             const cudaError_t e = gemm8::launch9(W.L.fmt, W.L.rpl, bn_div(Tp, 128), 64, a8, G.s);
             if (e != cudaSuccess) throw std::runtime_error(std::string("bd head gemm: ") + cudaGetErrorString(e));
         } else {
@@ -729,8 +730,8 @@ int tp_batch_step(t4q_ctx* c, int n, const int32_t* slots, int32_t* out) {
             hm[2 * BD_MAXB + i] = b->tok[slots[i]];
         }
     }
-    std::vector<cudaEvent_t> ev;
-    std::vector<const char*> evn;
+    std::vector<cudaEvent_t> ev, ev1;
+    std::vector<const char*> evn, evn1;
     BdRun R;
     R.c = c;
     R.P = P;
@@ -742,11 +743,12 @@ int tp_batch_step(t4q_ctx* c, int n, const int32_t* slots, int32_t* out) {
     R.ar16 = S.pf_ar16 != 0;
     R.p2p_part = S.bd_p2p && S.p2p && R.ar16;
     R.pfk = S.bd_pfk;
+    R.lbm = S.bd_lbm;
     R.ksplit = S.bd_ksplit;
     R.kscr[0] = b->G[0].kscr;
     R.kscr[1] = b->G[1].kscr;
     R.nsplit = (maxpos + 1 + S.bd_ch - 1) / S.bd_ch;
-    if (S.bd_prof) { R.ev = &ev; R.evn = &evn; }
+    if (S.bd_prof) { R.ev = &ev; R.evn = &evn; R.ev1 = &ev1; R.evn1 = &evn1; }
     R.run_bd();
     b->enqueue_s += secs(t0);
     for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); CK(cudaStreamSynchronize(S.G[g].s)); }
@@ -761,16 +763,22 @@ int tp_batch_step(t4q_ctx* c, int n, const int32_t* slots, int32_t* out) {
         b->tok[slots[i]] = best;
         b->pos[slots[i]]++;
     }
-    if (S.bd_prof && !ev.empty()) {
-        for (size_t i = 1; i < ev.size(); i++) {
-            float ms = 0;
-            CK(cudaEventElapsedTime(&ms, ev[i - 1], ev[i]));
-            bool found = false;
-            for (auto& p : b->prof)
-                if (p.first == evn[i]) { p.second.first += ms; p.second.second++; found = true; break; }
-            if (!found) b->prof.push_back({evn[i], {ms, 1}});
+    if (S.bd_prof) {
+        for (int g = 0; g < 2; g++) {
+            auto& E = g ? ev1 : ev;
+            auto& N = g ? evn1 : evn;
+            auto& PR = g ? b->prof1 : b->prof;
+            CK(cudaSetDevice(g));
+            for (size_t i = 1; i < E.size(); i++) {
+                float ms = 0;
+                CK(cudaEventElapsedTime(&ms, E[i - 1], E[i]));
+                bool found = false;
+                for (auto& p : PR)
+                    if (p.first == N[i]) { p.second.first += ms; p.second.second++; found = true; break; }
+                if (!found) PR.push_back({N[i], {ms, 1}});
+            }
+            for (auto e : E) cudaEventDestroy(e);
         }
-        for (auto e : ev) cudaEventDestroy(e);
     }
     b->last_B = n;
     b->last_slots.assign(slots, slots + n);
@@ -804,11 +812,13 @@ std::string tp_batch_stats(t4q_ctx* c) {
              b->n_slots, b->slot_ctx, b->sf16, b->bytes / 1048576.0, b->steps, b->rows, b->step_s, b->enqueue_s,
              b->prefills, b->prefill_s, S.bd_head, S.bd_ch, S.bd_p2p, b->last_B);
     std::string s = buf;
-    if (!b->prof.empty()) {
-        s += ", \"profile\": {";
-        for (size_t i = 0; i < b->prof.size(); i++) {
-            snprintf(buf, sizeof buf, "%s\"%s\": [%.3f, %d]", i ? ", " : "", b->prof[i].first.c_str(),
-                     b->prof[i].second.first, b->prof[i].second.second);
+    for (int g = 0; g < 2; g++) {
+        const auto& PR = g ? b->prof1 : b->prof;
+        if (PR.empty()) continue;
+        s += g ? ", \"profile1\": {" : ", \"profile\": {";
+        for (size_t i = 0; i < PR.size(); i++) {
+            snprintf(buf, sizeof buf, "%s\"%s\": [%.3f, %d]", i ? ", " : "", PR[i].first.c_str(), PR[i].second.first,
+                     PR[i].second.second);
             s += buf;
         }
         s += "}";
@@ -821,4 +831,5 @@ void tp_batch_reset_stats(t4q_ctx* c) {
     if (!b) return;
     b->step_s = 0; b->steps = 0; b->rows = 0; b->prefill_s = 0; b->prefills = 0; b->enqueue_s = 0;
     b->prof.clear();
+    b->prof1.clear();
 }
