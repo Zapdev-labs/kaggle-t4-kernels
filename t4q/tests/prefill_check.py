@@ -124,7 +124,7 @@ def main():
                 og = os.path.join(a.oracle, f"gen_{name}.gen.i32")
                 ogen = read_ids(og) if os.path.exists(og) else np.zeros(0, np.int32)
                 ogap = np.loadtxt(os.path.join(a.oracle, f"gen_{name}.gen.txt"))[:, 3] if os.path.exists(og) else None
-                cont = ogen[:16] if len(ogen) >= 16 and len(ids) <= 512 else np.zeros(0, np.int32)
+                cont = ogen[:16] if len(ogen) >= 16 and len(ids) <= 4096 else np.zeros(0, np.int32)
                 A = run(ids, 0, cfgs[0], cont)
                 res = {"n": int(len(ids)), "decode_path_prefill_s": round(A["secs"], 2)}
                 olast_p = os.path.join(a.oracle, name + ".last.f32")

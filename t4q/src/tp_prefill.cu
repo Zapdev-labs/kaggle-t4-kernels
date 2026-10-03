@@ -183,10 +183,27 @@ __global__ void __launch_bounds__(256) k_pf_add_norm_q8(float* h, const PT* own,
     }
 }
 
+// fp16 rows (K) -> GA64 q8: xq [Tp][K], dx [K/64][Tp]; grid (Tp, K/512) x 256 (warp = one 64-group); rows >= T zero
+__global__ void __launch_bounds__(256) k_q8_64_half(const __half* __restrict__ x, int T, int Tp, int K, int8_t* xq,
+                                                    float* dx) {
+    const int t = blockIdx.x, lane = threadIdx.x & 31, grp = blockIdx.y * 8 + (threadIdx.x >> 5);
+    const int k0 = grp * 64;
+    float a = 0.f, b = 0.f;
+    if (t < T) { a = __half2float(x[(size_t)t * K + k0 + lane]); b = __half2float(x[(size_t)t * K + k0 + 32 + lane]); }
+    float m = fmaxf(fabsf(a), fabsf(b));
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+    const float d = m / 127.f;
+    xq[(size_t)t * K + k0 + lane] = (int8_t)(m > 0.f ? __float2int_rn(a / d) : 0);
+    xq[(size_t)t * K + k0 + 32 + lane] = (int8_t)(m > 0.f ? __float2int_rn(b / d) : 0);
+    if (lane == 0) dx[(size_t)grp * Tp + t] = d;
+}
+
 // R512: gated RMSNorm of the 24 local heads (o * rsqrt(mean o^2) * w * silu(z)) into smem, then T(.) quantized per
 // token (ssm_out input, K = 3072). grid T x 256 (warp w: heads 3w..3w+2, 4 elements per lane), dynamic smem 3072 floats
 __global__ void __launch_bounds__(256) k_pf_gnorm_rot(const float* __restrict__ o, const float* __restrict__ y, int ldy,
-                                                      const float* __restrict__ w, int8_t* xq, float* dx) {
+                                                      const float* __restrict__ w, int8_t* xq, float* dx, float* dsr,
+                                                      int Tp) {
     extern __shared__ __align__(16) float xs[];
     __shared__ float red[8];
     const int t = blockIdx.x, lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
@@ -206,14 +223,15 @@ __global__ void __launch_bounds__(256) k_pf_gnorm_rot(const float* __restrict__ 
         d[3] = ((x.w * scale) * ww.w) * (zz.w / (1.0f + expf(-zz.w)));
     }
     __syncthreads();
-    rot::rot_quant_row(xs, xs, 3072, xq + (size_t)t * 3072, dx + t, red);
+    rot::rot_quant_row(xs, xs, 3072, xq + (size_t)t * 3072, dx + t, red, dsr, t, Tp);
 }
 
 // R512: [h += partials]; x = rmsnorm(h) * w (xn written if non-null), then T(x) quantized per token into xq / dx.
 // grid T x 256, dynamic smem 5120 floats
 template <class PT>
 __global__ void __launch_bounds__(256) k_pf_add_norm_rot(float* h, const PT* own, const PT* rx, int gpu, int add,
-                                                         const float* __restrict__ w, float* xn, int8_t* xq, float* dx) {
+                                                         const float* __restrict__ w, float* xn, int8_t* xq, float* dx,
+                                                         float* dsr, int Tp) {
     extern __shared__ __align__(16) float xs[];
     __shared__ float red[8];
     const int t = blockIdx.x, tid = threadIdx.x;
@@ -243,7 +261,7 @@ __global__ void __launch_bounds__(256) k_pf_add_norm_rot(float* h, const PT* own
         if (xn) xn[(size_t)t * D + e] = y;
     }
     __syncthreads();
-    rot::rot_quant_row(xs, xs, D, xq + (size_t)t * D, dx + t, red);
+    rot::rot_quant_row(xs, xs, D, xq + (size_t)t * D, dx + t, red, dsr, t, Tp);
 }
 
 // int8 buffers a vs b: out[0] = max |a - b|, out[1] = count of |a - b| > 1, out[2] = count of a != b
@@ -1202,6 +1220,7 @@ struct PfGpu {
     int8_t* dsh = nullptr;  // gemm17 GSH shift deltas [K/64][Tp] (permuted token order)
     int8_t* w8r[4] = {nullptr, nullptr, nullptr, nullptr};  // R512 rotated int8 weights: qkvz|qkv_a, ssm_out|wo, gateup, down
     float* invq = nullptr;  // R512: invr of qkvz + the alpha/beta rows [8448]
+    float* dsr = nullptr;   // R512 per-512-block scale ratios [17][Up] (pf_rgb)
     float* dxt = nullptr;   // gemm17 per-token final factor [Tp]
     cudaStream_t sc = nullptr;              // copy stream (AR payloads)
     cudaEvent_t part_ev[NSUB] = {};         // compute stream: partial rows of sub s written
@@ -1428,7 +1447,7 @@ Pf* pf_get(t4q_ctx* c) {
             for (void* p : {(void*)B.ids, (void*)B.h, (void*)B.xn, (void*)B.y, (void*)B.part, (void*)B.rx[0],
                             (void*)B.rx[1], (void*)B.yab, (void*)B.qkv, (void*)B.o, (void*)B.g32, (void*)B.qa,
                             (void*)B.xq, (void*)B.xs, (void*)B.xsum, (void*)B.dx, (void*)B.xq2, (void*)B.dx2,
-                            (void*)B.dsh, (void*)B.dxt})
+                            (void*)B.dsh, (void*)B.dxt, (void*)B.dsr})
                 cudaFree(p);
             for (auto e : B.part_ev) cudaEventDestroy(e);
             for (auto& r : B.sent) for (auto e : r) cudaEventDestroy(e);
@@ -1462,6 +1481,7 @@ Pf* pf_get(t4q_ctx* c) {
         B.dx2 = dalloc<float>(Up * (8704 / 32));
         B.dsh = dalloc<int8_t>(Up * (8704 / 64));
         B.dxt = dalloc<float>(Up);
+        B.dsr = dalloc<float>(Up * 17);
         CK(cudaStreamCreateWithFlags(&B.sc, cudaStreamNonBlocking));
         for (auto& e : B.part_ev) CK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming));
         for (auto& r : B.sent) for (auto& e : r) CK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming));
@@ -1577,6 +1597,12 @@ struct PfRun {
     int ga = 32;      // gemm8 activation scale group (pf_ga)
     bool g17 = false; // gemm17 shift-folded 64-groups (pf_g17): unfused producers + quant_gsh
     bool rot = false; // R512 (pf_rot): rotated per-token activations x rotated int8 weights (gemm17 per-token)
+    bool rgb = false; // pf_rgb: R512 activations with per-512-block scales (gemm17 GSH 2)
+    int rmask = 63;   // pf_rot_mask: GEMM types on R512 (1 qkvz, 2 qkv_a, 4 gateup, 8 down, 16 ssm_out, 32 attn_out)
+    static int wbit(const tp::FW& W) {
+        return W.L.N == 8192 ? 1 : W.L.N == 7168 ? 2 : W.L.N == 17408 ? 4 : W.L.K == 8704 ? 8 : W.L.fmt == gemv::FAST_K5 ? 16 : 32;
+    }
+    bool rotw(const tp::FW& W) const { return rot && (rmask & wbit(W)); }
     int emax = 7;
     int tpad(int Ts) const { return g8 ? (Ts + 255) / 256 * 256 : (Ts + 127) / 128 * 128; }
     // profiling (option pf_prof): events on GPU0's stream after each op group, named by the op that just ended
@@ -1592,13 +1618,13 @@ struct PfRun {
     }
 
     // sub-batch s: x (fp32 rows t0.., row stride K) -> q8 activations for the GEMM (rows 0..Tp-1 of the shared buffer)
-    void quant(int g, int s, const float* x, int K) {
+    void quant(int g, int s, const float* x, int K, bool rq = false) {
         tp::Gpu& G = c->tps->G[g];
         PfGpu& B = P->G[g];
         const int Ts = sT[s], Tps = tpad(Ts);
         const int n = Tps * (K >> 5);
         const float* xs0 = x + (size_t)st0[s] * K;
-        if (rot) rot::quant_rot<float>(xs0, K, Ts, Tps, K, B.xq, B.dxt, G.s);
+        if (rq) rot::quant_rot<float>(xs0, K, Ts, Tps, K, B.xq, B.dxt, G.s, rgb ? B.dsr : nullptr);
         else if (g17) g16::quant_gsh_kernel<float><<<Tps, 256, 0, G.s>>>(xs0, K, Ts, K, emax, B.xq, B.dsh, B.dxt, Tps);
         else if (g8) gemm8::quant8(xs0, K, Ts, Tps, K, B.xq, B.dx, G.s, ga);
         else if (i4) gemm::quant_rows_i4_kernel<<<(n + 127) / 128, 128, 0, G.s>>>(xs0, K, Ts, Tps, K, B.xq, B.xs, B.xsum);
@@ -1613,8 +1639,8 @@ struct PfRun {
         const int Ts = sT[s], Tps = tpad(Ts);
         cudaError_t e;
         gemm::GemmArgs a = gemm::make_args(W.L, W.base, B.xq, B.xs, B.xsum, y + (size_t)st0[s] * ldy, ldy, Ts, Tps);
-        if (g8 && !g17 && !rot && c->tps->pf_fq) fq(g, s, W, in2);
-        if (rot) {
+        if (g8 && !g17 && !rotw(W) && c->tps->pf_fq) fq(g, s, W, in2);
+        if (rotw(W)) {
             const int slot = (W.L.N == 8192 || W.L.N == 7168) ? 0 : W.L.N == 17408 ? 2 : W.L.K == 8704 ? 3 : 1;
             gemm8::Args q = gemm8::make_args(W.L, W.base, nullptr, nullptr, nullptr, nullptr, 0, 0, 0);
             const bool abrows = W.L.N == 8192 && ldy == 8448;  // + 256 alpha/beta rows (48 used) of this layer
@@ -1656,13 +1682,15 @@ struct PfRun {
             g16::Args a7;
             a7.w8 = cached ? W.w8c : B.w8r[slot]; a7.invs = cached ? W.invc : abrows ? B.invq : W.invr; a7.xq = B.xq; a7.dx = B.dxt;
             a7.N = abrows ? 8448 : W.L.N; a7.K = W.L.K; a7.T = Ts; a7.Tp = Tps;
+            if (rgb) a7.dsr = B.dsr;
             if (silu) {  // fp16 silu(gate) * up rows of 8704 into g32
                 a7.yh = (__half*)B.g32 + (size_t)st0[s] * 8704; a7.ldy = 8704;
-                e = g16::launch17_t<0, gemv::FAST_P4, 4, 2, 0, 1>(a7, G.s);
+                e = rgb ? g16::launch17_t<0, gemv::FAST_P4, 4, 2, 2, 1>(a7, G.s) : g16::launch17_t<0, gemv::FAST_P4, 4, 2, 0, 1>(a7, G.s);
             } else {
                 a7.y = y + (size_t)st0[s] * ldy; a7.ldy = ldy;
                 if (ar16 && y == B.part) { a7.yh = (__half*)B.part + (size_t)st0[s] * ldy; a7.y = nullptr; }
-                e = a7.yh ? g16::launch17_t<0, gemv::FAST_P4, 4, 1, 0, 1>(a7, G.s) : g16::launch17_t<0, gemv::FAST_P4, 4, 0, 0, 1>(a7, G.s);
+                if (rgb) e = a7.yh ? g16::launch17_t<0, gemv::FAST_P4, 4, 1, 2, 1>(a7, G.s) : g16::launch17_t<0, gemv::FAST_P4, 4, 0, 2, 1>(a7, G.s);
+                else e = a7.yh ? g16::launch17_t<0, gemv::FAST_P4, 4, 1, 0, 1>(a7, G.s) : g16::launch17_t<0, gemv::FAST_P4, 4, 0, 0, 1>(a7, G.s);
             }
         } else if (g17) {
             g16::Args a7;
@@ -1743,12 +1771,12 @@ struct PfRun {
         return q;
     }
     // fused producers write 32-element q8 groups (gemm.cuh layout or gemm8 GA 32); other GA use the quant kernels
-    bool fused() const { return c->tps->pf_fuse && !i4 && !g17 && !rot && (!g8 || ga == 32 || ga == 64); }
+    bool fused() const { return c->tps->pf_fuse && !i4 && !g17 && (!g8 || ga == 32 || ga == 64); }
     // K5 GEMMs need int8 activations even in i4 mode
     void qg(int g, int s, const tp::FW& W, const float* x, int K, float* y, int ldy) {
         const bool save = i4;
         if (W.L.fmt == gemv::FAST_K5) i4 = false;
-        quant(g, s, x, K);
+        quant(g, s, x, K, rotw(W));
         gemm(g, s, W, y, ldy);
         i4 = save;
     }
@@ -1777,20 +1805,22 @@ struct PfRun {
         CK(cudaStreamWaitEvent(S.G[g].s, P->G[g].sent[s][sl], 0));
     }
     // q8: fused path, quantize into the GEMM layout (xn written only when want_xn)
-    void add_norm(int g, int s, const float* w, bool add, bool q8 = false, bool want_xn = true) {
+    void add_norm(int g, int s, const float* w, bool add, bool q8 = false, bool want_xn = true, bool rq = false) {
         tp::Gpu& G = c->tps->G[g];
         PfGpu& B = P->G[g];
         if (add) recv(g, s);
         const int sl = (ar - 1) & 1;
         const size_t off = (size_t)st0[s] * D;
-        if (q8 && rot) {
+        if (q8 && rq) {
             if (ar16)
                 k_pf_add_norm_rot<__half><<<sT[s], 256, D * 4, G.s>>>(B.h + off, (const __half*)B.part + off,
                                                                       (const __half*)B.rx[sl] + off, g, add ? 1 : 0, w,
-                                                                      want_xn ? B.xn + off : nullptr, B.xq, B.dxt);
+                                                                      want_xn ? B.xn + off : nullptr, B.xq, B.dxt,
+                                                                      rgb ? B.dsr : nullptr, tpad(sT[s]));
             else
                 k_pf_add_norm_rot<float><<<sT[s], 256, D * 4, G.s>>>(B.h + off, B.part + off, B.rx[sl] + off, g, add ? 1 : 0,
-                                                                     w, want_xn ? B.xn + off : nullptr, B.xq, B.dxt);
+                                                                     w, want_xn ? B.xn + off : nullptr, B.xq, B.dxt,
+                                                                     rgb ? B.dsr : nullptr, tpad(sT[s]));
             // padding rows (tokens Ts..Tp-1) keep stale activations: gemm17 never writes their outputs
         } else if (q8)
             if (ar16)
@@ -1816,15 +1846,16 @@ struct PfRun {
         tp::Layer& L = G.L[il];
         PfGpu& B = P->G[g];
         const int t0 = st0[s], Ts = sT[s], ps = p0 + t0;
-        const bool fu = fused(), fq8 = fu || rot;
-        add_norm(g, s, L.attn_norm, il > 0, fq8, !L.attn && !(rot && S.pf_abq && L.ab8r));
-        const bool abin = rot && S.pf_abq && L.ab8r;  // alpha/beta rows appended to the qkvz GEMM
+        const bool rin = rotw(L.attn ? L.qkv_a : L.qkvz);  // input projection on R512
+        const bool fu = fused(), fq8 = fu || rin;
+        const bool abin = rin && !L.attn && S.pf_abq && L.ab8r;  // alpha/beta rows appended to the qkvz GEMM
+        add_norm(g, s, L.attn_norm, il > 0, fq8, !L.attn && !abin, rin);
         const int qld = abin ? 8448 : 8192;
         if (!L.attn) {
             if (fq8) gemm(g, s, L.qkvz, B.y, qld);
             else qg(g, s, L.qkvz, B.xn, D, B.y, 8192);
             if (abin) {
-            } else if (rot && S.pf_abq && L.ab8r) {  // rotated int8 GEMM on the qkvz activations; slices 1..3 stay zero
+            } else if (false) {  // (K-sliced rotated ab GEMM, superseded by the appended rows)
                 for (int kz = 0; kz < AB_KS; kz++) {  // K-slices into the consumer's partial-sum slices
                     g16::Args aa;
                     aa.w8 = L.ab8r + kz * (D / AB_KS); aa.xq = B.xq + kz * (D / AB_KS); aa.kstride = D;
@@ -1892,20 +1923,20 @@ struct PfRun {
                                           L.S, B.o + (size_t)t0 * 3072);
             mark(g, "gdn_scan");
             }
-            if (rot) {
+            if (rotw(L.ssm_out)) {
                 k_pf_gnorm_rot<<<Ts, 256, 3072 * 4, G.s>>>(B.o + (size_t)t0 * 3072, B.y + (size_t)t0 * qld, qld,
-                                                           L.ssm_norm, B.xq, B.dxt);
+                                                           L.ssm_norm, B.xq, B.dxt, rgb ? B.dsr : nullptr, tpad(Ts));
                 ck_launch("gnorm_rot");
                 mark(g, "gnorm_q8");
                 gemm(g, s, L.ssm_out, B.part, D);
             } else if (fu) {
-                k_pf_gnorm_q8<<<dim3(Ts, 24), 128, 0, G.s>>>(B.o + (size_t)t0 * 3072, B.y + (size_t)t0 * 8192, 8192,
+                k_pf_gnorm_q8<<<dim3(Ts, 24), 128, 0, G.s>>>(B.o + (size_t)t0 * 3072, B.y + (size_t)t0 * qld, qld,
                                                               L.ssm_norm, q8out(g, s, 3072));
                 ck_launch("deltanet");
                 mark(g, "gnorm_q8");
                 gemm(g, s, L.ssm_out, B.part, D);
             } else {
-                k_pf_gnorm<<<dim3(Ts, 24), 128, 0, G.s>>>(B.o + (size_t)t0 * 3072, B.y + (size_t)t0 * 8192, 8192,
+                k_pf_gnorm<<<dim3(Ts, 24), 128, 0, G.s>>>(B.o + (size_t)t0 * 3072, B.y + (size_t)t0 * qld, qld,
                                                            L.ssm_norm, B.g32 + (size_t)t0 * 3072);
                 ck_launch("deltanet");
                 mark(g, "gnorm");
@@ -1938,23 +1969,26 @@ struct PfRun {
         PfGpu& B = P->G[g];
         const int t0 = st0[s], Ts = sT[s];
         const bool fu = fused();
-        if (rot) {
-            add_norm(g, s, L.post_norm, true, true, false);
+        const bool rg = rotw(L.gateup), rd = rotw(L.down);
+        if (rg) {
+            add_norm(g, s, L.post_norm, true, true, false, true);
             gemm(g, s, L.gateup, nullptr, 0, true);  // silu(gate) * up -> fp16 rows of g32
             const int Tps = tpad(Ts);
-            rot::quant_rot<__half>((const __half*)B.g32 + (size_t)t0 * 8704, 8704, Ts, Tps, 8704, B.xq, B.dxt, G.s);
-            ck_launch("quant_rot");
+            if (rd) rot::quant_rot<__half>((const __half*)B.g32 + (size_t)t0 * 8704, 8704, Ts, Tps, 8704, B.xq, B.dxt, G.s,
+                                           rgb ? B.dsr : nullptr);
+            else k_q8_64_half<<<dim3(Tps, 8704 / 64 / 8), 256, 0, G.s>>>((const __half*)B.g32 + (size_t)t0 * 8704, Ts, Tps, 8704, B.xq, B.dx);
+            ck_launch("quant_down");
             mark(g, "quant");
             gemm(g, s, L.down, B.part, D);
             return;
         }
         add_norm(g, s, L.post_norm, true, fu, false);
-        if (fu && g8 && ga == 64 && S.pf_silu && L.gateup.L.fmt == gemv::FAST_P4) {
+        if (fu && g8 && ga == 64 && S.pf_silu && L.gateup.L.fmt == gemv::FAST_P4 && !rd) {
             gemm(g, s, L.gateup, nullptr, 0, true);
             gemm(g, s, L.down, B.part, D, false, true);
             return;
         }
-        if (fu) {
+        if (fu && !rd) {
             gemm(g, s, L.gateup, B.y, 17408);
             k_pf_silu_q8<<<dim3(Ts, 34), 256, 0, G.s>>>(B.y + (size_t)t0 * 17408, 17408, q8out(g, s, 8704));
             ck_launch("silu_q8");
@@ -1962,7 +1996,8 @@ struct PfRun {
             gemm(g, s, L.down, B.part, D);
             return;
         }
-        qg(g, s, L.gateup, B.xn, D, B.y, 17408);
+        if (fu) gemm(g, s, L.gateup, B.y, 17408);  // GA64 activations from the fused add_norm
+        else qg(g, s, L.gateup, B.xn, D, B.y, 17408);
         k_pf_silu<<<dim3(Ts, 34), 256, 0, G.s>>>(B.y + (size_t)t0 * 17408, 17408, B.g32 + (size_t)t0 * 8704);
         ck_launch("silu");
         mark(g, "silu");
@@ -2038,6 +2073,8 @@ int tp_prefill_batched(t4q_ctx* c, const int32_t* ids, int n, void (*run_last_st
         R.ga = S.pf_ga;
         R.g17 = R.g8 && S.pf_g17;
         R.rot = R.g8 && S.pf_rot && R.T >= S.pf_rot_min;
+        R.rmask = S.pf_rot_mask;
+        R.rgb = R.rot && S.pf_rgb;
         R.emax = S.pf_emax;
         R.i4 = S.pf_i4 != 0 && !R.g8;
         if (S.pf_prof) { R.ev = &ev; R.evn = &evn; }

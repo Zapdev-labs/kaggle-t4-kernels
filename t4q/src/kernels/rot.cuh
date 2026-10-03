@@ -269,8 +269,24 @@ __device__ __forceinline__ void fwht512s(float v[32], int k0, int l, int lane) {
 
 // Rotate one token row (source: global or smem, element k at src[k]) into xs (smem, may alias src), then quantize
 // with one scale per token into dst; returns nothing, writes dx (thread 0). 256 threads; K % 512 == 0, K <= 8704.
+// Per-512-block scales ("GB512"): block b of token t is quantized with its own step s_b = amax_b / 127. The GEMM keeps
+// its int32 accumulator in units of the current block's step and rescales it at each block boundary by
+// dsr[b][t] = es_{b-1} / es_b (es = s carried forward over all-zero blocks); dx[t] = es_{nb-1} is the final factor.
+__device__ __forceinline__ void gb_ratios(const float* bam, int nb, int t, int Tp, float* dsr, float* dxp) {
+    float es = 0.f;
+    for (int b = 0; b < nb; ++b) {
+        const float sb = bam[b] / 127.f;
+        const float en = sb > 0.f ? sb : es;
+        dsr[(size_t)b * Tp + t] = (b == 0 || en == 0.f) ? 1.f : es / en;
+        es = en;
+    }
+    *dxp = es;
+}
+
 template <class SRC>
-__device__ __forceinline__ void rot_quant_row(const SRC* src, float* xs, int K, int8_t* dst, float* dxp, float* red) {
+__device__ __forceinline__ void rot_quant_row(const SRC* src, float* xs, int K, int8_t* dst, float* dxp, float* red,
+                                              float* dsr = nullptr, int t = 0, int Tp = 0) {
+    __shared__ float bam[17];
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, l = lane & 15;
     const int nb = K / RB;
     float m = 0.f;
@@ -285,26 +301,35 @@ __device__ __forceinline__ void rot_quant_row(const SRC* src, float* xs, int K, 
             for (int i = 0; i < 32; ++i) v[i] = 0.f;
         }
         fwht512s(v, b * RB, l, lane);
+        float mb = 0.f;
         if (b < nb)
 #pragma unroll
-            for (int i = 0; i < 32; ++i) { xs[b * RB + l + 16 * i] = v[i]; m = fmaxf(m, fabsf(v[i])); }
+            for (int i = 0; i < 32; ++i) { xs[b * RB + l + 16 * i] = v[i]; mb = fmaxf(mb, fabsf(v[i])); }
+#pragma unroll
+        for (int o = 8; o > 0; o >>= 1) mb = fmaxf(mb, __shfl_xor_sync(0xffffffffu, mb, o));
+        if (l == 0 && b < nb) bam[b] = mb;
+        m = fmaxf(m, mb);
     }
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
-    __syncthreads();  // red reuse + all xs writes visible
+    __syncthreads();  // red reuse + all xs / bam writes visible
     if (lane == 0) red[warp] = m;
     __syncthreads();
     float am = 0.f;
 #pragma unroll
     for (int w = 0; w < 8; ++w) am = fmaxf(am, red[w]);
-    const float inv = am > 0.f ? 127.f / am : 0.f;
     for (int k = tid * 4; k < K; k += 1024) {
+        const float ab = dsr ? bam[k / RB] : am;
+        const float inv = ab > 0.f ? 127.f / ab : 0.f;
         const float4 f = *(const float4*)(xs + k);
         const uint32_t pk = ((uint32_t)__float2int_rn(f.x * inv) & 0xffu) | (((uint32_t)__float2int_rn(f.y * inv) & 0xffu) << 8) |
                             (((uint32_t)__float2int_rn(f.z * inv) & 0xffu) << 16) | (((uint32_t)__float2int_rn(f.w * inv) & 0xffu) << 24);
         *(uint32_t*)(dst + k) = pk;
     }
-    if (tid == 0) *dxp = am / 127.f;
+    if (tid == 0) {
+        if (dsr) gb_ratios(bam, nb, t, Tp, dsr, dxp);
+        else *dxp = am / 127.f;
+    }
 }
 
 // activations: x (rows of ldx, fp32 or fp16) -> T(x) quantized with one scale per token: xq [Tp][K], dx[t] = amax/127.
@@ -312,14 +337,17 @@ __device__ __forceinline__ void rot_quant_row(const SRC* src, float* xs, int K, 
 // in registers (no smem staging, so several blocks fit per SM), int8 written straight from registers.
 template <class XT>
 __global__ void __launch_bounds__(288) quant_rot_kernel(const XT* __restrict__ x, int ldx, int T, int K,
-                                                        int8_t* __restrict__ xq, float* __restrict__ dx) {
+                                                        int8_t* __restrict__ xq, float* __restrict__ dx,
+                                                        float* __restrict__ dsr, int Tp) {
     __shared__ float red[9];
+    __shared__ float bam[17];
     const int t = blockIdx.x, tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, l = lane & 15;
     const int nw = blockDim.x >> 5;
     int8_t* dst = xq + (size_t)t * K;
     if (t >= T) {
         for (int k = tid * 4; k < K; k += blockDim.x * 4) *(int*)(dst + k) = 0;
         if (tid == 0) dx[t] = 0.f;
+        if (dsr && tid < K / RB) dsr[(size_t)tid * Tp + t] = 1.f;
         return;
     }
     const XT* src = x + (size_t)t * ldx;
@@ -337,16 +365,23 @@ __global__ void __launch_bounds__(288) quant_rot_kernel(const XT* __restrict__ x
 #pragma unroll
     for (int i = 0; i < 32; ++i) m = fmaxf(m, fabsf(v[i]));
 #pragma unroll
-    for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+    for (int o = 8; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+    const float mb = m;  // this half-warp's block amax
+    if (l == 0 && b < nb) bam[b] = mb;
+    m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, 16));
     if (lane == 0) red[warp] = m;
     __syncthreads();
     float am = 0.f;
     for (int w = 0; w < nw; ++w) am = fmaxf(am, red[w]);
-    const float inv = am > 0.f ? 127.f / am : 0.f;
+    const float ab = dsr ? mb : am;
+    const float inv = ab > 0.f ? 127.f / ab : 0.f;
     if (b < nb)
 #pragma unroll
         for (int i = 0; i < 32; ++i) dst[b * RB + l + 16 * i] = (int8_t)__float2int_rn(v[i] * inv);
-    if (tid == 0) dx[t] = am / 127.f;
+    if (tid == 0) {
+        if (dsr) gb_ratios(bam, nb, t, Tp, dsr, dx + t);
+        else dx[t] = am / 127.f;
+    }
 }
 
 // fp32 weight rows w[N][K] -> T(w) int8 rows out[Npad][K] with invr (rows N..Npad-1 zero, invr 1); one warp per row,
@@ -388,8 +423,9 @@ __global__ void __launch_bounds__(256) w8r_f32_kernel(const float* __restrict__ 
 }
 
 template <class XT>
-static inline void quant_rot(const XT* x, int ldx, int T, int Tp, int K, int8_t* xq, float* dx, cudaStream_t s) {
-    quant_rot_kernel<XT><<<Tp, 32 * ((K / RB + 1) / 2), 0, s>>>(x, ldx, T, K, xq, dx);
+static inline void quant_rot(const XT* x, int ldx, int T, int Tp, int K, int8_t* xq, float* dx, cudaStream_t s,
+                             float* dsr = nullptr) {
+    quant_rot_kernel<XT><<<Tp, 32 * ((K / RB + 1) / 2), 0, s>>>(x, ldx, T, K, xq, dx, dsr, Tp);
 }
 
 static inline cudaError_t invr(int fmt, int rpl, const gemm8::Args& a, float* out, cudaStream_t s) {

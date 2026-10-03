@@ -36,6 +36,7 @@ struct Args {
     int ldy = 0, N = 0, K = 0, T = 0, Tp = 0, accumulate = 0;
     int nvalid = 1 << 30;        // gemm17 OUT 0/1: rows >= nvalid are not written (padded weight rows)
     int kstride = 0;             // gemm17 WSRC 0: row stride of w8 and xq (0 = K; K-slices of a wider matrix)
+    const float* dsr = nullptr;  // gemm17 GSH 2: per-512-block rescale ratios [K/512][Tp] (kernels/rot.cuh gb_ratios)
     const int8_t* dsh = nullptr; // gemm17 GSH: shift deltas [K/64][Tp] (permuted token order)
 };
 
@@ -364,7 +365,7 @@ __device__ __forceinline__ void mma_s8sat(int& d0, int& d1, uint32_t a, uint32_t
 template <int WSRC, int FMT, int RPL, int OUT, int GSH, int KNOB = 0>
 __global__ void __launch_bounds__(NT, 1) gemm17_kernel(const Args a) {
     extern __shared__ __align__(16) unsigned char smem[];
-    constexpr int ST = STAGE_BYTES + (GSH ? 128 : 0);  // + 128 B of shift deltas per stage
+    constexpr int ST = STAGE_BYTES + (GSH == 1 ? 128 : 0);  // + 128 B of shift deltas per stage
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     const int wm = warp & 1, wn = warp >> 1;
     const int tok0 = blockIdx.x * 128, row0 = blockIdx.y * 256;
@@ -376,7 +377,7 @@ __global__ void __launch_bounds__(NT, 1) gemm17_kernel(const Args a) {
     const int8_t* ap = a.xq + (size_t)(tok0 + arw) * KS + ablk * 32;
     const int8_t* bp = a.w8 + (size_t)(row0 + brw) * KS + bu * 16;
     const size_t bstep = (size_t)64 * KS;
-    const int8_t* dp = a.dsh ? (const int8_t*)a.dsh + tok0 + tid * 16 : nullptr;
+    const int8_t* dp = (GSH == 1 && a.dsh) ? (const int8_t*)a.dsh + tok0 + tid * 16 : nullptr;
     // WSRC 1: units (row tid/2, block tid&1) and (row tid/2 + 128, block tid&1)
     const gemm8::WPtr<FMT, RPL> P0(a.q, row0 + arw, ablk), P1(a.q, row0 + arw + 128, ablk);
     const float inv0 = WSRC == 1 ? a.invs[row0 + arw] : 0.f, inv1 = WSRC == 1 ? a.invs[row0 + arw + 128] : 0.f;
@@ -411,7 +412,7 @@ __global__ void __launch_bounds__(NT, 1) gemm17_kernel(const Args a) {
             ldq(P0, c, jj, S.b[0], S.s0[0], S.s1[0], S.hb[0]);
             ldq(P1, c, jj, S.b[2], S.s0[1], S.s1[1], S.hb[1]);
         }
-        if (GSH && tid < 8) S.dsh = __ldg((const int4*)(dp + (size_t)st * a.Tp));
+        if (GSH == 1 && tid < 8) S.dsh = __ldg((const int4*)(dp + (size_t)st * a.Tp));
     };
     auto convert = [&]() {
         if (WSRC == 1) {
@@ -443,7 +444,7 @@ __global__ void __launch_bounds__(NT, 1) gemm17_kernel(const Args a) {
                 *(int4*)(B + O_X + r * 64 + swz(r, ablk * 2 + 1) * 16) = S.b[2 * h + 1];
             }
         }
-        if (GSH && tid < 8) *(int4*)(B + STAGE_BYTES + tid * 16) = S.dsh;
+        if (GSH == 1 && tid < 8) *(int4*)(B + STAGE_BYTES + tid * 16) = S.dsh;
     };
     int arow[2], brow[2];
 #pragma unroll
@@ -470,7 +471,19 @@ __global__ void __launch_bounds__(NT, 1) gemm17_kernel(const Args a) {
     frag(0, 0, 0);
     int buf = 0;
     for (int s = 0; s < nst; ++s) {
-        if (GSH && s > 0) {  // Horner step: rescale T to this group's step (the deltas of stage s are in buf)
+        if (GSH == 2 && s > 0 && (s & 7) == 0) {  // 512-k block boundary: T *= es_{b-1} / es_b (exact up to rounding)
+            const float* rp = a.dsr + (size_t)(s >> 3) * a.Tp + tok0 + wm * 64 + (lane >> 2);
+#pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                const float r = __ldg(rp + 8 * i);
+#pragma unroll
+                for (int g = 0; g < 8; ++g) {
+                    acc[i][g][0] = __float2int_rn(__int2float_rn(acc[i][g][0]) * r);
+                    acc[i][g][1] = __float2int_rn(__int2float_rn(acc[i][g][1]) * r);
+                }
+            }
+        }
+        if (GSH == 1 && s > 0) {  // Horner step: rescale T to this group's step (the deltas of stage s are in buf)
             const uint2 dd = *(const uint2*)(smem + buf * ST + STAGE_BYTES + wm * 64 + (lane >> 2) * 8);
 #pragma unroll
             for (int i = 0; i < 8; ++i) {
@@ -540,7 +553,7 @@ __global__ void __launch_bounds__(NT, 1) gemm17_kernel(const Args a) {
 template <int WSRC, int FMT, int RPL, int OUT, int GSH, int KNOB = 0>
 static cudaError_t launch17_t(const Args& a, cudaStream_t s) {
     auto k = gemm17_kernel<WSRC, FMT, RPL, OUT, GSH, KNOB>;
-    const int smem = 2 * (STAGE_BYTES + (GSH ? 128 : 0));
+    const int smem = 2 * (STAGE_BYTES + (GSH == 1 ? 128 : 0));
     static int attr_dev_mask = 0;
     int dev = 0;
     cudaGetDevice(&dev);
@@ -549,7 +562,7 @@ static cudaError_t launch17_t(const Args& a, cudaStream_t s) {
         if (e != cudaSuccess) return e;
         attr_dev_mask |= 1 << dev;
     }
-    if (a.N % 256 || a.K % 64 || a.Tp % 128 || (GSH && !a.dsh)) return cudaErrorInvalidValue;
+    if (a.N % 256 || a.K % 64 || a.Tp % 128 || (GSH == 1 && !a.dsh) || (GSH == 2 && (!a.dsr || a.K % 512))) return cudaErrorInvalidValue;
     dim3 grid(a.Tp / 128, a.N / 256);
     k<<<grid, NT, smem, s>>>(a);
     return cudaGetLastError();

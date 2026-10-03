@@ -295,6 +295,8 @@ struct State {
     int pf_prof = 0;      // 1: per-op event profile of GPU0 (ms per op class) in stats "pf_profile"
     std::string pf_json;
     // activation-format accuracy study (tp_prefill.cu k_fq_*): emulate a GEMM input format on the GA64 int8 input
+    int pf_rgb = 0;       // R512 activations with one scale per (token, 512-block), folded by exact accumulator rescaling
+    int pf_rot_mask = 63; // R512 GEMM types: 1 qkvz, 2 qkv_a, 4 gateup, 8 down, 16 ssm_out, 32 attn_out (others: GA64)
     int pf_rot_min = 0;   // R512 only for ubatches of at least this many tokens (smaller ones take the GA64 path)
     int pf_wcache = 0;    // R512: MB of spare VRAM per GPU for persistent rotated int8 weights (no per-ubatch conversion)
     long long pf_wcache_used = 0;
