@@ -5,6 +5,7 @@
 // Run:   ./bd_gemm_bench --dev N [--reps R] [--tp 32,64] [--pfk 0,16]
 // Output: "R {json}" per (shape, Tp, variant), "CHECK {json}" (variants bit-identical), "SUM {json}" per-step estimate.
 #include "../src/kernels/gemm8.cuh"
+#include "../src/kernels/gemm_r.cuh"
 
 #include <cmath>
 #include <cstdio>
@@ -151,6 +152,29 @@ int main(int argc, char** argv) {
             }
             printf("CHECK {\"dev\": %d, \"shape\": \"%s\", \"Tp\": %d, \"ring_vs_plain_mismatch\": %zu, \"n\": %zu, "
                    "\"rel_l2_vs_fp64\": %.3e}\n", dev, sh.name, Tp, ne, h0.size(), std::sqrt(se / (sr + 1e-30)));
+            if (sh.fmt == FAST_P4) {  // gemmr (register-direct A fragments) vs gemm9: time and bit identity
+                for (int mt = 1; mt <= 2; ++mt) {
+                    if (sh.N % (64 * mt)) continue;
+                    gemm8::Args a = gemm8::make_args(L, w, invs, xq, dx, y1, sh.N, Tp, Tp);
+                    CK(cudaMemset(y1, 0, (size_t)Tp * sh.N * 4));
+                    auto run = [&]() { CK(gemmr::launch(L.fmt, L.rpl, Tp, mt, false, a, st)); };
+                    for (int r = 0; r < 3; ++r) run();
+                    CK(cudaEventRecord(e0, st));
+                    for (int r = 0; r < reps; ++r) run();
+                    CK(cudaEventRecord(e1, st));
+                    CK(cudaEventSynchronize(e1));
+                    float ms = 0;
+                    CK(cudaEventElapsedTime(&ms, e0, e1));
+                    const double us = 1e3 * ms / reps;
+                    std::vector<float> hr((size_t)Tp * sh.N);
+                    CK(cudaMemcpy(hr.data(), y1, hr.size() * 4, cudaMemcpyDeviceToHost));
+                    size_t nr = 0;
+                    for (size_t i = 0; i < hr.size(); ++i) nr += memcmp(&hr[i], &h0[i], 4) != 0;
+                    printf("R {\"dev\": %d, \"shape\": \"%s\", \"Tp\": %d, \"gemmr_mt\": %d, \"us\": %.1f, \"GBps\": %.1f, "
+                           "\"mismatch_vs_gemm9\": %zu}\n", dev, sh.name, Tp, mt, us, L.bytes / us / 1e3, nr);
+                    fflush(stdout);
+                }
+            }
             if (sh.fmt == FAST_P4 && sh.rpl == 4 && sh.K == 5120) {  // gemm9 ablations (bench-only AB bits), plain loop
                 const int abs_[] = {1, 2, 4, 8, 16, 24, 128};
                 for (int ab : abs_) {

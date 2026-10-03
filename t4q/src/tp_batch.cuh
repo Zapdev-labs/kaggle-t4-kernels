@@ -744,6 +744,7 @@ int tp_batch_step(t4q_ctx* c, int n, const int32_t* slots, int32_t* out) {
     R.p2p_part = S.bd_p2p && S.p2p && R.ar16;
     R.pfk = S.bd_pfk;
     R.lbm = S.bd_lbm;
+    R.gemmr = S.bd_gemmr != 0;
     R.ksplit = S.bd_ksplit;
     R.kscr[0] = b->G[0].kscr;
     R.kscr[1] = b->G[1].kscr;

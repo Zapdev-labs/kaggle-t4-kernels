@@ -15,6 +15,7 @@
 #include "kernels/gemm.cuh"
 #include "kernels/gemm8.cuh"
 #include "kernels/gemm16.cuh"
+#include "kernels/gemm_r.cuh"
 #include "kernels/rot.cuh"
 #include "kernels/tp_kernels.h"
 #include "model.h"
@@ -1789,6 +1790,7 @@ struct PfRun {
     bool rotw(const tp::FW& W) const { return rot && (rmask & wbit(W)); }
     int emax = 7;
     int pfk = 0;            // gemm9 L2 weight prefetch distance in 32-blocks (batched decode option bd_pfk)
+    bool gemmr = false;     // batched decode: P4 GEMMs at 32 / 64-token tiles through gemmr (register-direct A fragments)
     int lbm = 1;            // gemm9 line-batched weight loads at BN <= 64 (batched decode option bd_lbm)
     int ksplit = 1;         // batched decode: split-K slices for the K-split GEMMs (fp32 slices in kscr, summed by ksum)
     float* kscr[2] = {nullptr, nullptr};
@@ -1928,7 +1930,10 @@ struct PfRun {
             a8.oq = B.xq2; a8.odx = B.dx2;
             a8.pfk = pfk;
             a8.lbm = lbm;
-            e = gemm8::launch9_silu(W.L.fmt, W.L.rpl, a8, G.s, bn_div(Tps, 256));
+            if (gemmr && ga == 64 && W.L.fmt == gemv::FAST_P4 && (Tps == 32 || Tps == 64))
+                e = gemmr::launch(W.L.fmt, W.L.rpl, Tps, 2, true, a8, G.s);
+            else
+                e = gemm8::launch9_silu(W.L.fmt, W.L.rpl, a8, G.s, bn_div(Tps, 256));
         } else if (g8) {
             gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, in2 ? B.xq2 : B.xq, in2 ? B.dx2 : B.dx,
                                               y + (size_t)st0[s] * ldy, ldy, Ts, Tps);
@@ -1939,6 +1944,14 @@ struct PfRun {
             }
             a8.pfk = pfk;
             a8.lbm = lbm;
+            if (gemmr && ga == 64 && W.L.fmt == gemv::FAST_P4 && (Tps == 32 || Tps == 64) &&
+                !(y == B.part && ksplit > 1)) {
+                e = gemmr::launch(W.L.fmt, W.L.rpl, Tps, W.L.N >= 8192 ? 2 : 1, false, a8, G.s);
+                if (e != cudaSuccess) throw std::runtime_error(std::string("gemmr launch: ") + cudaGetErrorString(e));
+                mark(g, W.L.N == 8192 ? "gemm_qkvz" : W.L.N == 7168 ? "gemm_attn_qkv" : W.L.N == 17408 ? "gemm_gateup"
+                        : W.L.K == 8704 ? "gemm_down" : "gemm_attn_out");
+                return;
+            }
             const int pbn = c->tps->pf_bn;
             const int bn = Tps < 128 ? bn_div(Tps, 64) : pbn ? pbn : (Tps >= 512 ? 256 : 128);
             if (y == B.part && ksplit > 1 && kscr[g] && W.L.K % (256 * ksplit) == 0) {  // split-K, then a fixed-order sum
