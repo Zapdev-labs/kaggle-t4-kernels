@@ -212,7 +212,7 @@ def main():
             val["e2e"]["clocks"] = clocks_between(val["e2e"]["t0"], val["e2e"]["t1"])
         (OUT / "results_b.json").write_text(json.dumps(val, indent=1, default=str))
         result("batch_check", {"rc": rc, "secs": round(time.time() - t), "tail": o[-3000:] if rc else ""})
-        for k in ("load", "correct_ref", "correct", "correct_same_tokens", "bench", "e2e", "server", "correct_error", "bench_error",
+        for k in ("load", "correct_ref", "correct", "correct_same_tokens", "correct_wide", "bench", "e2e", "server", "correct_error", "bench_error",
                   "e2e_error", "server_error", "section_secs", "stats"):
             if k in val:
                 result(k, val[k])

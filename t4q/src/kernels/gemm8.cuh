@@ -301,9 +301,11 @@ __device__ __forceinline__ void stage_store(const Stage<BN>& S, unsigned char* b
         float2* dxs = (float2*)(buf + C::O_DX);
         dxs[tid] = S.dx0;
         dxs[BN / 2 + tid] = S.dx1;
-        const float2 pb = make_float2(MAGIC_F * (S.dx0.x + S.dx1.x), MAGIC_F * (S.dx0.y + S.dx1.y));
-        if (ph == 2) ((float2*)(buf + C::O_BI))[tid] = make_float2(bkeep.x + pb.x, bkeep.y + pb.y);
-        else if (ph == 1) bkeep = make_float2(bkeep.x + pb.x, bkeep.y + pb.y);
+        // explicit roundings: no FMA contraction, so every instantiation (BN, ring or not) gives the same bias bits
+        const float2 pb = make_float2(__fmul_rn(MAGIC_F, __fadd_rn(S.dx0.x, S.dx1.x)),
+                                      __fmul_rn(MAGIC_F, __fadd_rn(S.dx0.y, S.dx1.y)));
+        if (ph == 2) ((float2*)(buf + C::O_BI))[tid] = make_float2(__fadd_rn(bkeep.x, pb.x), __fadd_rn(bkeep.y, pb.y));
+        else if (ph == 1) bkeep = make_float2(__fadd_rn(bkeep.x, pb.x), __fadd_rn(bkeep.y, pb.y));
         else bkeep = pb;
     }
 }
@@ -618,7 +620,11 @@ __global__ void __launch_bounds__(NT, BN <= 64 ? 2 : 1) gemm9_kernel(const Args 
     const int kbase = blockIdx.z * nkb, kend = kbase + nkb;
     const int t4 = lane & 3;
     const float invs_st = a.invs[row0 + (tid >> 1)];
-    const WPtr<FMT, RPL> P(a, row0 + (tid >> 1), tid & 1);
+    WPtr<FMT, RPL> P(a, row0 + (tid >> 1), tid & 1);
+    if (AB & 128) {  // timing probe (bench): every warp load reads 512 contiguous code bytes (GEMV-like lines; wrong data)
+        P.code = a.codes + (size_t)blockIdx.y * 65536 + tid * 16;
+        P.cs_code = 8192;
+    }
     const int8_t* xb = a.xq + (size_t)(tok0 + (tid >> 2)) * a.K + (tid & 3) * 16;
     const long long xstep = (long long)(NT / 4) * a.K;
     const float* dxb = a.dx + tok0 + 2 * (tid & (BN / 2 - 1));
@@ -649,7 +655,7 @@ __global__ void __launch_bounds__(NT, BN <= 64 ? 2 : 1) gemm9_kernel(const Args 
     // Small token tiles (batched decode, BN 32 / 64): a ring of RD stages of global loads in flight. One stage of
     // loads per block (the loop below) streams weights at only ~105-115 GB/s at BN 32/64 (t4q-b v2-v4: the GEMM time
     // hardly depends on B); RD stages multiply the bytes in flight. Same arithmetic and order as the loop below.
-    constexpr int RD = (BN <= 64 && GA == 64 && (AB & ~64) == 0) ? (BN == 32 ? 3 : 2) : 1;
+    constexpr int RD = (BN == 32 && GA == 64 && (AB & ~64) == 0) ? 3 : 1;  // BN 64 ring: spills, no gain (v5)
     if constexpr (RD > 1) if (a.lbm) {
         const int nst = nkb >> 1;
         Stage<BN> R[RD];

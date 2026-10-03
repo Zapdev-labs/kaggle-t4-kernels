@@ -159,6 +159,7 @@ def sec_correct(eng, tok, a):
         r["b_invariance"] = inv
         r["sample_text_P0"] = tok.decode(outs[0])[:400]
         r["outs"] = outs
+        r["_logits0"] = logits0
         res[key] = r
         R["correct"] = res
         save()
@@ -166,8 +167,40 @@ def sec_correct(eng, tok, a):
     keys = list(res)
     R["correct_same_tokens"] = {f"{x} == {y}": res[x]["outs"] == res[y]["outs"] for i, x in enumerate(keys)
                                 for y in keys[i + 1:]}
+    # wide batch (B = 40 -> 64-token GEMM tile): the 8 prompts plus 4 clones each, teacher-forced; clones must equal
+    # their source row bit for bit, and row 0 at step 0 must equal the B = 8 (32-token tile) logits of the same config
+    wk = a.wide_config
+    opts, _, sf = wk.partition("|")
+    apply(eng, opts)
+    nw = nslot * 5
+    eng.batch_init(nw, a.slot_ctx, int(sf or 0))
+    for i, nm in enumerate(names):
+        eng.batch_prefill(i, ids[nm])
+        for c in range(1, 5):
+            eng.batch_clone(i, i + c * nslot)
+    kls, clone_ok, l0diff = [], True, None
+    for k in range(TF):
+        for i, nm in enumerate(names):
+            for c in range(5):
+                eng.batch_set_token(i + c * nslot, refs[nm][k])
+        eng.batch_step(list(range(nw)))
+        for i, nm in enumerate(names):
+            lg = eng.batch_logits(i)
+            kls.append(kl(refL[nm][k], lg))
+            wkey = f"{opts}|sf16={int(sf or 0)}"
+            if k == 0 and i == 0 and wkey in res:
+                l0diff = float(np.abs(lg - res[wkey]["_logits0"]).max())
+            if k < 2:
+                for c in range(1, 5):
+                    clone_ok = clone_ok and bool(np.array_equal(lg, eng.batch_logits(i + c * nslot)))
+    kls = np.asarray(kls)
+    R["correct_wide"] = {"config": wk, "B": nw, "kl_mean": float(kls.mean()), "kl_p99": float(np.quantile(kls, 0.99)),
+                         "kl_max": float(kls.max()), "clones_bit_identical": clone_ok,
+                         "row0_step0_maxdiff_vs_B8": l0diff}
+    log("wide", json.dumps(R["correct_wide"]))
     for r in res.values():
         r.pop("outs", None)
+        r.pop("_logits0", None)
     save()
     eng.batch_free()
 
@@ -369,6 +402,7 @@ def main():
     ap.add_argument("--tf", type=int, default=16)
     ap.add_argument("--slot_ctx", type=int, default=1024)
     ap.add_argument("--correct_configs", default="bd_head=1,bd_lbm=1|0;bd_head=1,bd_lbm=1|1;bd_head=1,bd_lbm=0|1")
+    ap.add_argument("--wide_config", default="bd_head=1,bd_lbm=1|1")
     ap.add_argument("--bench", default="1000:64:1088:1:1,16,32,64::bd_head=1,bd_lbm=0/bd_head=1,bd_lbm=1;"
                                        "4000:32:4128:1:16,32:1024:bd_head=1,bd_lbm=0/bd_head=1,bd_lbm=1")
     ap.add_argument("--steps", type=int, default=12)

@@ -126,14 +126,55 @@ int main(int argc, char** argv) {
                            2.0 * sh.N * (double)sh.K * Tp / us / 1e6);
                     fflush(stdout);
                 }
-            // ring vs no ring: same arithmetic, must be bit-identical
+            // ring vs no ring: same arithmetic, must be bit-identical; plain vs an fp64 reference of the exact product
             std::vector<float> h0((size_t)Tp * sh.N), h1((size_t)Tp * sh.N);
             CK(cudaMemcpy(h0.data(), y0, h0.size() * 4, cudaMemcpyDeviceToHost));
             CK(cudaMemcpy(h1.data(), y1, h1.size() * 4, cudaMemcpyDeviceToHost));
             size_t ne = 0;
             for (size_t i = 0; i < h0.size(); ++i) ne += memcmp(&h0[i], &h1[i], 4) != 0;
-            printf("CHECK {\"dev\": %d, \"shape\": \"%s\", \"Tp\": %d, \"ring_vs_plain_mismatch\": %zu, \"n\": %zu}\n", dev,
-                   sh.name, Tp, ne, h0.size());
+            double se = 0, sr = 0;
+            {
+                std::vector<int8_t> hx((size_t)Tp * sh.K);
+                std::vector<float> hd((size_t)(sh.K / 64) * Tp), wr(sh.K);
+                CK(cudaMemcpy(hx.data(), xq, hx.size(), cudaMemcpyDeviceToHost));
+                CK(cudaMemcpy(hd.data(), dx, hd.size() * 4, cudaMemcpyDeviceToHost));
+                const size_t rb = src_row_bytes(sh.fmt, sh.K);
+                for (int row = 0; row < sh.N; row += sh.N / 16) {
+                    dequant_row_host(sh.fmt, g.data() + (size_t)row * rb, sh.K, wr.data());
+                    for (int t = 0; t < Tp; t += 7) {
+                        double ref = 0;
+                        for (int k = 0; k < sh.K; ++k) ref += (double)wr[k] * hx[(size_t)t * sh.K + k] * hd[(size_t)(k / 64) * Tp + t];
+                        const double e = h0[(size_t)t * sh.N + row] - ref;
+                        se += e * e; sr += ref * ref;
+                    }
+                }
+            }
+            printf("CHECK {\"dev\": %d, \"shape\": \"%s\", \"Tp\": %d, \"ring_vs_plain_mismatch\": %zu, \"n\": %zu, "
+                   "\"rel_l2_vs_fp64\": %.3e}\n", dev, sh.name, Tp, ne, h0.size(), std::sqrt(se / (sr + 1e-30)));
+            if (sh.fmt == FAST_P4 && sh.rpl == 4 && sh.K == 5120) {  // gemm9 ablations (bench-only AB bits), plain loop
+                const int abs_[] = {1, 2, 4, 8, 16, 24, 128};
+                for (int ab : abs_) {
+                    gemm8::Args a = gemm8::make_args(L, w, invs, xq, dx, y1, sh.N, Tp, Tp);
+                    auto run = [&]() {
+                        cudaError_t e = cudaErrorInvalidValue;
+#define BDA(V) if (ab == V) e = Tp == 32 ? gemm8::launch9_t<FAST_P4, 4, 32, 64, V>(a, st) : gemm8::launch9_t<FAST_P4, 4, 64, 64, V>(a, st);
+                        BDA(1) BDA(2) BDA(4) BDA(8) BDA(16) BDA(24) BDA(128)
+#undef BDA
+                        CK(e);
+                    };
+                    for (int r = 0; r < 3; ++r) run();
+                    CK(cudaEventRecord(e0, st));
+                    for (int r = 0; r < reps; ++r) run();
+                    CK(cudaEventRecord(e1, st));
+                    CK(cudaEventSynchronize(e1));
+                    float ms = 0;
+                    CK(cudaEventElapsedTime(&ms, e0, e1));
+                    const double us = 1e3 * ms / reps;
+                    printf("R {\"dev\": %d, \"shape\": \"%s\", \"Tp\": %d, \"ablation\": %d, \"us\": %.1f, \"GBps\": %.1f}\n",
+                           dev, sh.name, Tp, ab, us, L.bytes / us / 1e3);
+                    fflush(stdout);
+                }
+            }
         }
         // dp4a GEMV m = 1 weight-streaming reference (P4 rpl 4 / K6 rpl 2 shapes)
         if ((sh.fmt == FAST_P4 && sh.rpl == 4 && sh.K == 5120) || sh.fmt == FAST_K6) {
