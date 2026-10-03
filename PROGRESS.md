@@ -653,7 +653,7 @@ boxes. All numbers are Kaggle `otdoges/t4q-b`, Q4_0 GGUF, greedy, both T4s (TP=2
 - **End to end** (v8): 32 concurrent coding requests (stdlib-source prompts, 477 tokens on average, 15262 prompt tokens),
   512 new tokens each (EOS ignored, 16384 tokens): **72.5 s wall, 225.9 generated tok/s, 436.2 total tok/s**; prefill
   17.6 s (869 tok/s, one prompt at a time), decode 55.0 s at B=32 (297.6 tok/s aggregate), mean TTFT 9.1 s (all 32
-  submitted at t=0, prefill-first scheduling). v5-v7: 73.0-73.5 s.
+  submitted at t=0, prefill-first scheduling). v5-v7: 72.6-73.1 s.
 - **Correctness** (v8; identical in v1-v8 for the same config):
   - Reference = the single-stream TP decode engine (validated against the llama.cpp oracle in M1-M4), 8 coding prompts.
   - Teacher-forced, 16 positions x 8 prompts at B=8: KL(single-stream || batched) mean 2.2e-4 / p99 4.1e-3 / max 6.8e-3
@@ -707,7 +707,8 @@ At 4k / B=32 attention is 25.4 ms (KV 4 GiB per GPU per step).
   weight loads (4 stages per load, v4: no change), a 2-3 stage load ring (v5: <=3%), register-direct fragments (gemmr,
   v7: same speed), 2 blocks/SM at BN 64. Bench ablations (v6, bg v1) put the cost in the weight-load path and the smem
   staging, not the MMA math, but timings swing up to 2x with the throttled clock, so the root cause is still open.
-- P2P epilogue stores of the AR partials (`bd_p2p`): bit-identical, no measurable gain on the P2P boxes tested (v4/v5).
+- P2P epilogue stores of the AR partials (`bd_p2p`): untested so far. The boxes where it was benched (v2, v4) had no
+  P2P, so the engine fell back to the copy path; it needs a P2P box A/B (and its correctness check) before use.
 
 ### Broken or open
 - B=1..8 is slow (12.8 tok/s at B=1): the 32-token tile computes 32 columns regardless. A dp4a M<=8 path for tiny B is
