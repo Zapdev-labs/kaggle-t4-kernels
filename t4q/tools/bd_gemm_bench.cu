@@ -175,6 +175,32 @@ int main(int argc, char** argv) {
                     fflush(stdout);
                 }
             }
+            if (sh.fmt == FAST_P4 && sh.rpl == 4 && sh.K == 5120) {  // gemmr ablations (MT 2 and 1)
+                const int abls[] = {1, 2, 4, 8, 16, 3, 12, 31};
+                for (int mt = 1; mt <= 2; ++mt)
+                    for (int ab : abls) {
+                        gemm8::Args a = gemm8::make_args(L, w, invs, xq, dx, y1, sh.N, Tp, Tp);
+                        auto run = [&]() {
+                            cudaError_t e = cudaErrorInvalidValue;
+#define BDR(V) if (ab == V) e = Tp == 32 ? (mt == 1 ? gemmr::launchr_t<4, 32, 1, 0, V>(a, st) : gemmr::launchr_t<4, 32, 2, 0, V>(a, st)) \
+                                         : (mt == 1 ? gemmr::launchr_t<4, 64, 1, 0, V>(a, st) : gemmr::launchr_t<4, 64, 2, 0, V>(a, st));
+                            BDR(1) BDR(2) BDR(4) BDR(8) BDR(16) BDR(3) BDR(12) BDR(31)
+#undef BDR
+                            CK(e);
+                        };
+                        for (int r = 0; r < 3; ++r) run();
+                        CK(cudaEventRecord(e0, st));
+                        for (int r = 0; r < reps; ++r) run();
+                        CK(cudaEventRecord(e1, st));
+                        CK(cudaEventSynchronize(e1));
+                        float ms = 0;
+                        CK(cudaEventElapsedTime(&ms, e0, e1));
+                        const double us = 1e3 * ms / reps;
+                        printf("R {\"dev\": %d, \"shape\": \"%s\", \"Tp\": %d, \"gemmr_mt\": %d, \"gemmr_abl\": %d, \"us\": %.1f, \"GBps\": %.1f}\n",
+                               dev, sh.name, Tp, mt, ab, us, L.bytes / us / 1e3);
+                        fflush(stdout);
+                    }
+            }
             if (sh.fmt == FAST_P4 && sh.rpl == 4 && sh.K == 5120) {  // gemm9 ablations (bench-only AB bits), plain loop
                 const int abs_[] = {1, 2, 4, 8, 16, 24, 128};
                 for (int ab : abs_) {

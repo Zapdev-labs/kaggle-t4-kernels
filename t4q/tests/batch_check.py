@@ -163,7 +163,7 @@ def sec_correct(eng, tok, a):
         res[key] = r
         R["correct"] = res
         save()
-        log(key, json.dumps({k: v for k, v in r.items() if k not in ("greedy", "sample_text_P0", "outs")}))
+        log(key, json.dumps({k: v for k, v in r.items() if k not in ("greedy", "sample_text_P0", "outs", "_logits0")}))
     keys = list(res)
     R["correct_same_tokens"] = {f"{x} == {y}": res[x]["outs"] == res[y]["outs"] for i, x in enumerate(keys)
                                 for y in keys[i + 1:]}

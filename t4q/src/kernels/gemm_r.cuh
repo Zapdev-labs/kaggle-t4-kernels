@@ -61,7 +61,9 @@ struct WReg {
 };
 
 // EPI 0: y / yh (+ yh2) like gemm9 (no split-K, no accumulate); EPI 64: gate|up silu -> q8 GA64 (a.oq / a.odx)
-template <int RPL, int BN, int MT, int EPI>
+// ABL (bench-only timing ablations): 1 no weight conversion (raw code words as A), 2 no mma (integer stand-in),
+// 4 no weight loads (registers perturbed per stage), 8 no activation staging / barriers, 16 no FFMA / bias
+template <int RPL, int BN, int MT, int EPI, int ABL = 0>
 __global__ void __launch_bounds__(NT, MT == 1 ? 2 : 1) gemmr_kernel(const Args a) {
     using C = SCfg<BN>;
     constexpr int NTL = BN / 8;  // n-tiles (8 tokens) per warp
@@ -86,6 +88,13 @@ __global__ void __launch_bounds__(NT, MT == 1 ? 2 : 1) gemmr_kernel(const Args a
         invs[m] = a.invs[R];
     }
     auto wload = [&](WReg<MT>& W, int st) {
+        if (ABL & 4) {
+#pragma unroll
+            for (int m = 0; m < MT; ++m)
+#pragma unroll
+                for (int g = 0; g < 8; ++g) { W.q[m][g] = W.q[m][g] * 1664525u + st; W.d[m][g] = 0x2000u + (st & 15); }
+            return;
+        }
         const int c = st >> 1, j0 = (st & 1) * 8;
 #pragma unroll
         for (int m = 0; m < MT; ++m)
@@ -99,6 +108,7 @@ __global__ void __launch_bounds__(NT, MT == 1 ? 2 : 1) gemmr_kernel(const Args a
     int4 xr[C::NU];
     float dxr[4];
     auto xload = [&](int st) {
+        if (ABL & 8) return;
 #pragma unroll
         for (int i = 0; i < C::NU; ++i) {
             const int U = tid + i * NT, tok = U >> 4, u = U & 15;
@@ -110,6 +120,7 @@ __global__ void __launch_bounds__(NT, MT == 1 ? 2 : 1) gemmr_kernel(const Args a
         }
     };
     auto xstore = [&](unsigned char* buf) {
+        if (ABL & 8) return;
 #pragma unroll
         for (int i = 0; i < C::NU; ++i) {
             const int U = tid + i * NT, tok = U >> 4, u = U & 15;
@@ -147,6 +158,11 @@ __global__ void __launch_bounds__(NT, MT == 1 ? 2 : 1) gemmr_kernel(const Args a
             uint32_t af[MT][4];
 #pragma unroll
             for (int m = 0; m < MT; ++m) {
+                if (ABL & 1) {
+                    af[m][0] = W.q[m][2 * q]; af[m][1] = W.q[m][2 * q] >> 4;
+                    af[m][2] = W.q[m][2 * q + 1]; af[m][3] = W.q[m][2 * q + 1] >> 4;
+                    continue;
+                }
                 p4_word(W.q[m][2 * q], W.d[m][2 * q], invs[m], af[m][0], af[m][1]);
                 p4_word(W.q[m][2 * q + 1], W.d[m][2 * q + 1], invs[m], af[m][2], af[m][3]);
             }
@@ -160,12 +176,22 @@ __global__ void __launch_bounds__(NT, MT == 1 ? 2 : 1) gemmr_kernel(const Args a
 #pragma unroll
                 for (int m = 0; m < MT; ++m) {
                     int t0, t1;
-                    gemm8::mma_s8p(t0, t1, af[m][0], b[0], gemm8::MAGIC_I, gemm8::MAGIC_I);
-                    gemm8::mma_s8p(t0, t1, af[m][1], b[1], t0, t1);
-                    gemm8::mma_s8p(t0, t1, af[m][2], b[2], t0, t1);
-                    gemm8::mma_s8p(t0, t1, af[m][3], b[3], t0, t1);
-                    acc[m][n][0] = fmaf(__int_as_float(t0), dv.x, acc[m][n][0]);
-                    acc[m][n][1] = fmaf(__int_as_float(t1), dv.y, acc[m][n][1]);
+                    if (ABL & 2) {
+                        t0 = (int)((af[m][0] ^ b[0]) + (af[m][1] ^ b[1]) + (af[m][2] ^ b[2]) + (af[m][3] ^ b[3]));
+                        t1 = t0 + 1;
+                    } else {
+                        gemm8::mma_s8p(t0, t1, af[m][0], b[0], gemm8::MAGIC_I, gemm8::MAGIC_I);
+                        gemm8::mma_s8p(t0, t1, af[m][1], b[1], t0, t1);
+                        gemm8::mma_s8p(t0, t1, af[m][2], b[2], t0, t1);
+                        gemm8::mma_s8p(t0, t1, af[m][3], b[3], t0, t1);
+                    }
+                    if (ABL & 16) {
+                        acc[m][n][0] = __int_as_float(__float_as_int(acc[m][n][0]) + t0);
+                        acc[m][n][1] = __int_as_float(__float_as_int(acc[m][n][1]) + t1);
+                    } else {
+                        acc[m][n][0] = fmaf(__int_as_float(t0), dv.x, acc[m][n][0]);
+                        acc[m][n][1] = fmaf(__int_as_float(t1), dv.y, acc[m][n][1]);
+                    }
                 }
             }
         }
@@ -185,14 +211,14 @@ __global__ void __launch_bounds__(NT, MT == 1 ? 2 : 1) gemmr_kernel(const Args a
         if (st + 1 < nst) {
             xstore(smem + (buf ^ 1) * C::BYTES);
             if (st + 2 < nst) wload(W0, st + 2);
-            __syncthreads();
+            if (!(ABL & 8)) __syncthreads();
             buf ^= 1;
             if (st + 2 < nst) xload(st + 2);
             compute(W1, smem + buf * C::BYTES);
             if (st + 2 < nst) {
                 xstore(smem + (buf ^ 1) * C::BYTES);
                 if (st + 3 < nst) wload(W1, st + 3);
-                __syncthreads();
+                if (!(ABL & 8)) __syncthreads();
                 buf ^= 1;
                 if (st + 3 < nst) xload(st + 3);
             }
@@ -274,9 +300,9 @@ __global__ void __launch_bounds__(NT, MT == 1 ? 2 : 1) gemmr_kernel(const Args a
     }
 }
 
-template <int RPL, int BN, int MT, int EPI>
+template <int RPL, int BN, int MT, int EPI, int ABL = 0>
 static cudaError_t launchr_t(const Args& a, cudaStream_t s) {
-    auto k = gemmr_kernel<RPL, BN, MT, EPI>;
+    auto k = gemmr_kernel<RPL, BN, MT, EPI, ABL>;
     const int smem = 2 * SCfg<BN>::BYTES;
     static int attr_dev_mask = 0;
     int dev = 0;
