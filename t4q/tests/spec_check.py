@@ -46,6 +46,9 @@ def main():
     ap.add_argument("--sections", default="ref,v4,v5,prof")
     ap.add_argument("--stop", type=int, default=1, help="stop on EOS")
     ap.add_argument("--rounds", type=int, default=1)
+    ap.add_argument("--trace_ks", default="3")
+    ap.add_argument("--ngs", default="0", help="prompt-lookup thresholds to run for each k (0 = MTP only)")
+    ap.add_argument("--gate_prompts", default="P0,P1")
     a = ap.parse_args()
     secs = set(a.sections.split(","))
 
@@ -145,20 +148,22 @@ def main():
         R["spec"] = {}
         ks = [int(x) for x in a.ks.split(",") if x]
         cfgs = []
+        ngs = [int(x) for x in a.ngs.split(",") if x]
         for dvh in [int(x) for x in a.dvs.split(",")]:
             for k in ks:
-                cfgs.append((k, dvh))
+                for ng in ngs:
+                    cfgs.append((k, dvh, ng))
         for k in [int(x) for x in a.dv0_ks.split(",") if x]:
-            if (k, 0) not in cfgs:
-                cfgs.append((k, 0))
+            if (k, 0, 0) not in cfgs:
+                cfgs.append((k, 0, 0))
         for rnd in range(a.rounds):
-            for k, dvh in cfgs:
-                name = f"k{k}_dv{dvh}" + (f"_r{rnd}" if rnd else "")
+            for k, dvh, ng in cfgs:
+                name = f"k{k}_dv{dvh}" + (f"_ng{ng}" if ng else "") + (f"_r{rnd}" if rnd else "")
                 res = {}
                 try:
                     for p in ids:
-                        out, t0, t1 = run(p, a.gen, {"spec_k": k, "spec_dv": dvh})
-                        s = eng.stats().get("spec", {})
+                        out, t0, t1 = run(p, a.gen, {"spec_k": k, "spec_dv": dvh, "spec_ng": ng})
+                        s = eng.stats().get("spec", {}).get("last", {})
                         rp = ref[p]
                         nmin = min(len(out), len(rp))
                         ident = bool(len(out) == len(rp) and np.array_equal(out, rp))
@@ -168,10 +173,13 @@ def main():
                             div = int(neq[0]) if len(neq) else nmin
                         res[p] = {"n": int(len(out)), "tok_s": round((len(out) - 1) / (t1 - t0), 2), "identical": ident,
                                   "first_divergence": div, "accept_rate": s.get("accept_rate"),
-                                  "tokens_per_step": s.get("tokens_per_step"), "hist": s.get("last_hist"),
-                                  "dv_in_subset": s.get("dv_in_subset"), "t0": t0, "t1": t1}
+                                  "tokens_per_step": s.get("tokens_per_step"), "steps": s.get("steps"),
+                                  "hist_ng": s.get("hist_ng"),
+                                  "hist": eng.stats().get("spec", {}).get("last_hist"),
+                                  "dv_in_subset": eng.stats().get("spec", {}).get("dv_in_subset"), "t0": t0, "t1": t1}
                         log("spec", name, p, res[p])
                     eng.set_option("spec_k", 0)
+                    eng.set_option("spec_ng", 0)
                 except Exception:  # noqa: BLE001
                     res["error"] = traceback.format_exc()[-3000:]
                     log(res["error"])
@@ -184,10 +192,11 @@ def main():
         ok = [v for v in R["spec"].values() if "error" not in v]
         R["V5_pass"] = bool(ok) and all(v[p]["identical"] for v in ok for p in ids)
         best = None
+        gp = [p for p in a.gate_prompts.split(",") if p in ids]
         for name, v in R["spec"].items():
             if "error" in v or not all(v[p]["identical"] for p in ids):
                 continue
-            m = min(v[p]["tok_s"] for p in ids)
+            m = min(v[p]["tok_s"] for p in gp)
             if best is None or m > best[1]:
                 best = (name, m)
         R["best_spec"] = {"config": best[0], "min_tok_s_over_prompts": best[1]} if best else None
@@ -214,6 +223,26 @@ def main():
                 log("prof", R["prof"])
         except Exception:  # noqa: BLE001
             R["prof_error"] = traceback.format_exc()[-2000:]
+        save()
+    # ---------------------------------------------------------------- CUPTI timelines: plain decode vs spec graphs
+    if "trace" in secs:
+        try:
+            p = list(ids)[0]
+            eng.set_option("spec_k", 0)
+            eng.reset()
+            eng.prefill(ids[p])
+            eng.set_option("trace", 24)
+            R["trace_plain"] = eng.stats().get("trace")
+            for k in [int(x) for x in a.trace_ks.split(",") if x]:
+                eng.set_option("spec_trace", 12)
+                out, t0, t1 = run(p, 64, {"spec_k": k, "spec_dv": 1})
+                eng.set_option("spec_trace", 0)
+                eng.set_option("spec_k", 0)
+                R[f"trace_spec_k{k}"] = eng.stats().get("spec_trace")
+                log("trace k", k, str(R[f"trace_spec_k{k}"])[:400])
+        except Exception:  # noqa: BLE001
+            R["trace_error"] = traceback.format_exc()[-2000:]
+            log(R["trace_error"])
         save()
     R["final_stats"] = {k: v for k, v in eng.stats().items() if k in ("spec", "mtp", "p2p", "arpub")}
     save()

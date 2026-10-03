@@ -19,6 +19,9 @@
 #include <cstring>
 #include <vector>
 
+#include <map>
+
+#include "cupti_trace.h"
 #include "kernels/tp_gemv_impl.cuh"
 #include "model.h"
 #include "tp.h"
@@ -324,7 +327,9 @@ struct XArgs {
     int* yv;                // verify argmax per column [MMAX]
     int* ring;              // host-mapped token ring (GPU0) or nullptr
     int* hcnt;              // host-mapped emitted-token counter (GPU0) or nullptr
-    int* hist;              // [MMAX + 1] accepted-length histogram (device)
+    int* hist;              // [MMAX + 1] accepted-length histogram (device); [MMAX + 1 ..] the same for n-gram steps
+    int* htok;              // token history by position (G.prompt): emitted tokens are appended
+    int max_ctx;
 };
 template <int MODE>
 __global__ void k_argmax_x(const XArgs a) {
@@ -386,6 +391,8 @@ __global__ void k_argmax_x(const XArgs a) {
     st->sidx = (st->sidx + n + 1) % a.ns;
     st->token = s_y[n];
     st->last_tok = s_y[n];
+    for (int i = 0; i <= n; i++)
+        if (p + 1 + i < a.max_ctx) a.htok[p + 1 + i] = s_y[i];
     int ne = st->nemit;
     if (a.ring) {
         for (int i = 0; i <= n; i++) a.ring[(ne + i) % RING] = s_y[i];
@@ -396,7 +403,7 @@ __global__ void k_argmax_x(const XArgs a) {
         __threadfence_system();
         *(volatile int*)a.hcnt = ne;
     }
-    if (a.hist) a.hist[n]++;
+    if (a.hist) a.hist[(st->ngu ? MMAX + 1 : 0) + n]++;
     st->step = st->step + 1u;
 }
 
@@ -411,6 +418,38 @@ __global__ void k_select(const float* hp, const int8_t* xq, const int2* xm, cons
     if ((e & 31) == 0) xmd[e >> 5] = xm[(size_t)n * 160 + (e >> 5)];
     if (e == 0) vt[0] = yv[n];
 }
+
+// prompt lookup (n-gram) drafts: the longest (<= ngmax) match of the history suffix ending at P = st->pos (htok[P] =
+// vt[0], the pending token) that ends at an earlier position j (most recent on ties); with a match of >= ngmin tokens
+// the drafts become htok[j + 1 .. j + k] (periodically extended past P), else the MTP drafts stay. 1 block x 1024
+__global__ void __launch_bounds__(1024) k_ngram(const int* htok, StepState* st, int* vt, int k, int ngmin, int ngmax) {
+    __shared__ int s_best;
+    const int P = st->pos, lo = st->ng_lo;
+    if (threadIdx.x == 0) s_best = -1;
+    __syncthreads();
+    const int pt = htok[P];
+    for (int j = lo + threadIdx.x; j < P; j += blockDim.x) {
+        if (htok[j] != pt) continue;
+        int l = 1;
+        while (l < ngmax && j - l >= lo && htok[j - l] == htok[P - l]) l++;
+        if (l >= ngmin) atomicMax(&s_best, (l << 20) | j);
+    }
+    __syncthreads();
+    if (threadIdx.x != 0) return;
+    const int b = s_best;
+    st->ngu = b >= 0;
+    if (b < 0) return;
+    const int j = b & 0xFFFFF, per = P - j;
+    for (int i = 1; i <= k; i++) {
+        int q = j + i;
+        while (q > P) q -= per;
+        vt[i] = htok[q];
+    }
+}
+
+// timeline marker between graphs (spec_trace)
+__global__ void k_mark_draft_end() {}
+__global__ void k_mark_verify_end() {}
 
 // debug (spec_force): drafts are the expected continuation stored in the prompt buffer
 __global__ void k_force(int* vt, const int* prompt, const StepState* st, int k, int max_ctx) {
@@ -507,7 +546,7 @@ struct SG {  // per GPU
 };
 struct Spec {
     SG G[2];
-    int k = 0, dv = -1, force = 0;  // configuration of the captured graphs
+    int k = 0, dv = -1, force = 0, ng = 0, ngmax = 0;  // configuration of the captured graphs
     int* h_cnt = nullptr;           // host-mapped emitted-token counter (GPU0 writes)
     int* d_cnt = nullptr;
     bool active = false;            // spec state (snapshots / ring / MTP KV) is in sync with the engine
@@ -515,8 +554,14 @@ struct Spec {
     long steps = 0, emitted = 0, drafted = 0, iters_timed = 0;
     double gen_s = 0, ms_draft = 0, ms_verify = 0;
     int last_hist[MMAX + 1] = {0};
+    int last_hist_ng[MMAX + 1] = {0};  // steps whose drafts came from prompt lookup
     long dv_hits = 0, dv_total = 0;  // target tokens inside the draft vocab (M5b in-subset rate)
     double prep_s = 0;
+    // last t4q_generate call
+    int last_k = 0, last_dv = 0;
+    long last_steps = 0, last_acc = 0;
+    double last_s = 0;
+    std::string trace_json;
 };
 
 template <class T>
@@ -581,7 +626,7 @@ Spec* spec_get(t4q_ctx* c) {
         B.apart = dz<float>((size_t)MMAX * 2 * NBA);
         B.vt = dz<int>(MMAX);
         B.yv = dz<int>(MMAX);
-        B.hist = dz<int>(MMAX + 1);
+        B.hist = dz<int>(2 * (MMAX + 1));
         B.pscr = dz<int>(4);
         B.Sb = dz<float>((size_t)NSNAP * 48 * SZS);
         B.ring = dz<float>((size_t)48 * CR * 5120);
@@ -708,6 +753,8 @@ struct SEnq {
         a.ring = g == 0 ? S.d_ring : nullptr;
         a.hcnt = g == 0 ? P->d_cnt : nullptr;
         a.hist = B.hist;
+        a.htok = G.prompt;
+        a.max_ctx = S.max_ctx;
         k_argmax_x<0><<<1, 32 * M, 0, s>>>(a);
         chk("accept");
     }
@@ -740,12 +787,13 @@ struct SEnq {
         a.apart = B.apart; a.M = 1; a.row0 = rows * g;
         a.amb = B.amb[1]; a.aflag = B.aflag[1]; a.peer_amb = B.peer_amb[1]; a.peer_aflag = B.peer_aflag[1];
         a.st = G.st; a.idx = 200 + di; a.k = k; a.ns = k + 2; a.di = di;
-        a.vt = B.vt; a.yv = B.yv; a.ring = nullptr; a.hcnt = nullptr; a.hist = nullptr;
+        a.vt = B.vt; a.yv = B.yv; a.ring = nullptr; a.hcnt = nullptr; a.hist = nullptr; a.htok = nullptr;
+        a.max_ctx = S.max_ctx;
         k_argmax_x<1><<<1, 32, 0, s>>>(a);
         chk("draft argmax");
     }
     // ---- draft graph: catch-up (k + 1 rows) + first draft, then k - 1 chained drafts
-    void draft(int k, bool dvh, bool force) {
+    void draft(int k, bool dvh, bool force, int ng, int ngmax) {
         mtp_pass(k + 1, B.yv, B.hf, &G.st->vpos, 1, 0, B.hp, B.xq, B.xm);
         k_select<<<20, 256, 0, s>>>(B.hp, B.xq, B.xm, G.st, B.hs, B.xqd, B.xmd, B.yv, B.vt);
         chk("select");
@@ -753,6 +801,10 @@ struct SEnq {
         for (int i = 2; i <= k; i++) {
             mtp_pass(1, B.vt + (i - 1), B.hs, &G.st->pos, i - 1, 3 * (i - 1), B.hs, B.xqd, B.xmd);
             draft_head(i, k, dvh);
+        }
+        if (ng > 0) {
+            k_ngram<<<1, 1024, 0, s>>>(G.prompt, G.st, B.vt, k, ng, ngmax);
+            chk("ngram");
         }
         if (force) {
             k_force<<<1, 1, 0, s>>>(B.vt, G.prompt, G.st, k, S.max_ctx);
@@ -799,7 +851,7 @@ void capture(t4q_ctx* c, Spec* P, int k, bool dvh, bool force) {
             SEnq q(c, P, g);
             try {
                 if (which == 0) q.verify(k);
-                else q.draft(k, dvh, force);
+                else q.draft(k, dvh, force, c->tps->spec_ng, c->tps->spec_ngmax);
             } catch (...) {
                 cudaStreamEndCapture(G.s, &gr);
                 throw;
@@ -812,6 +864,8 @@ void capture(t4q_ctx* c, Spec* P, int k, bool dvh, bool force) {
     P->k = k;
     P->dv = dvh;
     P->force = force;
+    P->ng = c->tps->spec_ng;
+    P->ngmax = c->tps->spec_ngmax;
 }
 
 // enter spec mode: DeltaNet state -> snapshot 0, conv ring -> CR slots, MTP KV catch-up over the prompt rows,
@@ -842,10 +896,13 @@ void spec_enter(t4q_ctx* c, Spec* P) {
         s2.nacc = 0;
         s2.sidx = 0;
         s2.nemit = 0;
+        s2.ngu = 0;
+        s2.ng_lo = st.n_prompt == pos ? 0 : pos;  // tokens decoded outside spec mode are not in the history
+        CK(cudaMemcpyAsync(G.prompt + pos, &st.token, 4, cudaMemcpyHostToDevice, G.s));
         CK(cudaMemcpyAsync(G.st, &s2, sizeof s2, cudaMemcpyHostToDevice, G.s));
         CK(cudaMemcpyAsync(B.yv, &st.token, 4, cudaMemcpyHostToDevice, G.s));
         CK(cudaMemcpyAsync(B.hf, G.xn, DM * 4, cudaMemcpyDeviceToDevice, G.s));  // h_final of position pos - 1
-        CK(cudaMemsetAsync(B.hist, 0, (MMAX + 1) * 4, G.s));
+        CK(cudaMemsetAsync(B.hist, 0, 2 * (MMAX + 1) * 4, G.s));
         CK(cudaStreamSynchronize(G.s));
     }
     *(volatile int*)P->h_cnt = 0;
@@ -963,7 +1020,8 @@ int tp_spec_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop,
     if (k < 1 || k > MMAX - 1) throw std::runtime_error("spec_k out of range");
     const bool dvh = S.spec_dv && S.G[0].mtp.dv > 0;
     const bool force = S.spec_force != 0;
-    if (!P->G[0].ev || P->k != k || P->dv != (int)dvh || P->force != (int)force) {
+    if (!P->G[0].ev || P->k != k || P->dv != (int)dvh || P->force != (int)force || P->ng != S.spec_ng ||
+        P->ngmax != S.spec_ngmax) {
         sync2(c);
         capture(c, P, k, dvh, force);
     }
@@ -993,6 +1051,71 @@ int tp_spec_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop,
         dn = &c->dumps["spec_n"];
         dl->clear();
         dn->clear();
+    }
+    if (S.spec_trace > 0 && !dbg) {
+        // CUPTI timeline of spec_trace iterations, split into draft / verify segments by marker kernels
+        std::string err;
+        const int nt = std::min<long>(S.spec_trace, (S.max_ctx - pos0 - 2 * (k + 1)) / (k + 1));
+        if (nt > 1 && trace::begin(err)) {
+            for (int it = 0; it < nt; it++) {
+                for (int g = 0; g < 2; g++) {
+                    SG& B = P->G[g];
+                    CK(cudaSetDevice(g));
+                    CK(cudaGraphLaunch(B.ed, S.G[g].s));
+                    k_mark_draft_end<<<1, 32, 0, S.G[g].s>>>();
+                    CK(cudaGraphLaunch(B.ev, S.G[g].s));
+                    k_mark_verify_end<<<1, 32, 0, S.G[g].s>>>();
+                }
+                launched++;
+            }
+            sync2(c);
+            std::vector<trace::Rec> R = trace::end();
+            iters = launched;
+            std::string js = "{\"iters\": " + std::to_string(nt);
+            for (int g = 0; g < 2; g++) {
+                std::map<std::string, std::pair<double, int>> agg[2];
+                double busy[2] = {0, 0}, span[2] = {0, 0};
+                int seg = 0, it = 0;
+                uint64_t s0 = 0, last_end = 0;
+                for (auto& r : R) {
+                    if (r.dev != g) continue;
+                    const bool m1 = r.name.find("k_mark_draft_end") != std::string::npos;
+                    const bool m2 = r.name.find("k_mark_verify_end") != std::string::npos;
+                    if (m1 || m2) {
+                        if (it > 0 && s0) span[seg] += (last_end - s0) * 1e-3;  // skip the first iteration
+                        seg = m1 ? 1 : 0;
+                        if (m2) it++;
+                        s0 = 0;
+                        continue;
+                    }
+                    if (!s0) s0 = r.start;
+                    last_end = r.end;
+                    if (it == 0) continue;
+                    const double d = (r.end - r.start) * 1e-3;
+                    agg[seg][r.name].first += d;
+                    agg[seg][r.name].second++;
+                    busy[seg] += d;
+                }
+                const int m = std::max(1, it - 1);
+                for (int sg = 0; sg < 2; sg++) {
+                    char b[200];
+                    snprintf(b, sizeof b, ", \"gpu%d_%s\": {\"span_us\": %.1f, \"busy_us\": %.1f, \"by_name\": {", g,
+                             sg ? "verify" : "draft", span[sg] / m, busy[sg] / m);
+                    js += b;
+                    bool first = true;
+                    for (auto& kv : agg[sg]) {
+                        snprintf(b, sizeof b, "%s\"%s\": [%.1f, %.2f]", first ? "" : ", ", kv.first.c_str(),
+                                 kv.second.first / m, (double)kv.second.second / m);
+                        js += b;
+                        first = false;
+                    }
+                    js += "}}";
+                }
+            }
+            P->trace_json = js + "}";
+        } else if (!err.empty()) {
+            P->trace_json = "{\"error\": \"" + err + "\"}";
+        }
     }
     while (!done) {
         // worst case each iteration advances k + 1 positions; the verify touches pos .. pos + k
@@ -1061,20 +1184,26 @@ int tp_spec_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop,
     check_err2(c);
     {
         // stats: accepted-length histogram (GPU0), steps
-        std::vector<int> h(MMAX + 1);
+        std::vector<int> h(2 * (MMAX + 1));
         CK(cudaSetDevice(0));
-        CK(cudaMemcpy(h.data(), P->G[0].hist, (MMAX + 1) * 4, cudaMemcpyDeviceToHost));
+        CK(cudaMemcpy(h.data(), P->G[0].hist, 2 * (MMAX + 1) * 4, cudaMemcpyDeviceToHost));
         long steps = 0, acc = 0;
         for (int i = 0; i <= MMAX; i++) {
-            P->last_hist[i] = h[i];
-            steps += h[i];
-            acc += (long)i * h[i];
+            P->last_hist[i] = h[i] + h[MMAX + 1 + i];
+            P->last_hist_ng[i] = h[MMAX + 1 + i];
+            steps += P->last_hist[i];
+            acc += (long)i * P->last_hist[i];
         }
         P->steps += steps;
         P->drafted += steps * k;
         P->emitted += acc + steps;
+        P->last_k = k;
+        P->last_dv = dvh;
+        P->last_steps = steps;
+        P->last_acc = acc;
     }
     spec_leave(c, P);
+    P->last_s = secs(t0);
     P->gen_s += secs(t0);
     c->gen_s += secs(t0);
     c->gen_tokens += n;
@@ -1084,18 +1213,26 @@ int tp_spec_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop,
 std::string tp_spec_stats(t4q_ctx* c) {
     if (!c->tps || !c->tps->spec) return "";
     Spec* P = (Spec*)c->tps->spec;
-    char b[1024];
-    std::string hist;
+    char b[1536];
+    std::string hist, hng;
     for (int i = 0; i <= MMAX; i++) hist += (i ? "," : "") + std::to_string(P->last_hist[i]);
+    for (int i = 0; i <= MMAX; i++) hng += (i ? "," : "") + std::to_string(P->last_hist_ng[i]);
     snprintf(b, sizeof b,
              ", \"spec\": {\"k\": %d, \"dv\": %d, \"steps\": %ld, \"drafted\": %ld, \"emitted\": %ld, "
              "\"accept_rate\": %.4f, \"tokens_per_step\": %.4f, \"gen_s\": %.3f, \"prep_s\": %.3f, "
              "\"ms_draft\": %.3f, \"ms_verify\": %.3f, \"iters_timed\": %ld, \"last_hist\": [%s], "
-             "\"dv_in_subset\": %.4f, \"dv_total\": %ld}",
+             "\"dv_in_subset\": %.4f, \"dv_total\": %ld, \"last\": {\"k\": %d, \"dv\": %d, \"steps\": %ld, "
+             "\"accepted\": %ld, \"accept_rate\": %.4f, \"tokens_per_step\": %.4f, \"secs\": %.3f, \"ng\": %d, "
+             "\"hist_ng\": [%s]}}",
              P->k, P->dv, P->steps, P->drafted, P->emitted,
              P->drafted ? (double)(P->emitted - P->steps) / P->drafted : 0.0,
              P->steps ? (double)P->emitted / P->steps : 0.0, P->gen_s, P->prep_s,
              P->iters_timed ? P->ms_draft / P->iters_timed : 0.0, P->iters_timed ? P->ms_verify / P->iters_timed : 0.0,
-             P->iters_timed, hist.c_str(), P->dv_total ? (double)P->dv_hits / P->dv_total : 0.0, P->dv_total);
-    return b;
+             P->iters_timed, hist.c_str(), P->dv_total ? (double)P->dv_hits / P->dv_total : 0.0, P->dv_total, P->last_k,
+             P->last_dv, P->last_steps, P->last_acc,
+             P->last_steps ? (double)P->last_acc / ((double)P->last_steps * std::max(1, P->last_k)) : 0.0,
+             P->last_steps ? (double)(P->last_acc + P->last_steps) / P->last_steps : 0.0, P->last_s, P->ng, hng.c_str());
+    std::string r = b;
+    if (!P->trace_json.empty()) r += ", \"spec_trace\": " + P->trace_json;
+    return r;
 }

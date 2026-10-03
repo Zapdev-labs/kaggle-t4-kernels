@@ -34,7 +34,9 @@ struct StepState {
     int nacc;       // drafts accepted by the last verify (0..k)
     int sidx;       // DeltaNet snapshot buffer holding the state after the accepted tokens
     int nemit;      // tokens emitted by spec steps (GPU0 also mirrors it to host memory)
-    int pad2[4];
+    int ngu;        // the drafts of this step came from prompt lookup (n-gram), not MTP
+    int ng_lo;      // first valid position of the token history (G.prompt) for prompt lookup
+    int pad2[2];
 };
 
 struct FW {  // fast packed weight on one GPU
@@ -364,6 +366,9 @@ struct State {
     int spec_dbg = 0;     // debug: copy the accepted verify columns' logits to dumps["spec_logits"] every step
     int spec_prof = 0;    // 1: one iteration in flight, per-graph GPU0 event times (stats spec.ms_draft / ms_verify)
     int spec_ahead = 4;   // spec iterations enqueued before the host reads the token ring
+    int spec_ng = 0;      // prompt lookup: matches of >= spec_ng tokens (incl. the pending one) replace the MTP drafts (0 = off)
+    int spec_ngmax = 8;   // longest suffix compared
+    int spec_trace = 0;   // > 0: CUPTI timeline of that many spec iterations at the start of t4q_generate (stats spec_trace)
     std::string spec_json;
 };
 

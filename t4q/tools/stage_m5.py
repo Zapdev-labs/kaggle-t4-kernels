@@ -35,8 +35,12 @@ RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
 GGUF = "Qwen3.8-27B-Q4_0.gguf"
-SPEC_ARGS = ["--gen", "512", "--ks", "2,3,4,5,6", "--dvs", "1", "--dv0_ks", "3", "--sections", "ref,v4,v5,prof"]
+SPEC_ARGS = ["--gen", "512", "--ks", "3,4", "--dvs", "1", "--dv0_ks", "", "--sections", "ref,v4,v5,trace",
+             "--trace_ks", "3", "--prompts", "P0,P1,P2", "--ngs", "0,3,5"]
 NOP2P_ARGS = ["--gen", "256", "--ks", "3", "--dvs", "1", "--dv0_ks", "", "--sections", "ref,v4,v5"]
+RUN_NOP2P = False
+# extra processes (env at load time): (name, env, args)
+VARIANTS = []
 
 
 def el():
@@ -178,6 +182,59 @@ def setup_llama():
     return dst, sorted(x.name for x in dst.iterdir())
 
 
+# P2: a code-edit prompt (the answer repeats most of the input), for prompt-lookup drafting
+P2_CODE = """import os
+import json
+
+
+def load_config(path):
+    with open(path) as f:
+        cfg = json.load(f)
+    out = {}
+    for k, v in cfg.items():
+        if isinstance(v, str) and v.startswith("$"):
+            out[k] = os.environ.get(v[1:], "")
+        else:
+            out[k] = v
+    return out
+
+
+def merge(a, b):
+    res = dict(a)
+    for k, v in b.items():
+        if k in res and isinstance(res[k], dict) and isinstance(v, dict):
+            res[k] = merge(res[k], v)
+        else:
+            res[k] = v
+    return res
+
+
+def flatten(d, prefix=""):
+    items = []
+    for k, v in d.items():
+        key = prefix + "." + k if prefix else k
+        if isinstance(v, dict):
+            items.extend(flatten(v, key).items())
+        else:
+            items.append((key, v))
+    return dict(items)
+
+
+class Registry:
+    def __init__(self):
+        self.items = {}
+
+    def register(self, name, fn):
+        if name in self.items:
+            raise KeyError(name)
+        self.items[name] = fn
+
+    def get(self, name):
+        return self.items[name]
+
+    def names(self):
+        return sorted(self.items)
+"""
 PROMPTS = {
     "P0": "Write a complete Python module `lru_cache.py` that implements a thread-safe LRU cache class with get, put, "
           "delete, resize and a `__len__`, using an OrderedDict and a threading.Lock. Include type hints, docstrings, "
@@ -185,6 +242,8 @@ PROMPTS = {
     "P1": "Write a Python script that parses an Apache access log file, aggregates requests per IP, per status code and "
           "per hour, detects IPs with more than 100 requests per minute, and prints a report. Use argparse, "
           "dataclasses, collections.Counter and re. Include docstrings and example usage.",
+    "P2": "Add type hints and a short docstring to every function and method in this Python module. Do not change any "
+          "logic. Reply with the complete updated module in one code block.\n\n```python\n" + P2_CODE + "```",
 }
 WIKI = (
     "The history of computing hardware covers the developments from early simple devices to aid calculation to modern "
@@ -280,8 +339,8 @@ def summarize(val):
         for p, v in cfg.items():
             if isinstance(v, dict) and "t0" in v:
                 v["clocks"] = clocks_between(v["t0"], v["t1"])
-    keep = ("load_s", "selftest_worst", "selftest_mtp", "vram_used_mib", "p2p", "mtp", "ref", "V4", "V4_pass",
-            "V4_error", "spec", "V5_pass", "best_spec", "gate_60", "prof", "prof_error", "final_stats")
+    keep = ("load_s", "selftest_worst", "vram_used_mib", "p2p", "mtp", "ref", "V4", "V4_pass",
+            "V4_error", "spec", "V5_pass", "best_spec", "gate_60", "prof", "prof_error", "final_stats", "trace_error")
     return {k: val.get(k) for k in keep if k in val}
 
 
@@ -306,6 +365,12 @@ def main():
         if not model:
             result("fatal", "download failed")
             return
+        cup = sorted(glob.glob("/usr/local/cuda/**/libcupti.so*", recursive=True)) + sorted(
+            glob.glob("/usr/local/lib/python3*/dist-packages/nvidia/cuda_cupti/lib/libcupti.so*")) + sorted(
+            glob.glob("/usr/local/cuda*/extras/CUPTI/lib64/libcupti.so*"))
+        result("cupti", cup[:3])
+        if cup:
+            os.environ["T4Q_CUPTI"] = cup[0]
         t = time.time()
         vout = OUT / "results_spec.json"
         remaining = DEADLINE - el() - 60
@@ -315,7 +380,16 @@ def main():
         val = json.loads(vout.read_text()) if vout.exists() else {}
         result("spec_check", {"rc": rc, "secs": round(time.time() - t), "tail": o[-3000:] if rc else ""})
         result("summary", summarize(val))
-        if val.get("p2p") and DEADLINE - el() > 420:
+        for vname, venv, vargs in VARIANTS:
+            if DEADLINE - el() < 420:
+                break
+            vo = OUT / f"results_spec_{vname}.json"
+            rc, o = stream([sys.executable, "-u", str(t4q / "tests" / "spec_check.py"), "--model", model, "--work",
+                            str(WORK), "--out", str(vo), "--lib", str(t4q / "build" / "libt4q.so")] + vargs,
+                           f"spec_check_{vname}.log", timeout=DEADLINE - el() - 60, env=dict(os.environ, **venv))
+            vv = json.loads(vo.read_text()) if vo.exists() else {}
+            result(vname, {"rc": rc, "tail": o[-2000:] if rc else ""} | summarize(vv))
+        if RUN_NOP2P and val.get("p2p") and DEADLINE - el() > 420:
             vout2 = OUT / "results_spec_nop2p.json"
             rc, o = stream([sys.executable, "-u", str(t4q / "tests" / "spec_check.py"), "--model", model, "--work",
                             str(WORK), "--out", str(vout2), "--lib", str(t4q / "build" / "libt4q.so")] + NOP2P_ARGS,
