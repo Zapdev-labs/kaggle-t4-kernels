@@ -39,7 +39,8 @@ struct Cfg {
     static constexpr int O_DX = O_X + BN * 64;      // [2 blocks][BN] float
     static constexpr int O_BI = O_DX + 2 * BN * 4;  // [BN] float: M * sum d_x over the 4-block group ending here
     static constexpr int BYTES = O_BI + BN * 4;
-    static constexpr int NXA = BN * 4 / NT;         // 16-B activation units per thread per stage
+    static constexpr int NXA = (BN * 4 + NT - 1) / NT;  // 16-B activation units per thread per stage
+    static constexpr bool XP = BN * 4 < NT;            // BN 32: only threads < BN * 4 stage activations
 };
 
 static inline int smem_bytes(int bn) { return bn == 256 ? 2 * Cfg<256>::BYTES : 2 * Cfg<128>::BYTES; }
@@ -74,6 +75,7 @@ struct Args {
     int8_t* oq = nullptr;  // [Tp][N/2]
     float* odx = nullptr;  // [N/128][Tp] (64-feature groups)
     __half* yh = nullptr;  // if set: fp16 output yh[t * ldy + n] instead of y (no accumulate)
+    __half* yh2 = nullptr; // gemm9: second copy of the fp16 output (the peer GPU's all-reduce mailbox, P2P stores)
     int dxs = 0;           // gemm9: row stride of dx (0 = Tp); lets a launch cover a token slice of a wider batch
 };
 
@@ -289,7 +291,7 @@ __device__ __forceinline__ void stage_store(const Stage<BN>& S, unsigned char* b
 #pragma unroll
     for (int i = 0; i < C::NXA; ++i) {
         const int U = tid + i * NT, tok = U >> 2, u = U & 3;
-        *(int4*)(buf + C::O_X + tok * 64 + swz(tok, u) * 16) = S.xa[i];
+        if (!C::XP || U < BN * 4) *(int4*)(buf + C::O_X + tok * 64 + swz(tok, u) * 16) = S.xa[i];
     }
     if (tid < BN / 2) {
         float2* dxs = (float2*)(buf + C::O_DX);
@@ -504,7 +506,8 @@ __device__ __forceinline__ void stage_load9(Stage<BN>& S, const WPtr<FMT, RPL>& 
     }
     const int8_t* xp = xb + kb0 * 32;
 #pragma unroll
-    for (int i = 0; i < Cfg<BN>::NXA; ++i) S.xa[i] = __ldg((const int4*)(xp + i * xstep));
+    for (int i = 0; i < Cfg<BN>::NXA; ++i)
+        if (!Cfg<BN>::XP || tid + i * NT < BN * 4) S.xa[i] = __ldg((const int4*)(xp + i * xstep));
     if (GA != 0 && tid < BN / 2) {
         if (GA == 32) {
             S.dx0 = __ldg((const float2*)(dxb + kb0 * tps));
@@ -517,7 +520,7 @@ __device__ __forceinline__ void stage_load9(Stage<BN>& S, const WPtr<FMT, RPL>& 
 }
 
 template <int FMT, int RPL, int BN, int GA, int AB = 0>
-__global__ void __launch_bounds__(NT, BN == 64 ? 2 : 1) gemm9_kernel(const Args a) {
+__global__ void __launch_bounds__(NT, BN <= 64 ? 2 : 1) gemm9_kernel(const Args a) {
     using C = Cfg<BN>;
     constexpr int NG = C::NG, WN = C::WN;
     extern __shared__ __align__(16) unsigned char smem[];
@@ -728,7 +731,9 @@ __global__ void __launch_bounds__(NT, BN == 64 ? 2 : 1) gemm9_kernel(const Args 
                 if (tok < a.T) {
                     const float v = GA == 0 ? (float)__float_as_int(acc[i][g][e]) * (a.dx[tok] * sr) : acc[i][g][e] * sr;
                     if (a.yh) {
-                        a.yh[(size_t)tok * a.ldy + row] = __float2half_rn(v);
+                        const __half hv = __float2half_rn(v);
+                        a.yh[(size_t)tok * a.ldy + row] = hv;
+                        if (a.yh2) a.yh2[(size_t)tok * a.ldy + row] = hv;
                     } else {
                         float* p = a.y + (size_t)tok * a.ldy + row;
                         *p = a.accumulate ? *p + v : v;
@@ -760,6 +765,7 @@ static cudaError_t launch9_t(const Args& a, cudaStream_t s) {
 // or 64 -- 64 / 128 for batched decode)
 static inline cudaError_t launch9_silu(int fmt, int rpl, const Args& a, cudaStream_t s, int bn = 256) {
     if (fmt != gemv::FAST_P4) return cudaErrorInvalidValue;
+    if (bn == 32) return rpl == 4 ? launch9_t<gemv::FAST_P4, 4, 32, 64, 64>(a, s) : launch9_t<gemv::FAST_P4, 2, 32, 64, 64>(a, s);
     if (bn == 64) return rpl == 4 ? launch9_t<gemv::FAST_P4, 4, 64, 64, 64>(a, s) : launch9_t<gemv::FAST_P4, 2, 64, 64, 64>(a, s);
     if (bn == 128) return rpl == 4 ? launch9_t<gemv::FAST_P4, 4, 128, 64, 64>(a, s) : launch9_t<gemv::FAST_P4, 2, 128, 64, 64>(a, s);
     return rpl == 4 ? launch9_t<gemv::FAST_P4, 4, 256, 64, 64>(a, s) : launch9_t<gemv::FAST_P4, 2, 256, 64, 64>(a, s);
@@ -770,7 +776,7 @@ static inline cudaError_t launch9(int fmt, int rpl, int bn, int ga, const Args& 
 #define T4Q_G9(F, R)                                                                                     \
     if (fmt == F && rpl == R) {                                                                          \
         if (ga == 64) return bn == 256 ? launch9_t<F, R, 256, 64>(a, s) : bn == 64 ? launch9_t<F, R, 64, 64>(a, s) \
-                                       : launch9_t<F, R, 128, 64>(a, s);                                 \
+                                       : bn == 32 ? launch9_t<F, R, 32, 64>(a, s) : launch9_t<F, R, 128, 64>(a, s); \
         if (ga == 0) return bn == 256 ? launch9_t<F, R, 256, 0>(a, s) : launch9_t<F, R, 128, 0>(a, s);    \
         return bn == 256 ? launch9_t<F, R, 256, 32>(a, s) : launch9_t<F, R, 128, 32>(a, s);               \
     }
@@ -780,7 +786,8 @@ static inline cudaError_t launch9(int fmt, int rpl, int bn, int ga, const Args& 
 #undef T4Q_G9
     // K6 (Q6_K lm_head, batched decode head): GA 64, bn 64 / 128 only
     if (fmt == gemv::FAST_K6 && rpl == 2 && ga == 64)
-        return bn == 64 ? launch9_t<gemv::FAST_K6, 2, 64, 64>(a, s) : launch9_t<gemv::FAST_K6, 2, 128, 64>(a, s);
+        return bn == 32 ? launch9_t<gemv::FAST_K6, 2, 32, 64>(a, s) : bn == 64 ? launch9_t<gemv::FAST_K6, 2, 64, 64>(a, s)
+                        : launch9_t<gemv::FAST_K6, 2, 128, 64>(a, s);
     return cudaErrorInvalidValue;
 }
 

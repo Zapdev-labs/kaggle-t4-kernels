@@ -1618,7 +1618,7 @@ Pf* pf_get(t4q_ctx* c) {
     tp::State& S = *c->tps;
     const int ub = S.pf_ub;
     Pf* P = (Pf*)S.pf;
-    if (P && P->cap >= ub) return P;
+    if (P && P->cap == ub) return P;  // reallocated whenever pf_ub changes (batched decode shrinks it to save VRAM)
     if (P) {
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
@@ -1788,7 +1788,14 @@ struct PfRun {
     }
     bool rotw(const tp::FW& W) const { return rot && (rmask & wbit(W)); }
     int emax = 7;
-    int tp_force = 0;  // batched decode: GEMM token padding (64 or a multiple of 128), 0 = prefill rule
+    bool p2p_part = false;  // batched decode: fp16 K-split GEMM partials also stored straight into the peer's rx slot
+    int tp_force = 0;  // batched decode: GEMM token padding (32, 64 or a multiple of 128), 0 = prefill rule
+    // largest gemm9 token tile <= cap that divides Tp (Tp is a multiple of 32)
+    static int bn_div(int Tp, int cap) {
+        for (int bn = cap; bn > 32; bn >>= 1)
+            if (Tp % bn == 0) return bn;
+        return 32;
+    }
     int tpad(int Ts) const { return tp_force ? tp_force : g8 ? (Ts + 255) / 256 * 256 : (Ts + 127) / 128 * 128; }
     // pf_arc: chunk rows (a multiple of 128) and count for sub-batch s; 1 chunk = off
     int chunk_rows(int s) const {
@@ -1905,13 +1912,17 @@ struct PfRun {
         } else if (g8 && silu) {
             gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, B.xq, B.dx, nullptr, 0, Ts, Tps);
             a8.oq = B.xq2; a8.odx = B.dx2;
-            e = gemm8::launch9_silu(W.L.fmt, W.L.rpl, a8, G.s, (Tps % 256) ? ((Tps % 128) ? 64 : 128) : 256);
+            e = gemm8::launch9_silu(W.L.fmt, W.L.rpl, a8, G.s, bn_div(Tps, 256));
         } else if (g8) {
             gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, in2 ? B.xq2 : B.xq, in2 ? B.dx2 : B.dx,
                                               y + (size_t)st0[s] * ldy, ldy, Ts, Tps);
-            if (ar16 && y == B.part) { a8.yh = (__half*)B.part + (size_t)st0[s] * ldy; a8.y = nullptr; }
+            if (ar16 && y == B.part) {
+                a8.yh = (__half*)B.part + (size_t)st0[s] * ldy;
+                a8.y = nullptr;
+                if (p2p_part) a8.yh2 = (__half*)P->G[1 - g].rx[ar & 1] + (size_t)st0[s] * ldy;  // send() copies nothing
+            }
             const int pbn = c->tps->pf_bn;
-            const int bn = Tps < 128 ? 64 : pbn ? pbn : (Tps >= 512 ? 256 : 128);
+            const int bn = Tps < 128 ? bn_div(Tps, 64) : pbn ? pbn : (Tps >= 512 ? 256 : 128);
             const int nch = arc_chunks(s);
             if (y == B.part && nch > 1) {  // pf_arc: token chunks, each followed by an event for its AR copy (send)
                 const int cs = chunk_rows(s);
@@ -1932,7 +1943,7 @@ struct PfRun {
                 }
                 chunked[g][s] = true;
             } else {
-                e = gemm8::launch9(W.L.fmt, W.L.rpl, (Tps % bn) ? ((Tps % 128) ? 64 : 128) : bn, ga, a8, G.s);
+                e = gemm8::launch9(W.L.fmt, W.L.rpl, (Tps % bn) ? bn_div(Tps, 128) : bn, ga, a8, G.s);
             }
         } else if (i4 && W.L.fmt != gemv::FAST_K5) {
             if (W.L.fmt == gemv::FAST_P4) e = W.L.rpl == 4 ? gemm::gemm_launch<gemv::FAST_P4, 4, 3>(a, G.s)
@@ -2011,6 +2022,10 @@ struct PfRun {
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
             PfGpu& B = P->G[g];
+            if (p2p_part) {  // the GEMM epilogue already wrote the peer's rx slot: ordering only
+                CK(cudaEventRecord(B.sent[s][sl], S.G[g].s));
+                continue;
+            }
             const int nch = (ar16 && chunked[g][s]) ? arc_chunks(s) : 1;
             if (nch > 1) {  // pf_arc: copy each chunk as soon as its GEMM launch is done
                 const int cs = chunk_rows(s);

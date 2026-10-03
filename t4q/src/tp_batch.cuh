@@ -481,7 +481,7 @@ struct BdRun : PfRun {
             }
             gemm8::quant8(B.xn, D, T, Tp, D, B.xq, B.dx, G.s, 64);
             gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, B.xq, B.dx, Q.logits, 124160, T, Tp);
-            const cudaError_t e = gemm8::launch9(W.L.fmt, W.L.rpl, (Tp % 128) ? 64 : 128, 64, a8, G.s);
+            const cudaError_t e = gemm8::launch9(W.L.fmt, W.L.rpl, bn_div(Tp, 128), 64, a8, G.s);
             if (e != cudaSuccess) throw std::runtime_error(std::string("bd head gemm: ") + cudaGetErrorString(e));
         } else {
             const int nq = T * (D / 32) * 32;
@@ -733,10 +733,11 @@ int tp_batch_step(t4q_ctx* c, int n, const int32_t* slots, int32_t* out) {
     R.P = P;
     R.bd = b;
     R.T = n;
-    R.tp_force = n <= 64 ? 64 : (n + 127) / 128 * 128;
+    R.tp_force = n <= 32 ? 32 : n <= 64 ? 64 : (n + 127) / 128 * 128;
     R.g8 = true;
     R.ga = 64;
     R.ar16 = S.pf_ar16 != 0;
+    R.p2p_part = S.bd_p2p && S.p2p && R.ar16;
     R.nsplit = (maxpos + 1 + S.bd_ch - 1) / S.bd_ch;
     if (S.bd_prof) { R.ev = &ev; R.evn = &evn; }
     R.run_bd();

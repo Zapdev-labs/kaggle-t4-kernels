@@ -1296,6 +1296,7 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     if (k == "pf_keep_h") { S.pf_keep_h = v; return 0; }
     if (k == "bd_head") { if (v != 0 && v != 1) throw std::runtime_error("bd_head must be 0 or 1"); S.bd_head = v; return 0; }
     if (k == "bd_ch") { if (v != 64 && v != 128 && v != 256 && v != 512) throw std::runtime_error("bd_ch must be 64..512"); S.bd_ch = v; return 0; }
+    if (k == "bd_p2p") { S.bd_p2p = v; return 0; }
     if (k == "bd_prof") { S.bd_prof = v; tp_batch_reset_stats(c); return 0; }
     if (k == "bd_reset_stats") { tp_batch_reset_stats(c); return 0; }
     if (k == "pf_bn") { if (v != 0 && v != 128 && v != 256) throw std::runtime_error("pf_bn must be 0, 128 or 256"); S.pf_bn = v; return 0; }
