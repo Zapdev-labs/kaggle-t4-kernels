@@ -401,16 +401,17 @@ def main():
     ap.add_argument("--gen", type=int, default=128)
     ap.add_argument("--tf", type=int, default=16)
     ap.add_argument("--slot_ctx", type=int, default=1024)
-    ap.add_argument("--correct_configs", default="bd_head=1,bd_gemmr=1|1;bd_head=1,bd_gemmr=0|1;bd_head=1,bd_gemmr=1|0")
-    ap.add_argument("--wide_config", default="bd_head=1,bd_gemmr=1|1")
-    ap.add_argument("--bench", default="1000:64:1088:1:1,16,32,48,64::bd_head=1,bd_gemmr=0/bd_head=1,bd_gemmr=1;"
-                                       "4000:32:4128:1:8,16,32:1024:bd_head=1,bd_gemmr=0/bd_head=1,bd_gemmr=1")
+    ap.add_argument("--correct_configs", default="bd_head=1|0;bd_head=1|1;bd_head=0|1")
+    ap.add_argument("--wide_config", default="bd_head=1|1")
+    ap.add_argument("--bench", default="1000:64:1088:1:1,8,16,32,48,64::bd_head=1;"
+                                       "4000:32:4128:1:1,8,16,24,32:1024:bd_head=1;"
+                                       "1000:40:1088:0:16,32,40::bd_head=1")
     ap.add_argument("--steps", type=int, default=12)
     ap.add_argument("--e2e_n", type=int, default=32)
     ap.add_argument("--e2e_prompt", type=int, default=500)
     ap.add_argument("--e2e_gen", type=int, default=512)
     ap.add_argument("--e2e_sf16", type=int, default=1)
-    ap.add_argument("--e2e_opts", default="bd_head=1,bd_gemmr=1,bd_p2p=0,pf_ub=2048")
+    ap.add_argument("--e2e_opts", default="bd_head=1,bd_p2p=0,pf_ub=2048")
     ap.add_argument("--e2e_prefill_per_iter", type=int, default=64)
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--max_ctx", type=int, default=4224)

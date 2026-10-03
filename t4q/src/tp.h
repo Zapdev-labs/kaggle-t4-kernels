@@ -331,7 +331,7 @@ struct State {
     int bd_ch = 128;      // attention positions per split block (fixed, so results do not depend on B)
     int bd_prof = 0;      // 1: per-op event profile of GPU0 per step, accumulated in stats "bd_profile"
     int bd_pfk = 0;       // gemm9 L2 prefetch distance of the weight planes in 32-blocks (0 = off) for batched decode
-    int bd_gemmr = 1;     // P4 GEMMs at 32 / 64-token tiles via gemm_r.cuh (register-direct A fragments, bit-identical to gemm9)
+    int bd_gemmr = 0;     // P4 GEMMs at 32 / 64-token tiles via gemm_r.cuh (register-direct A fragments, bit-identical to gemm9)
     int bd_lbm = 1;       // gemm9 at 32/64-token tiles: ring of 2-3 stages of global loads in flight (0: one stage)
     int bd_ksplit = 1;    // split-K slices for the K-split GEMMs (down, ssm_out, attn_output: N = 5120 gives 40 blocks)
     int bd_p2p = 0;       // 1: K-split GEMM epilogues store the fp16 all-reduce partials into the peer's mailbox (P2P)
