@@ -150,7 +150,7 @@ def main():
         ks = [int(x) for x in a.ks.split(",") if x]
         cfgs = []
         ngs = [int(x) for x in a.ngs.split(",") if x]
-        base = {"spec_rb": 1, "spec_sqt": 256}
+        base = {"spec_rb": 0, "spec_sqt": 256}
         for dvh in [int(x) for x in a.dvs.split(",")]:
             for k in ks:
                 for ng in ngs:

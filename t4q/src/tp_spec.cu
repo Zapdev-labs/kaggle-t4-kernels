@@ -307,7 +307,7 @@ __global__ void __launch_bounds__(256) k_gdn_replay(float* Sb, size_t bstride, c
                                                     const float* rbk, const float* rbd, const float* rbg,
                                                     size_t rbstride) {
     const int n = st->nacc;
-    if (n >= k) return;
+    if (!st->rbp || n >= k) return;
     const int sidx = st->sidx, li = blockIdx.y;
     const int vl = blockIdx.x >> 2, sl = blockIdx.x & 3, tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     const float* Sin = Sb + (size_t)(sidx ^ 1) * bstride + (size_t)li * SZS;
@@ -454,6 +454,7 @@ __global__ void k_argmax_x(const XArgs a) {
     st->nacc = n;
     st->pos = p + n + 1;
     st->sidx = a.rb ? (st->sidx ^ 1) : (st->sidx + n + 1) % a.ns;
+    st->rbp = a.rb && n < a.k;
     st->token = s_y[n];
     st->last_tok = s_y[n];
     for (int i = 0; i <= n; i++)
@@ -980,6 +981,7 @@ void spec_enter(t4q_ctx* c, Spec* P) {
         s2.sidx = 0;
         s2.nemit = 0;
         s2.ngu = 0;
+        s2.rbp = 0;
         s2.ng_lo = st.n_prompt == pos ? 0 : pos;  // tokens decoded outside spec mode are not in the history
         CK(cudaMemcpyAsync(G.prompt + pos, &st.token, 4, cudaMemcpyHostToDevice, G.s));
         CK(cudaMemcpyAsync(G.st, &s2, sizeof s2, cudaMemcpyHostToDevice, G.s));
