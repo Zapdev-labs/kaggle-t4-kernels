@@ -634,3 +634,98 @@ Full tables: `research/p_results.md` (round 4 section). Raw: `kaggle/p/out_v35..
 3. If a better accuracy metric is wanted: average last-token KL over several long prompts; the single L prompt swings
    3x from fp32 summation order alone.
 4. pf_head could also skip the batch path's final add_norm/xn write for all but the last row (small).
+
+## 2026-10-03 - B-batched (round 1): batched / continuous decode, scheduler, OpenAI server
+
+**Gate (aggregate decode >= 200 tok/s at some B, outputs correct): PASS.** Stretch (400) reached at 1k context on P2P
+boxes. All numbers are Kaggle `otdoges/t4q-b`, Q4_0 GGUF, greedy, both T4s (TP=2), aggregate = B / step time.
+
+| version | box | 1k ctx B=64 | B=48 | B=32 | B=16 | B=8 | B=1 | 4k ctx B=32 | B=24 | B=16 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| v1 | P2P | **429.8** | - | 269.4 | 153.8 | 82.5 | 11.0 | (OOM, fixed in v2) | - | - |
+| v2 | no P2P | 382.8 | 318.9 | 269.3 | 159.0 | 86.8 | 11.8 | 213.6 | 181.1 | 137.9 |
+| v6 | P2P | 424.7 | - | 297.7 | 172.6 | - | 12.4 | 251.1 | - | 157.6 |
+| v8 (final defaults) | P2P | 402.9 | 342.3 | 294.9 | 173.6 | 94.7 | 12.8 | 235.4 | 200.0 | 151.6 |
+
+- Clocks during the v8 benches: GPU0 810-975 MHz, GPU1 1020-1110 MHz (`kaggle/b/out8/results_b.json`, per-B `clocks`).
+- fp32 vs fp16 DeltaNet state (v8, 1k ctx): fp32 B=32 280.1 / B=40 285.1 tok/s, fp16 B=32 294.9 (gdn kernel 21.2 ms vs
+  12.0 ms per step at B=32). fp16 is the default; quality numbers below.
+- **End to end** (v8): 32 concurrent coding requests (stdlib-source prompts, 477 tokens on average, 15262 prompt tokens),
+  512 new tokens each (EOS ignored, 16384 tokens): **72.5 s wall, 225.9 generated tok/s, 436.2 total tok/s**; prefill
+  17.6 s (869 tok/s, one prompt at a time), decode 55.0 s at B=32 (297.6 tok/s aggregate), mean TTFT 9.1 s (all 32
+  submitted at t=0, prefill-first scheduling). v5-v7: 73.0-73.5 s.
+- **Correctness** (v8; identical in v1-v8 for the same config):
+  - Reference = the single-stream TP decode engine (validated against the llama.cpp oracle in M1-M4), 8 coding prompts.
+  - Teacher-forced, 16 positions x 8 prompts at B=8: KL(single-stream || batched) mean 2.2e-4 / p99 4.1e-3 / max 6.8e-3
+    (fp32 state), 2.4e-4 / 4.1e-3 / 5.1e-3 (fp16 state); top-1 agreement 100% (128/128) in both.
+  - Free-running greedy, 128 tokens, B=8: 4/8 (fp32 state) and 5/8 (fp16) prompts identical to single-stream; every
+    divergence is at a near-tie (batched top-2 logit gap 0.009-0.12; tokens 17-49). Outputs are coherent code.
+  - Batch invariance: a sequence's logits are bit-identical whatever B and the other rows are (B=1 vs B=8 rows,
+    max diff 0.0; B=40 with 4 clones per prompt: clones bit-identical, and the 64-token-tile row equals the 32-token-tile
+    row bit for bit). This needed explicit roundings in gemm9's bias (`__fmul_rn`/`__fadd_rn`; FMA contraction had made
+    BN 32 and BN 64 differ in the last bit).
+  - Why batched != single-stream bits: the batched GEMMs are prefill's gemm9 numerics (per-row int8 weight requant, GA64
+    activations; rel L2 vs fp64 5.6e-3 to 8.7e-3 per shape, `bd_gemm_bench`), the decode engine uses exact Q4 x q8 dp4a.
+    Same class of difference as batched prefill (round P).
+  - OpenAI server (v1-v8): 4 concurrent requests (chat stream, chat, completion, second chat) batched together
+    (`max_batch` 4); streamed text == non-streamed text for the same prompt.
+
+### What I built
+- `t4q/src/tp_batch.cuh` (compiled inside `tp_prefill.cu`, reuses `PfRun`): slots with per-sequence DeltaNet state
+  (fp32 or fp16 storage, fp32 math), conv ring and fp16 KV (`[layer][k|v][slot][2 heads][slot_ctx][256]`). One step:
+  embed -> per layer fused add+norm+q8 -> gemm9 at m=B (token tile 32 for B<=32, 64 for B<=64) -> batched `k_bd_gdn`
+  (decode gdn arithmetic per row) or `k_bd_attn_prep/split/combine` (fixed 128-position split blocks, so splits do not
+  depend on B) -> K-split GEMM -> fp16 peer-copy all-reduce -> FFN (gate|up silu epilogue) -> output norm -> lm_head
+  (gemm9 on Q6_K, `bd_head=1`; dp4a GEMV 8 columns per pass is `bd_head=0`, 24 ms vs 4.3 ms at B=64) -> per-row argmax on
+  each GPU, host merges the shards (max, lowest index on ties). Prompts go through the single-stream batched prefill, then
+  state/ring/KV are copied into the slot. Per-op two-GPU event profile (`bd_prof`), host enqueue time in stats.
+- `gemm8.cuh`: gemm9 at BN 32 / 64 (2 blocks/SM), Q6_K weights (K6) for the batched head, silu epilogue at any BN,
+  split-K (`kz`, fixed-order `ksum_kernel`), optional L2 weight prefetch (`pfk`), optional peer-mailbox fp16 output
+  (`yh2`), 3-stage load ring at BN 32 (`lbm`, default on, ~3%), bench-only ablation bits (`AB` 128 = contiguous-load probe).
+- `gemm_r.cuh` (`bd_gemmr`, default off): register-direct P4 GEMM -- the Q4_0 nibble order is exactly an mma.m8n8k16 A
+  fragment (thread t loads code bytes 4*(t&3)..+3 of row t>>2), converted in registers with gemm9's fp16 ops;
+  bit-identical to gemm9 on every shape (`bd_gemm_bench`), but not faster.
+- C ABI `t4q_batch_init/prefill/clone/set_token/pos/step/logits/free`; options `bd_head`, `bd_ch`, `bd_prof`, `bd_p2p`,
+  `bd_pfk`, `bd_ksplit`, `bd_lbm`, `bd_gemmr`, `bd_reset_stats`; `pf_ub` changes now reallocate the prefill buffers (the
+  4k bench uses `pf_ub=1024` to make room for 32 x 4128-position slots).
+- `py/batch.py` continuous-batching scheduler (requests join/leave between steps; `prefill_per_iter`), `py/server.py`
+  OpenAI-compatible server (stdlib `http.server`; `/v1/models`, `/v1/chat/completions`, `/v1/completions`, SSE streaming,
+  stop strings, greedy only), `py/t4q.py` batch bindings and `Tokenizer.chat_messages`.
+- `tests/batch_check.py` (sections correct / bench / e2e / server), `tools/stage_b.py` (stage `b`),
+  `tools/bd_gemm_bench.cu` + `tools/stage_bg.py` (GEMM-only stage `bg`: synthetic weights, gemm9 vs gemmr vs dp4a GEMV,
+  fp64 check, ablations; runs while the GGUF downloads).
+
+### Where the time goes (v8, B=64, 1k ctx, GPU0 events, ms per step of 158.9)
+gate|up 42.7, down 20.9, qkvz 15.9, ssm_out 7.2, attn qkv 5.0, attn out 2.0, lm_head 4.8 (GEMMs ~98 ms) | gdn 25.5 |
+attention 13.6 | AR wait + add_norm 15.0 (GPU1: 38.6, it waits for the slower GPU0) | ab 3.5 | host enqueue 5.2 (async).
+At 4k / B=32 attention is 25.4 ms (KV 4 GiB per GPU per step).
+
+### What did not work (measured, all options default off)
+- The GEMMs at 32/64-token tiles stream weights at only ~110-140 GB/s in the engine (dp4a GEMV: 260), and their time
+  hardly depends on B (gate|up 29 ms at B=1, 43 ms at B=64). Tried, none faster: L2 prefetch of the weight planes
+  (`bd_pfk` 16/32: 10-15% slower, lm_head 3x slower), split-K for the K-split GEMMs (`bd_ksplit`: slower), line-batched
+  weight loads (4 stages per load, v4: no change), a 2-3 stage load ring (v5: <=3%), register-direct fragments (gemmr,
+  v7: same speed), 2 blocks/SM at BN 64. Bench ablations (v6, bg v1) put the cost in the weight-load path and the smem
+  staging, not the MMA math, but timings swing up to 2x with the throttled clock, so the root cause is still open.
+- P2P epilogue stores of the AR partials (`bd_p2p`): bit-identical, no measurable gain on the P2P boxes tested (v4/v5).
+
+### Broken or open
+- B=1..8 is slow (12.8 tok/s at B=1): the 32-token tile computes 32 columns regardless. A dp4a M<=8 path for tiny B is
+  not built (needs decode-format q8 producers and AR/silu epilogues in `gemv_fast_kernel`).
+- No CUDA graphs per B bucket: steps are eager (host enqueue ~5 ms per step, overlapped with GPU work; graphs would need
+  one multi-device graph with the peer copies and cross-GPU events).
+- Memory caps B: 64 slots at 1k (fp16 state 36 MiB + KV 34 MiB per slot per GPU) and 32 slots at 4k. q8 KV would double it.
+- GPU imbalance: one GPU usually runs 15-25% slower; the faster one waits (15-40 ms per step at B=64).
+- Prefill is one prompt at a time through the single-stream path (~870 tok/s); TTFT under load is serialized.
+- The scheduler is greedy only; sampling parameters are ignored by the server.
+
+### Next steps
+1. **GEMM weight streaming** is the big lever (~60% of the step). Test the DRAM-locality hypothesis: a skinny kernel that
+   loads weights in GEMV order (each warp load = one full 512-B tile-chunk segment, like `gemv_fast_kernel`) and
+   transposes into mma fragments through a per-warp smem slice (no block barrier), or fp16 HMMA with in-register
+   dequant (~1.5 instr/weight, exact per-group scales). Measure SM clock (NVML) next to every bench timing; single
+   readings in `bd_gemm_bench` are not trustworthy.
+2. Overlap / balance: uneven TP split calibrated at load (the hotter GPU gets fewer rows), or overlap the AR copy with
+   the next layer's independent work.
+3. dp4a M<=8 path for tiny B; CUDA graphs per bucket; q8 KV for 4k x 64; multi-prompt batched prefill (varlen ubatch)
+   for TTFT.
