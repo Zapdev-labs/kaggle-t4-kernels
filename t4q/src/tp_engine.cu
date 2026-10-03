@@ -1278,6 +1278,9 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     if (k == "pf_fq") { S.pf_fq = v; return 0; }
     if (k == "pf_g17") { S.pf_g17 = v; return 0; }
     if (k == "pf_rot") { S.pf_rot = v; return 0; }
+    if (k == "pf_abq") { S.pf_abq = v; return 0; }
+    if (k == "pf_rcf") { S.pf_rcf = v; return 0; }
+    if (k == "pf_rot_chk") { S.pf_rot_chk = v; return 0; }
     if (k == "pf_emax") { if (v < 0 || v > 7) throw std::runtime_error("pf_emax must be 0..7"); S.pf_emax = v; return 0; }
     if (k == "pf_fq_a") { S.pf_fq_a = v; return 0; }
     if (k == "pf_fq_n") { S.pf_fq_n = v; return 0; }

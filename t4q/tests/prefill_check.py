@@ -73,6 +73,7 @@ def main():
     ap.add_argument("--gen", type=int, default=32)
     ap.add_argument("--sections", default="correct,bench")
     ap.add_argument("--keep_h", type=int, default=0)
+    ap.add_argument("--bench_skip", default="", help="comma list of config indices not benched")
     a = ap.parse_args()
     secs = set(a.sections.split(","))
     cfgs = [c for c in a.configs.split(";")]
@@ -196,7 +197,10 @@ def main():
         L = read_ids(os.path.join(a.work, "L.i32"))
         for n in [int(x) for x in a.bench_n.split(",")]:
             ids = L[:n]
-            for cfg in cfgs:
+            skip = {int(x) for x in a.bench_skip.split(",") if x}
+            for ci, cfg in enumerate(cfgs):
+                if ci in skip:
+                    continue
                 try:
                     apply(eng, cfg)
                     eng.set_option("pf", 1)

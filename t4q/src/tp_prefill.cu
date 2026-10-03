@@ -183,6 +183,53 @@ __global__ void __launch_bounds__(256) k_pf_add_norm_q8(float* h, const PT* own,
     }
 }
 
+// R512: [h += partials]; x = rmsnorm(h) * w (xn written if non-null), then T(x) quantized per token into xq / dx.
+// grid T x 256, dynamic smem 5120 floats
+template <class PT>
+__global__ void __launch_bounds__(256) k_pf_add_norm_rot(float* h, const PT* own, const PT* rx, int gpu, int add,
+                                                         const float* __restrict__ w, float* xn, int8_t* xq, float* dx) {
+    extern __shared__ __align__(16) float xs[];
+    __shared__ float red[8];
+    const int t = blockIdx.x, tid = threadIdx.x;
+    float* hp = h + (size_t)t * D;
+    float x[20];
+#pragma unroll
+    for (int k = 0; k < 20; k++) x[k] = hp[tid + 256 * k];
+    if (add) {
+        const PT* p0 = (gpu == 0 ? own : rx) + (size_t)t * D;
+        const PT* p1 = (gpu == 0 ? rx : own) + (size_t)t * D;
+#pragma unroll
+        for (int k = 0; k < 20; k++) {
+            x[k] = x[k] + (ldp(p0, tid + 256 * k) + ldp(p1, tid + 256 * k));
+            hp[tid + 256 * k] = x[k];
+        }
+    }
+    float ss = 0.f;
+#pragma unroll
+    for (int k = 0; k < 20; k++) ss += x[k] * x[k];
+    ss = block_sum(ss, red);
+    const float scale = rsqrtf(ss / 5120.f + 1e-6f);
+#pragma unroll
+    for (int k = 0; k < 20; k++) {
+        const int e = tid + 256 * k;
+        const float y = (x[k] * scale) * w[e];
+        xs[e] = y;
+        if (xn) xn[(size_t)t * D + e] = y;
+    }
+    __syncthreads();
+    rot::rot_quant_row(xs, xs, D, xq + (size_t)t * D, dx + t, red);
+}
+
+// int8 buffers a vs b: out[0] = max |a - b|, out[1] = count of |a - b| > 1, out[2] = count of a != b
+__global__ void k_i8diff(const int8_t* a, const int8_t* b, size_t n, unsigned* out) {
+    unsigned mx = 0, c1 = 0, c0 = 0;
+    for (size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; i < n; i += (size_t)gridDim.x * blockDim.x) {
+        const int d = abs((int)a[i] - (int)b[i]);
+        mx = max(mx, (unsigned)d); c1 += d > 1; c0 += d != 0;
+    }
+    atomicMax(out, mx); atomicAdd(out + 1, c1); atomicAdd(out + 2, c0);
+}
+
 // silu(g) * u (gate|up rows interleaved by 4) -> q8 (K = 8704). grid (T, 34) x 256
 __global__ void k_pf_silu_q8(const float* __restrict__ y, int ldy, Q8Out q) {
     const int t = blockIdx.x, i = blockIdx.y * 256 + threadIdx.x;
@@ -1426,6 +1473,12 @@ void pf_rot_prep(t4q_ctx* c) {
             if (!B.w8r[i]) CK(cudaMalloc(&B.w8r[i], sz[i]));
         for (int il = 0; il < 64; il++) {
             tp::Layer& L = G.L[il];
+            if (L.ab && !L.ab8r) {
+                CK(cudaMalloc(&L.ab8r, (size_t)256 * D));
+                CK(cudaMalloc(&L.ab8i, 256 * 4));
+                rot::w8r_f32_kernel<<<32, 256, 0, G.s>>>(L.ab, 48, 256, D, L.ab8i, L.ab8r);
+                CK(cudaGetLastError());
+            }
             for (tp::FW* W : {&L.qkvz, &L.ssm_out, &L.qkv_a, &L.wo, &L.gateup, &L.down}) {
                 if (!W->ok() || W->invr) continue;
                 CK(cudaMalloc(&W->invr, (size_t)W->L.N * 4));
@@ -1451,6 +1504,7 @@ struct PfRun {
     bool i4 = false;
     bool g8 = false;  // gemm8 path (pf_g8)
     int chk_done[2] = {0, 0};
+    int rchk_done[2] = {0, 0};
     bool ar16 = false;  // pf_ar16: K-split GEMMs write fp16 partials, the all-reduce copies fp16
     int ga = 32;      // gemm8 activation scale group (pf_ga)
     bool g17 = false; // gemm17 shift-folded 64-groups (pf_g17): unfused producers + quant_gsh
@@ -1496,15 +1550,41 @@ struct PfRun {
             const int slot = (W.L.N == 8192 || W.L.N == 7168) ? 0 : W.L.N == 17408 ? 2 : W.L.K == 8704 ? 3 : 1;
             gemm8::Args q = gemm8::make_args(W.L, W.base, nullptr, nullptr, nullptr, nullptr, 0, 0, 0);
             if (s == 0) {  // both sub-batches use the same converted weights
-                CK(rot::convert(W.L.fmt, W.L.rpl, q, W.invr, B.w8r[slot], G.s));
+                CK(rot::convert(W.L.fmt, W.L.rpl, q, W.invr, B.w8r[slot], G.s, c->tps->pf_rcf != 0));
+                if (c->tps->pf_rot_chk && !(rchk_done[g] & (1 << slot))) {  // fp16 converter vs the fp32 one, once per slot
+                    rchk_done[g] |= 1 << slot;
+                    const size_t n = (size_t)W.L.N * W.L.K;
+                    int8_t* tmp;
+                    unsigned* dd;
+                    CK(cudaMallocAsync(&tmp, n, G.s));
+                    CK(cudaMallocAsync(&dd, 12, G.s));
+                    CK(cudaMemsetAsync(dd, 0, 12, G.s));
+                    CK(rot::convert(W.L.fmt, W.L.rpl, q, W.invr, tmp, G.s, false));
+                    k_i8diff<<<256, 256, 0, G.s>>>(B.w8r[slot], tmp, n, dd);
+                    unsigned h[3];
+                    CK(cudaMemcpyAsync(h, dd, 12, cudaMemcpyDeviceToHost, G.s));
+                    CK(cudaStreamSynchronize(G.s));
+                    char buf[200];
+                    snprintf(buf, sizeof buf, "{\"gpu\": %d, \"slot\": %d, \"fmt\": %d, \"n\": %zu, \"maxdiff\": %u, \"gt1\": %u, \"ne\": %u}",
+                             g, slot, W.L.fmt, n, h[0], h[1], h[2]);
+                    tp::State& S2 = *c->tps;
+                    if (S2.pf_gdnc_json.size() < 3000) S2.pf_gdnc_json += (S2.pf_gdnc_json.empty() ? "" : ", ") + std::string(buf);
+                    CK(cudaFreeAsync(tmp, G.s));
+                    CK(cudaFreeAsync(dd, G.s));
+                }
                 mark(g, "rot_convert");
             }
             g16::Args a7;
             a7.w8 = B.w8r[slot]; a7.invs = W.invr; a7.xq = B.xq; a7.dx = B.dxt;
-            a7.y = y + (size_t)st0[s] * ldy; a7.ldy = ldy;
-            if (ar16 && y == B.part) { a7.yh = (__half*)B.part + (size_t)st0[s] * ldy; a7.y = nullptr; }
             a7.N = W.L.N; a7.K = W.L.K; a7.T = Ts; a7.Tp = Tps;
-            e = a7.yh ? g16::launch17_t<0, gemv::FAST_P4, 4, 1, 0>(a7, G.s) : g16::launch17_t<0, gemv::FAST_P4, 4, 0, 0>(a7, G.s);
+            if (silu) {  // fp16 silu(gate) * up rows of 8704 into g32
+                a7.yh = (__half*)B.g32 + (size_t)st0[s] * 8704; a7.ldy = 8704;
+                e = g16::launch17_t<0, gemv::FAST_P4, 4, 2, 0>(a7, G.s);
+            } else {
+                a7.y = y + (size_t)st0[s] * ldy; a7.ldy = ldy;
+                if (ar16 && y == B.part) { a7.yh = (__half*)B.part + (size_t)st0[s] * ldy; a7.y = nullptr; }
+                e = a7.yh ? g16::launch17_t<0, gemv::FAST_P4, 4, 1, 0>(a7, G.s) : g16::launch17_t<0, gemv::FAST_P4, 4, 0, 0>(a7, G.s);
+            }
         } else if (g17) {
             g16::Args a7;
             a7.q = gemm8::make_args(W.L, W.base, W.invs, nullptr, nullptr, nullptr, 0, 0, 0);
@@ -1624,7 +1704,16 @@ struct PfRun {
         if (add) recv(g, s);
         const int sl = (ar - 1) & 1;
         const size_t off = (size_t)st0[s] * D;
-        if (q8)
+        if (q8 && rot) {
+            if (ar16)
+                k_pf_add_norm_rot<__half><<<sT[s], 256, D * 4, G.s>>>(B.h + off, (const __half*)B.part + off,
+                                                                      (const __half*)B.rx[sl] + off, g, add ? 1 : 0, w,
+                                                                      want_xn ? B.xn + off : nullptr, B.xq, B.dxt);
+            else
+                k_pf_add_norm_rot<float><<<sT[s], 256, D * 4, G.s>>>(B.h + off, B.part + off, B.rx[sl] + off, g, add ? 1 : 0,
+                                                                     w, want_xn ? B.xn + off : nullptr, B.xq, B.dxt);
+            // padding rows (tokens Ts..Tp-1) keep stale activations: gemm17 never writes their outputs
+        } else if (q8)
             if (ar16)
                 k_pf_add_norm_q8<__half><<<sT[s], 256, 0, G.s>>>(B.h + off, (const __half*)B.part + off, (const __half*)B.rx[sl] + off,
                                                                  g, add ? 1 : 0, w, want_xn ? B.xn + off : nullptr, q8out(g, s, D));
@@ -1648,13 +1737,24 @@ struct PfRun {
         tp::Layer& L = G.L[il];
         PfGpu& B = P->G[g];
         const int t0 = st0[s], Ts = sT[s], ps = p0 + t0;
-        const bool fu = fused();
-        add_norm(g, s, L.attn_norm, il > 0, fu, !L.attn);
+        const bool fu = fused(), fq8 = fu || rot;
+        add_norm(g, s, L.attn_norm, il > 0, fq8, !L.attn && !(rot && S.pf_abq && L.ab8r));
         if (!L.attn) {
-            if (fu) gemm(g, s, L.qkvz, B.y, 8192);
+            if (fq8) gemm(g, s, L.qkvz, B.y, 8192);
             else qg(g, s, L.qkvz, B.xn, D, B.y, 8192);
-            k_pf_ab<<<dim3((Ts + 127) / 128, AB_KS), 256, 0, G.s>>>(B.xn + (size_t)t0 * D, L.ab, Ts, B.yab + (size_t)t0 * 48,
-                                                                   P->cap * 48);
+            if (rot && S.pf_abq && L.ab8r) {  // rotated int8 GEMM on the qkvz activations; slices 1..3 stay zero
+                for (int kz = 0; kz < AB_KS; kz++) {  // K-slices into the consumer's partial-sum slices
+                    g16::Args aa;
+                    aa.w8 = L.ab8r + kz * (D / AB_KS); aa.xq = B.xq + kz * (D / AB_KS); aa.kstride = D;
+                    aa.invs = L.ab8i; aa.dx = B.dxt;
+                    aa.y = B.yab + (size_t)kz * P->cap * 48 + (size_t)t0 * 48; aa.ldy = 48; aa.nvalid = 48;
+                    aa.N = 256; aa.K = D / AB_KS; aa.T = Ts; aa.Tp = tpad(Ts);
+                    CK((g16::launch17_t<0, gemv::FAST_P4, 4, 0, 0>(aa, G.s)));
+                }
+            } else {
+                k_pf_ab<<<dim3((Ts + 127) / 128, AB_KS), 256, 0, G.s>>>(B.xn + (size_t)t0 * D, L.ab, Ts, B.yab + (size_t)t0 * 48,
+                                                                       P->cap * 48);
+            }
             mark(g, "ab");
             k_pf_conv<<<dim3(Ts, 40), 128, 0, G.s>>>(B.y + (size_t)t0 * 8192, 8192, L.conv_ring, L.conv_w, ps,
                                                      B.qkv + (size_t)t0 * 5120);
@@ -1722,7 +1822,7 @@ struct PfRun {
                 qg(g, s, L.ssm_out, B.g32, 3072, B.part, D);
             }
         } else {
-            if (fu) gemm(g, s, L.qkv_a, B.y, 7168);
+            if (fq8) gemm(g, s, L.qkv_a, B.y, 7168);
             else qg(g, s, L.qkv_a, B.xn, D, B.y, 7168);
             k_pf_attn_prep<<<dim3(Ts, 14), 256, 0, G.s>>>(B.y + (size_t)t0 * 7168, 7168, L.q_norm, L.k_norm,
                                                           B.qa + (size_t)t0 * 3072, (__half*)L.kc, (__half*)L.vc,
@@ -1748,6 +1848,16 @@ struct PfRun {
         PfGpu& B = P->G[g];
         const int t0 = st0[s], Ts = sT[s];
         const bool fu = fused();
+        if (rot) {
+            add_norm(g, s, L.post_norm, true, true, false);
+            gemm(g, s, L.gateup, nullptr, 0, true);  // silu(gate) * up -> fp16 rows of g32
+            const int Tps = tpad(Ts);
+            rot::quant_rot<__half>((const __half*)B.g32 + (size_t)t0 * 8704, 8704, Ts, Tps, 8704, B.xq, B.dxt, G.s);
+            ck_launch("quant_rot");
+            mark(g, "quant");
+            gemm(g, s, L.down, B.part, D);
+            return;
+        }
         add_norm(g, s, L.post_norm, true, fu, false);
         if (fu && g8 && ga == 64 && S.pf_silu && L.gateup.L.fmt == gemv::FAST_P4) {
             gemm(g, s, L.gateup, nullptr, 0, true);

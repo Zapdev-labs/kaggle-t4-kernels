@@ -165,6 +165,8 @@ struct Layer {
     // DeltaNet: qkvz rows = q (8 k-heads x 128) | k (1024) | v (24 v-heads x 128) | z (3072)
     FW qkvz, ssm_out;
     float* ab = nullptr;      // F32 [48][5120]: alpha rows of the 24 local heads, then beta rows
+    int8_t* ab8r = nullptr;   // prefill R512: rotated int8 ab rows padded to [256][5120] (pf_abq)
+    float* ab8i = nullptr;    // their invr [256]
     float* conv_w = nullptr;  // [5120][4]
     float *ssm_a = nullptr, *ssm_dt = nullptr, *ssm_norm = nullptr;
     float* conv_ring = nullptr;  // [4][5120] raw conv inputs, slot = pos & 3
@@ -291,6 +293,9 @@ struct State {
     int pf_prof = 0;      // 1: per-op event profile of GPU0 (ms per op class) in stats "pf_profile"
     std::string pf_json;
     // activation-format accuracy study (tp_prefill.cu k_fq_*): emulate a GEMM input format on the GA64 int8 input
+    int pf_rot_chk = 0;   // R512: first conversion per weight slot also runs the fp32 converter and compares (stats pf_gdnc_check)
+    int pf_rcf = 1;       // R512: fp16x2 weight rotation for P4 / P4M (0: fp32 converter)
+    int pf_abq = 1;       // R512: alpha/beta projection as a rotated int8 tensor-core GEMM (rows padded to 256)
     int pf_rot = 0;       // 1: R512 path: block-Hadamard rotated per-token activations x rotated int8 weights (gemm17)
     int pf_g17 = 0;       // 1: gemm17 (CUTLASS-style int8 pipeline, shift-folded per-64 activation groups, unfused producers)
     int pf_emax = 7;      // gemm17: max group exponent (group step = D_t 2^-e / 127)

@@ -34,6 +34,8 @@ struct Args {
     float* y = nullptr;          // y[t * ldy + n]
     __half* yh = nullptr;        // fp16 output instead of y (no accumulate)
     int ldy = 0, N = 0, K = 0, T = 0, Tp = 0, accumulate = 0;
+    int nvalid = 1 << 30;        // gemm17 OUT 0/1: rows >= nvalid are not written (padded weight rows)
+    int kstride = 0;             // gemm17 WSRC 0: row stride of w8 and xq (0 = K; K-slices of a wider matrix)
     const int8_t* dsh = nullptr; // gemm17 GSH: shift deltas [K/64][Tp] (permuted token order)
 };
 
@@ -364,9 +366,10 @@ __global__ void __launch_bounds__(NT, 1) gemm17_kernel(const Args a) {
     const int t4 = lane & 3;
     const int arw = tid >> 1, ablk = tid & 1;  // A (tokens): row tid/2, 32-B half tid&1
     const int brw = tid >> 2, bu = tid & 3;    // B (WSRC 0): rows tid/4 + 64 i, unit tid&3
-    const int8_t* ap = a.xq + (size_t)(tok0 + arw) * K + ablk * 32;
-    const int8_t* bp = a.w8 + (size_t)(row0 + brw) * K + bu * 16;
-    const size_t bstep = (size_t)64 * K;
+    const int KS = a.kstride ? a.kstride : K;
+    const int8_t* ap = a.xq + (size_t)(tok0 + arw) * KS + ablk * 32;
+    const int8_t* bp = a.w8 + (size_t)(row0 + brw) * KS + bu * 16;
+    const size_t bstep = (size_t)64 * KS;
     const int8_t* dp = a.dsh ? (const int8_t*)a.dsh + tok0 + tid * 16 : nullptr;
     // WSRC 1: units (row tid/2, block tid&1) and (row tid/2 + 128, block tid&1)
     const gemm8::WPtr<FMT, RPL> P0(a.q, row0 + arw, ablk), P1(a.q, row0 + arw + 128, ablk);
@@ -501,13 +504,21 @@ __global__ void __launch_bounds__(NT, 1) gemm17_kernel(const Args a) {
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
         const int tok = tok0 + wm * 64 + i * 8 + (lane >> 2);
-        if (tok >= a.T) continue;
+        if (OUT != 2 && tok >= a.T) continue;  // OUT 2 shuffles below: all lanes stay (dx of padding tokens is 0)
         const float d = a.dx[tok];
 #pragma unroll
         for (int g = 0; g < 8; ++g) {
             const int row = row0 + wn * 64 + 8 * g + 2 * t4;
             const float v0 = (float)acc[i][g][0] * (d * srv[g][0]), v1 = (float)acc[i][g][1] * (d * srv[g][1]);
-            if (OUT == 1) {
+            if (OUT != 2 && row >= a.nvalid) continue;
+            if (OUT == 2) {  // gate|up rows interleaved by 4: lanes t4 0,1 gate rows, lane ^ 2 the matching up rows
+                const float u0 = __shfl_xor_sync(0xffffffffu, v0, 2), u1 = __shfl_xor_sync(0xffffffffu, v1, 2);
+                if (t4 < 2 && tok < a.T) {
+                    const int f = ((row0 + wn * 64 + 8 * g) >> 1) + 2 * t4;
+                    *(__half2*)(a.yh + (size_t)tok * a.ldy + f) =
+                        __floats2half2_rn((v0 / (1.0f + expf(-v0))) * u0, (v1 / (1.0f + expf(-v1))) * u1);
+                }
+            } else if (OUT == 1) {
                 *(__half2*)(a.yh + (size_t)tok * a.ldy + row) = __floats2half2_rn(v0, v1);
             } else {
                 float2* p = (float2*)(a.y + (size_t)tok * a.ldy + row);

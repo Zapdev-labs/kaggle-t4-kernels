@@ -34,7 +34,7 @@ ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "p"
 SECTIONS = ["engine"]
-FQ = ['pf_fq=0,pf_ga=32,pf_rot=0,pf_g17=0', 'pf_ga=64,pf_rot=0,pf_g17=0', 'pf_ga=64,pf_rot=1,pf_g17=0', 'pf_ga=64,pf_rot=0,pf_g17=1']
+FQ = ['pf_fq=0,pf_ga=32,pf_rot=0,pf_g17=0', 'pf_ga=64,pf_rot=1,pf_abq=1,pf_rcf=1,pf_rot_chk=1', 'pf_ga=64,pf_rot=1,pf_abq=1,pf_rcf=0,pf_rot_chk=0']
 PF_CONFIGS = ";".join(FQ)
 PF_SECTIONS = "correct,bench"
 RESULTS = {"stage": STAGE}
@@ -434,7 +434,7 @@ def main():
         remaining = DEADLINE - el() - 60
         rc, o = stream([sys.executable, "-u", str(t4q / "tests" / "prefill_check.py"), "--model", model, "--work",
                         str(WORK), "--oracle", str(ORC), "--out", str(vout), "--lib", str(t4q / "build" / "libt4q.so"),
-                        "--configs", PF_CONFIGS, "--bench_n", "512,2048", "--reps", "2", "--sections", PF_SECTIONS, "--keep_h", "1"],
+                        "--configs", PF_CONFIGS, "--bench_n", "512,2048", "--reps", "2", "--sections", PF_SECTIONS, "--keep_h", "1", "--bench_skip", "0"],
                        "prefill_check.log", timeout=max(300, remaining))
         val = json.loads(vout.read_text()) if vout.exists() else {}
         for k, v in (val.get("bench") or {}).items():
