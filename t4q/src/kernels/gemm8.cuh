@@ -76,7 +76,7 @@ struct Args {
     float* odx = nullptr;  // [N/128][Tp] (64-feature groups)
     __half* yh = nullptr;  // if set: fp16 output yh[t * ldy + n] instead of y (no accumulate)
     __half* yh2 = nullptr; // gemm9: second copy of the fp16 output (the peer GPU's all-reduce mailbox, P2P stores)
-    int lbm = 1;           // gemm9 BN <= 64: line-batched weight loads (WLine)
+    int lbm = 1;           // gemm9 BN 32 / 64 (GA 64): ring of 2-3 stages of loads in flight (0: one stage, as BN >= 128)
     int pfk = 0;           // gemm9: L2 prefetch of the weight planes this many 32-blocks ahead (0 = off)
     int kz = 1;            // gemm9 split-K: grid.z K slices (K / kz a multiple of 256); slice z writes fp32 y + z * zs
     long long zs = 0;
@@ -635,15 +635,7 @@ __global__ void __launch_bounds__(NT, BN <= 64 ? 2 : 1) gemm9_kernel(const Args 
     Stage<BN> S;
     S.dx0 = S.dx1 = make_float2(0.f, 0.f);
     float2 bkeep = make_float2(0.f, 0.f);
-    const bool LBM = BN <= 64 && (AB & 12) == 0 && a.lbm;  // line-batched weight loads (see WLine)
-    WLine<FMT> WL;
-    if (LBM) {
-        wline_load<FMT, RPL>(WL, P, kbase);
-        wline_take<FMT, BN>(S, WL, 0);
-        stage_loadx<BN, GA>(S, xb, xstep, dxb, tps, kbase, tid);
-    } else {
-        stage_load9<FMT, RPL, BN, GA, AB & 4>(S, P, xb, xstep, dxb, tps, kbase, tid);
-    }
+    stage_load9<FMT, RPL, BN, GA, AB & 4>(S, P, xb, xstep, dxb, tps, kbase, tid);
     stage_store<FMT, BN, AB & 1>(S, smem, invs_st, bkeep, 0, tid);
     __syncthreads();
 
@@ -654,18 +646,73 @@ __global__ void __launch_bounds__(NT, BN <= 64 ? 2 : 1) gemm9_kernel(const Args 
     for (int g = 0; g < NG; ++g) brow[g] = wn * WN + 8 * g + (lane & 7);
 
     int buf = 0;
-    for (int kb0 = 0; kb0 < nkb; kb0 += 2) {
-        const bool more = kb0 + 2 < nkb;
-        if (more) {
-            if (LBM) {
-                const int i = ((kb0 + 2) >> 1) & 3;
-                wline_take<FMT, BN>(S, WL, i);
-                if (i == 3 && kb0 + 4 < nkb) wline_load<FMT, RPL>(WL, P, kbase + kb0 + 4);  // next 4 stages
-                stage_loadx<BN, GA>(S, xb, xstep, dxb, tps, kbase + kb0 + 2, tid);
-            } else {
-                stage_load9<FMT, RPL, BN, GA, AB>(S, P, xb, xstep, dxb, tps, kbase + kb0 + 2, tid, pfk, kend);
+    // Small token tiles (batched decode, BN 32 / 64): a ring of RD stages of global loads in flight. One stage of
+    // loads per block (the loop below) streams weights at only ~105-115 GB/s at BN 32/64 (t4q-b v2-v4: the GEMM time
+    // hardly depends on B); RD stages multiply the bytes in flight. Same arithmetic and order as the loop below.
+    constexpr int RD = (BN <= 64 && GA == 64 && (AB & ~64) == 0) ? (BN == 32 ? 3 : 2) : 1;
+    if constexpr (RD > 1) if (a.lbm) {
+        const int nst = nkb >> 1;
+        Stage<BN> R[RD];
+#pragma unroll
+        for (int r = 0; r < RD; ++r) {
+            R[r].dx0 = R[r].dx1 = make_float2(0.f, 0.f);
+            if (1 + r < nst) stage_load9<FMT, RPL, BN, GA, 0>(R[r], P, xb, xstep, dxb, tps, kbase + 2 * (1 + r), tid);
+        }
+        int bufr = 0;
+        for (int st0 = 0; st0 < nst; st0 += RD) {
+#pragma unroll
+            for (int u = 0; u < RD; ++u) {
+                const int st = st0 + u;
+                if (st >= nst) break;
+                const unsigned char* B = smem + bufr * C::BYTES;
+                uint32_t af[4][8];
+#pragma unroll
+                for (int uu = 0; uu < 4; ++uu)
+#pragma unroll
+                    for (int q = 0; q < 2; ++q)
+                        ldsm_x4(af[uu][q * 4], af[uu][q * 4 + 1], af[uu][q * 4 + 2], af[uu][q * 4 + 3],
+                                B + C::O_W + arow[q] * 64 + swz(arow[q], uu) * 16);
+#pragma unroll
+                for (int g = 0; g < NG; ++g) {
+                    uint32_t b[4];
+                    ldsm_x4(b[0], b[1], b[2], b[3], B + C::O_X + brow[g] * 64 + swz(brow[g], lane >> 3) * 16);
+                    int tq[8][2];
+#pragma unroll
+                    for (int uu = 0; uu < 4; ++uu)
+#pragma unroll
+                        for (int i = 0; i < 8; ++i)
+                            mma_s8p(tq[i][0], tq[i][1], af[uu][i], b[uu], uu ? tq[i][0] : MAGIC_I, uu ? tq[i][1] : MAGIC_I);
+                    const float2 dv = *(const float2*)(B + C::O_DX + (wn * WN + 8 * g + 2 * t4) * 4);
+#pragma unroll
+                    for (int i = 0; i < 8; ++i) {
+                        acc[i][g][0] = fmaf(__int_as_float(tq[i][0]), dv.x, acc[i][g][0]);
+                        acc[i][g][1] = fmaf(__int_as_float(tq[i][1]), dv.y, acc[i][g][1]);
+                    }
+                }
+                if ((st & 3) == 3) {  // end of a 256-k bias group
+#pragma unroll
+                    for (int g = 0; g < NG; ++g) {
+                        const float2 bv = *(const float2*)(B + C::O_BI + (wn * WN + 8 * g + 2 * t4) * 4);
+#pragma unroll
+                        for (int i = 0; i < 8; ++i) { acc[i][g][0] -= bv.x; acc[i][g][1] -= bv.y; }
+                    }
+                }
+                if (st + 1 < nst) {
+                    const int sp = (st + 1) & 3;
+                    stage_store<FMT, BN, 0>(R[u], smem + (bufr ^ 1) * C::BYTES, invs_st, bkeep,
+                                            sp == 0 ? 0 : sp == 3 ? 2 : 1, tid);
+                    if (st + 1 + RD < nst)
+                        stage_load9<FMT, RPL, BN, GA, 0>(R[u], P, xb, xstep, dxb, tps, kbase + 2 * (st + 1 + RD), tid);
+                    __syncthreads();
+                    bufr ^= 1;
+                }
             }
         }
+    }
+    if (RD == 1 || !a.lbm)
+    for (int kb0 = 0; kb0 < nkb; kb0 += 2) {
+        const bool more = kb0 + 2 < nkb;
+        if (more) stage_load9<FMT, RPL, BN, GA, AB>(S, P, xb, xstep, dxb, tps, kbase + kb0 + 2, tid, pfk, kend);
         const unsigned char* B = smem + ((AB & 16) ? 0 : buf) * C::BYTES;
         if (GA == 64 || GA == 0) {
             uint32_t af[4][8];
