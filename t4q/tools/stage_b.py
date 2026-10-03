@@ -33,6 +33,8 @@ ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "b"
 BC_ARGS = []  # extra tests/batch_check.py arguments
+SECTIONS = ["gemm", "engine"]
+GEMM_ARGS = ["--tp", "32,64", "--pfk", "0"]
 RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
@@ -171,6 +173,24 @@ def main():
         (LOGS / "ptxas.txt").write_text(ptx)
         result("build", {"ok": rc == 0, "secs": el(), "tail": o[-3000:] if rc else ""})
         if rc:
+            return
+        if "gemm" in SECTIONS:  # synthetic-weight GEMM bench on both GPUs at once (overlaps the download)
+            t = time.time()
+            rc, o = sh(f"{NVCC} -O3 -std=c++17 -arch=sm_75 -lineinfo {t4q}/tools/bd_gemm_bench.cu -o {W}/bdg",
+                       timeout=900, logname="build_bdg.txt")
+            if rc == 0:
+                procs = [subprocess.Popen([str(W / "bdg"), "--dev", str(d)] + GEMM_ARGS, stdout=subprocess.PIPE,
+                                          stderr=subprocess.STDOUT, text=True) for d in (0, 1)]
+                rows = []
+                for d, p in enumerate(procs):
+                    out, _ = p.communicate(timeout=900)
+                    (LOGS / f"bdg_dev{d}.txt").write_text(out)
+                    rows += [json.loads(l.split(" ", 1)[1]) for l in out.splitlines()
+                             if l.startswith(("R ", "CHECK ", "SUM "))]
+                result("bd_gemm", {"secs": round(time.time() - t), "rows": rows})
+            else:
+                result("bd_gemm", {"build_failed": o[-2000:]})
+        if "engine" not in SECTIONS:
             return
         th.join(timeout=1800)
         model = DL.get("path")
