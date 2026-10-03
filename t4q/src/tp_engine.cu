@@ -1281,6 +1281,8 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     if (k == "pf_abq") { S.pf_abq = v; return 0; }
     if (k == "pf_rcf") { S.pf_rcf = v; return 0; }
     if (k == "pf_rot_chk") { S.pf_rot_chk = v; return 0; }
+    if (k == "pf_wcache") { S.pf_wcache = v; return 0; }
+    if (k == "pf_rot_min") { S.pf_rot_min = v; return 0; }
     if (k == "pf_emax") { if (v < 0 || v > 7) throw std::runtime_error("pf_emax must be 0..7"); S.pf_emax = v; return 0; }
     if (k == "pf_fq_a") { S.pf_fq_a = v; return 0; }
     if (k == "pf_fq_n") { S.pf_fq_n = v; return 0; }
@@ -1485,6 +1487,7 @@ std::string tp_stats_json(t4q_ctx* c) {
     if (!S.pf_json.empty()) s += ", \"pf_profile\": " + S.pf_json;
     if (!S.pf_gdnc_json.empty()) s += ", \"pf_gdnc_check\": [" + S.pf_gdnc_json + "]";
     if (!S.pf_fq_json.empty()) s += ", \"pf_fq\": " + S.pf_fq_json;
+    if (S.pf_wcache_used) s += ", \"pf_wcache_mb\": " + std::to_string(S.pf_wcache_used >> 20);
     if (!S.trace_json.empty()) s += ", \"trace\": " + S.trace_json;
     if (!S.dbg_json.empty()) s += ", \"dbgts\": " + S.dbg_json;
     return s;

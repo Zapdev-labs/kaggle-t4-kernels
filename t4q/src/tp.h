@@ -33,6 +33,8 @@ struct FW {  // fast packed weight on one GPU
     uint8_t* base = nullptr;
     float* invs = nullptr;  // prefill gemm8: per-row 127 / max|w| (computed on first batched prefill)
     float* invr = nullptr;  // prefill R512: per-row 127 / max|T(w)| of the rotated row (kernels/rot.cuh)
+    int8_t* w8c = nullptr;  // prefill R512: persistent rotated int8 rows (pf_wcache), qkvz with the alpha/beta rows appended
+    float* invc = nullptr;  // their scales (qkvz: 8448 rows)
     bool ok() const { return base != nullptr; }
 };
 
@@ -293,6 +295,9 @@ struct State {
     int pf_prof = 0;      // 1: per-op event profile of GPU0 (ms per op class) in stats "pf_profile"
     std::string pf_json;
     // activation-format accuracy study (tp_prefill.cu k_fq_*): emulate a GEMM input format on the GA64 int8 input
+    int pf_rot_min = 0;   // R512 only for ubatches of at least this many tokens (smaller ones take the GA64 path)
+    int pf_wcache = 0;    // R512: MB of spare VRAM per GPU for persistent rotated int8 weights (no per-ubatch conversion)
+    long long pf_wcache_used = 0;
     int pf_rot_chk = 0;   // R512: first conversion per weight slot also runs the fp32 converter and compares (stats pf_gdnc_check)
     int pf_rcf = 1;       // R512: fp16x2 weight rotation for P4 / P4M (0: fp32 converter)
     int pf_abq = 1;       // R512: alpha/beta projection as a rotated int8 tensor-core GEMM (rows padded to 256)

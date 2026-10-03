@@ -769,32 +769,28 @@ __global__ void __launch_bounds__(256, 1) k_pf_gdnc(const float* __restrict__ qk
                     ks[mt][nt][hh * 2] = 0.f; ks[mt][nt][hh * 2 + 1] = 0.f;  // reused as the P U accumulator
                 }
         __syncthreads();
-        // ---- T = (I - A)^{-1}: thread j < 64 owns column j (fp32), then Th (fp16, [64][64]) over Am's region
+        // ---- T = (I - A)^{-1}: 4 threads per column j (tid = 4j + r, r owns rows t = r mod 4), forward substitution
+        // with the 4 partial sums combined by 2 shuffles per row; then Th (fp16, [64][64]) over Am's region
         {
-            float tc[64];
-            if (tid < 64) {
-                const float* Am = (const float*)(sm + O_Q);
-                const int j = tid;
+            float tc[16];
+            const int j = tid >> 2, r = tid & 3;
+            const float* Am = (const float*)(sm + O_Q);
 #pragma unroll
-                for (int t = 0; t < 64; ++t) {
-                    float a0 = (t == j) ? 1.f : 0.f, a1 = 0.f, a2 = 0.f, a3 = 0.f;
+            for (int t = 0; t < 64; ++t) {
+                float a0 = 0.f, a1 = 0.f;
 #pragma unroll
-                    for (int s2 = 0; s2 + 3 < t; s2 += 4) {
-                        a0 += Am[t * 64 + s2] * tc[s2];
-                        a1 += Am[t * 64 + s2 + 1] * tc[s2 + 1];
-                        a2 += Am[t * 64 + s2 + 2] * tc[s2 + 2];
-                        a3 += Am[t * 64 + s2 + 3] * tc[s2 + 3];
-                    }
-#pragma unroll
-                    for (int s2 = t & ~3; s2 < t; ++s2) a0 += Am[t * 64 + s2] * tc[s2];
-                    tc[t] = (a0 + a1) + (a2 + a3);
+                for (int i = 0; i < 16; i += 2) {
+                    if (4 * i + r < t) a0 += Am[t * 64 + 4 * i + r] * tc[i];
+                    if (4 * (i + 1) + r < t) a1 += Am[t * 64 + 4 * (i + 1) + r] * tc[i + 1];
                 }
+                float v = a0 + a1;
+                v += __shfl_xor_sync(0xffffffffu, v, 1);
+                v += __shfl_xor_sync(0xffffffffu, v, 2);
+                if (r == (t & 3)) tc[t >> 2] = v + ((t == j) ? 1.f : 0.f);
             }
             __syncthreads();  // Am fully read
-            if (tid < 64) {
 #pragma unroll
-                for (int t = 0; t < 64; ++t) *(__half*)(sm + O_Q + off128(t, tid)) = __float2half_rn(tc[t]);
-            }
+            for (int i = 0; i < 16; ++i) *(__half*)(sm + O_Q + off128(4 * i + r, j)) = __float2half_rn(tc[i]);
             __syncthreads();
         }
         // ---- U = T R: [64 t][16 v] per warp; A = T (rows t, k = s), B = R (k = s, n = v) via ldmatrix.trans
@@ -1521,6 +1517,45 @@ void pf_rot_prep(t4q_ctx* c) {
         }
         CK(cudaStreamSynchronize(G.s));
     }
+    // persistent rotated weights within the VRAM budget (both GPUs cache the same layers)
+    if (S.pf_wcache > 0) {
+        size_t budget = (size_t)S.pf_wcache << 20;
+        for (int g = 0; g < 2; g++) {
+            CK(cudaSetDevice(g));
+            size_t fr = 0, tot = 0;
+            CK(cudaMemGetInfo(&fr, &tot));
+            const size_t margin = (size_t)1200 << 20;
+            budget = std::min(budget, fr > margin ? fr - margin : 0);
+        }
+        for (int il = 0; il < 64; il++) {
+            for (int wi = 0; wi < 6; wi++) {
+                tp::Layer& L0 = S.G[0].L[il];
+                tp::FW* W0 = wi == 0 ? &L0.gateup : wi == 1 ? &L0.down : wi == 2 ? &L0.qkvz : wi == 3 ? &L0.qkv_a : wi == 4 ? &L0.ssm_out : &L0.wo;
+                if (!W0->ok() || W0->w8c) continue;
+                const bool abr = wi == 2 && L0.ab8r;
+                const size_t rows = abr ? 8448 : W0->L.N, bytes = rows * W0->L.K;
+                if (bytes > budget) continue;
+                budget -= bytes;
+                for (int g = 0; g < 2; g++) {
+                    CK(cudaSetDevice(g));
+                    tp::Gpu& G = S.G[g];
+                    tp::Layer& L = G.L[il];
+                    tp::FW* W = wi == 0 ? &L.gateup : wi == 1 ? &L.down : wi == 2 ? &L.qkvz : wi == 3 ? &L.qkv_a : wi == 4 ? &L.ssm_out : &L.wo;
+                    CK(cudaMalloc(&W->w8c, bytes));
+                    CK(cudaMalloc(&W->invc, rows * 4));
+                    gemm8::Args q = gemm8::make_args(W->L, W->base, nullptr, nullptr, nullptr, nullptr, 0, 0, 0);
+                    CK(rot::convert(W->L.fmt, W->L.rpl, q, W->invr, W->w8c, G.s, S.pf_rcf != 0));
+                    CK(cudaMemcpyAsync(W->invc, W->invr, (size_t)W->L.N * 4, cudaMemcpyDeviceToDevice, G.s));
+                    if (abr) {
+                        CK(cudaMemcpyAsync(W->w8c + (size_t)8192 * W->L.K, L.ab8r, (size_t)256 * W->L.K, cudaMemcpyDeviceToDevice, G.s));
+                        CK(cudaMemcpyAsync(W->invc + 8192, L.ab8i, 256 * 4, cudaMemcpyDeviceToDevice, G.s));
+                    }
+                    S.pf_wcache_used += (long long)bytes;
+                }
+            }
+        }
+        for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); CK(cudaStreamSynchronize(S.G[g].s)); }
+    }
 }
 
 void ck_launch(const char* w) {
@@ -1587,12 +1622,13 @@ struct PfRun {
             if (abrows)
                 for (int il2 = 0; il2 < 64 && !Lab; il2++)
                     if (&c->tps->G[g].L[il2].qkvz == &W) Lab = &c->tps->G[g].L[il2];
-            if (s == 0 && abrows) {
+            const bool cached = W.w8c != nullptr && c->tps->pf_wcache > 0;
+            if (s == 0 && abrows && !cached) {
                 CK(cudaMemcpyAsync(B.w8r[0] + (size_t)8192 * W.L.K, Lab->ab8r, (size_t)256 * W.L.K, cudaMemcpyDeviceToDevice, G.s));
                 CK(cudaMemcpyAsync(B.invq, W.invr, 8192 * 4, cudaMemcpyDeviceToDevice, G.s));
                 CK(cudaMemcpyAsync(B.invq + 8192, Lab->ab8i, 256 * 4, cudaMemcpyDeviceToDevice, G.s));
             }
-            if (s == 0) {  // both sub-batches use the same converted weights
+            if (s == 0 && !cached) {  // both sub-batches use the same converted weights
                 CK(rot::convert(W.L.fmt, W.L.rpl, q, W.invr, B.w8r[slot], G.s, c->tps->pf_rcf != 0));
                 if (c->tps->pf_rot_chk && !(rchk_done[g] & (1 << slot))) {  // fp16 converter vs the fp32 one, once per slot
                     rchk_done[g] |= 1 << slot;
@@ -1618,7 +1654,7 @@ struct PfRun {
                 mark(g, "rot_convert");
             }
             g16::Args a7;
-            a7.w8 = B.w8r[slot]; a7.invs = abrows ? B.invq : W.invr; a7.xq = B.xq; a7.dx = B.dxt;
+            a7.w8 = cached ? W.w8c : B.w8r[slot]; a7.invs = cached ? W.invc : abrows ? B.invq : W.invr; a7.xq = B.xq; a7.dx = B.dxt;
             a7.N = abrows ? 8448 : W.L.N; a7.K = W.L.K; a7.T = Ts; a7.Tp = Tps;
             if (silu) {  // fp16 silu(gate) * up rows of 8704 into g32
                 a7.yh = (__half*)B.g32 + (size_t)st0[s] * 8704; a7.ldy = 8704;
@@ -2001,7 +2037,7 @@ int tp_prefill_batched(t4q_ctx* c, const int32_t* ids, int n, void (*run_last_st
         R.ar16 = R.g8 && S.pf_ar16;
         R.ga = S.pf_ga;
         R.g17 = R.g8 && S.pf_g17;
-        R.rot = R.g8 && S.pf_rot;
+        R.rot = R.g8 && S.pf_rot && R.T >= S.pf_rot_min;
         R.emax = S.pf_emax;
         R.i4 = S.pf_i4 != 0 && !R.g8;
         if (S.pf_prof) { R.ev = &ev; R.evn = &evn; }
