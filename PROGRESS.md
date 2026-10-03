@@ -730,3 +730,89 @@ At 4k / B=32 attention is 25.4 ms (KV 4 GiB per GPU per step).
    the next layer's independent work.
 3. dp4a M<=8 path for tiny B; CUDA graphs per bucket; q8 KV for 4k x 64; multi-prompt batched prefill (varlen ubatch)
    for TTFT.
+
+## 2026-10-03 - M5-MTP (round 1): MTP speculative decoding, byte-identical to plain greedy
+
+**Gate (>= 60 tok/s single-stream on P0/P1 greedy, Q4_0, spec output byte-identical to t4q non-spec greedy): PASS.**
+All numbers are Kaggle `otdoges/t4q-m5`, Q4_0 GGUF (MTP = its own `blk.64`), TP=2, CUDA graphs, greedy, 512 generated
+tokens after the chat-templated prompt, stop on EOS (none hit), wall time of `t4q_generate`.
+
+| version | config | P0 tok/s | P1 tok/s | P2 (edit prompt) | plain decode same box P0 / P1 | GPU MHz (0 / 1) |
+|---|---|---|---|---|---|---|
+| v1 | k=3, 32k draft head | **70.03** | **64.87** | - | 30.57 / 30.37 | ~1050 / 890 (hot box) |
+| v2 | k=3, 32k head | **73.69** | **68.95** | - | 30.83 / 30.75 | 1200 / 1100 |
+| v5 | k=3, 32k head | 72.88 | 68.09 | 73.20 | 30.75 / 30.65 | 1060 / 1090 |
+| v5 | k=4 | 71.31 | 66.36 | 71.68 | | 1020 / 1060 |
+| v5 | k=5 | 67.63 | 60.96 | 70.13 | | 960 / 1020 |
+| v5 | k=6 | 58.93 | 53.73 | 70.08 | | 940 / 1000 |
+| v1 | k=2 | 65.19 | 61.20 | - | | |
+| v1 | k=3, full 248k draft head | 65.91 | 61.17 | - | | |
+
+- Best single-stream: **73.69 tok/s on P0** (v2, k=3), 2.4x plain t4q decode on the same box and 2.3-2.6x llama.cpp's
+  measured 28.8-32.4 (tensor split + MTP). Quality: identical token stream to plain t4q greedy decode (which matched the
+  llama.cpp oracle in M1-M4), so no quality loss of any kind.
+- **Correctness** (every run v1-v5 except the buggy replay run v4): V5 spec output byte-identical to plain greedy for
+  every k (2..6), prompt (P0/P1/P2), draft head and the no-P2P fallback (v1, `T4Q_NO_P2P=1`: 61.8 / 61.1 tok/s at 256
+  tokens). V4: with drafts forced to the reference continuation (100% acceptance), all 32-35 verify columns' logits are
+  **bit-identical** (max |diff| 0.0) to teacher-forced plain decode logits, at k=3 and k=6, P2P and no-P2P.
+- **Acceptance** per draft (k=3, from the accepted-length histogram): P0 0.807, P1 0.731, P2 0.818 with the 32k head;
+  0.852 / 0.785 with the full head (v1; llama.cpp with the separate Q6_K MTP file measured 0.847 / 0.778).
+  Tokens per verify step at k=3: 3.42 / 3.19 / 3.45; k=4: 3.95 / 3.65; k=6: 4.38 / 3.97 / 5.11.
+- **Draft vocab (M5b)**: the first 32768 token ids hold 95.5-96% of the generated tokens; 65536 ids hold 98.3-99.6%
+  (`T4Q_DV=65536`, v2 variant: acceptance 0.844 / 0.742 at k=3, speed within box noise of 32k: 72.67 / 66.14). The
+  truncated head is faster than the full head despite the acceptance drop (70.0 vs 65.9 on P0, v1), so it is the
+  default (`spec_dv 1`); the design's "< 2 points" rule is not met but the speed rule wins.
+- **Where the time goes** (v3/v5 CUPTI, GPU0, k=3): verify graph 44-46 ms vs a plain decode step 34.3 ms; draft graph
+  2.9 ms. The verify's extra 11 ms: gate|up GEMV 17.4 vs 12.4 ms (M=4 at 185 GB/s, the outlier), multi-row AR 3.7 vs
+  2.4 ms, gdn_m (4 state snapshots) 2.0-2.3 vs 0.9 ms, down 6.3 vs 5.5, qkvz 5.3 vs 4.6, attention split 0.9 vs 0.3.
+  The dp4a GEMV cost grows ~2.5-4 ms per extra column, which is why k=3 beats k=4..6 even though they accept more
+  tokens per step.
+
+### What I built
+- `t4q/src/tp_spec.cu` (new; `t4q_set_option("spec_k", k)` makes `t4q_generate` speculative):
+  - Two CUDA graphs per GPU per iteration, no host sync inside the loop (host enqueues `spec_ahead` = 4 iterations and
+    reads a host-mapped token ring + counter):
+    - **draft**: MTP catch-up over the k+1 verify rows (token y_j with the target h_final of column j at position
+      vpos+1+j; rows after nacc are garbage and get overwritten before any read), select row nacc, draft head + argmax
+      exchange -> d1; k-1 chained single-row MTP passes (h' fed back) -> d2..dk.
+    - **verify**: 64 layers on k+1 tokens with M-column kernels, lm_head, per-column argmax exchange, device-side greedy
+      acceptance (emits y_0..y_n, pos += n+1, appends the tokens to the history in `G.prompt`).
+  - Bit-identity by construction: `k_gemv` (moved to `kernels/tp_gemv_impl.cuh`, shared by tp_kernels.cu and
+    tp_spec.cu) got an `M` template parameter (columns, PRO_NONE / no AR only) running the M=1 code per column;
+    `k_ar_norm_m` (rows of the multi-block AR+norm, one publisher block per row), `k_pull_m` (no-P2P), `k_gdn_m`
+    (k+1 tokens with the state in registers, conv history from earlier y columns), per-column attention through the
+    original `d_attn_prep/split/combine` (now taking `pos`, in the shared header), `k_embed_m`, `k_argmax_x`.
+  - DeltaNet rollback: a state snapshot after every verify token (k+2 buffers per layer, 8 x 75.5 MB per GPU
+    allocated) and a 16-slot conv ring, so a rejected token needs no replay. `spec_rb 1` (replay from a per-token
+    stash, `k_gdn_replay`) is implemented and byte-identical (v5) but not faster (replay 0.41 ms on partial steps vs
+    0.3 ms saved in gdn_m), default off.
+  - Separate AR / argmax mailboxes for the verify and draft graphs (their AR counts differ, so slot parity would not
+    alternate across graph boundaries on a shared mailbox).
+  - MTP prompt catch-up at spec start from the batched prefill's final residual rows (`tp_prefill_hrows`).
+  - Prompt lookup (`spec_ng N`, `k_ngram`): a match of >= N tokens of the history suffix replaces the MTP drafts.
+    Measured (v3, k=3): ng5 66.8 / 62.6 / 66.6 vs MTP only 69.3 / 63.5 / 65.9 on P0 / P1 / P2; ng3 is worse. MTP
+    already predicts the copied spans of the edit prompt (P2 acceptance 0.82), so prompt lookup stays off.
+  - Debug / bench options: `spec_force` (+ `t4q_spec_force`), `spec_dbg` (verify logits to dumps), `spec_prof`,
+    `spec_trace N` (CUPTI timeline split into draft / verify by marker kernels, stats key `spec_trace`), `spec_sqt`.
+- `tp_engine.cu`: `load_mtp` (blk.64 sharded like an attention layer; `eh_proj` Q8_0 K-split by input half: GPU0
+  multiplies enorm(embed), GPU1 hnorm(h); draft head = output.weight rows [dv/2 g, +dv/2), `T4Q_DV` default 32768,
+  `T4Q_NO_MTP` skips loading). VRAM 8615 MiB per GPU at 4k context before the spec buffers (~+0.75 GB).
+- `tests/spec_check.py` (sections ref / v4 / v5 / prof / trace, config sets), `tools/stage_m5.py` (stage m5, no
+  oracle needed: the reference is plain t4q greedy). Prompts P0/P1 as in the baseline, P2 = a code-edit prompt.
+
+### Broken or open
+- The verify cost per column is the limit (dp4a GEMV ALU at M=k+1 under the 70 W cap). A tensor-core (mma.m8n8k16)
+  verify GEMV can stay bit-identical (the per-group integer sums are exact; the float epilogue must replicate lane j's
+  chunk-ordered FFMA chain and the xor-8/4/2/1 butterfly) but my instruction estimate says ~1.3x at M=4 and ~2x at M=8
+  only, because the exact per-(row, column, group) float epilogue stays. It would make k=5..6 pay off (P0 4.3-4.4
+  tokens per step).
+- gate|up at M=4 runs at 185 GB/s while down/qkvz run at 215-220; `spec_sqt 128` did not help (v5, confounded by clocks).
+- Speculation inside the batched engine (small B) and the low-bit speed mode are not started.
+- The spec loop overshoots up to `spec_ahead` iterations past max_new / EOS (state advanced past the returned tokens).
+- Prompts longer than one prefill ubatch (2048): only the last ubatch gets the MTP prompt catch-up.
+
+### Next steps
+1. Tensor-core verify GEMV for P4 (Q4_0) with the bit-exact epilogue above; then raise the default k.
+2. Fix the gate|up M>1 slowdown (wave quantization: 272 blocks on 80 slots, try a persistent tile loop).
+3. Spec in the batched engine for B <= 2 (two sequences x (k+1) columns through the same M-column kernels needs
+   per-sequence state buffers), and the low-bit speed mode (Q3_K/IQ3 fast formats) with KL vs Q4_0/Q8_0.
