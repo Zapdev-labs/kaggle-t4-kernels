@@ -185,7 +185,7 @@ def main():
                        "batch_check.log", timeout=max(300, remaining))
         val = json.loads(vout.read_text()) if vout.exists() else {}
         for k, v in (val.get("bench") or {}).items():
-            for b, w in ((v or {}).get("per_B") or {}).items():
+            for b, w in ((v or {}).get("runs") or {}).items():
                 if isinstance(w, dict) and "t0" in w:
                     w["clocks"] = clocks_between(w["t0"], w["t1"])
         if isinstance(val.get("e2e"), dict) and "t0" in val["e2e"]:

@@ -28,6 +28,7 @@ struct BdGpu {
     float* qa = nullptr;      // [BD_MAXB][3072] roped queries
     float* logits = nullptr;  // [BD_MAXB][124160] this GPU's logits shard
     float2* am = nullptr;     // [BD_MAXB] per-row argmax (value, index bits)
+    float* kscr = nullptr;    // split-K fp32 slices [4][BD_MAXB][5120]
     int8_t* hq = nullptr;     // [BD_MAXB][5120] decode-format q8 of the normed rows (dp4a head)
     int2* hm = nullptr;
     float2* h_am = nullptr;   // pinned host copy of am
@@ -41,7 +42,7 @@ struct Bd {
     std::vector<int> pos, tok;  // per slot: next position, next input token (-1: empty slot)
     int last_B = 0;
     std::vector<int> last_slots;
-    double step_s = 0, prefill_s = 0;
+    double step_s = 0, prefill_s = 0, enqueue_s = 0;
     long steps = 0, rows = 0, prefills = 0;
     std::vector<std::pair<std::string, std::pair<double, int>>> prof;
     size_t bytes = 0;
@@ -411,7 +412,7 @@ void bd_free(Bd* b) {
         CK(cudaDeviceSynchronize());
         BdGpu& G = b->G[g];
         for (void* p : {G.S, (void*)G.ring, (void*)G.kv, (void*)G.meta, (void*)G.ws, (void*)G.o, (void*)G.qa,
-                        (void*)G.logits, (void*)G.am, (void*)G.hq, (void*)G.hm})
+                        (void*)G.logits, (void*)G.am, (void*)G.hq, (void*)G.hm, (void*)G.kscr})
             if (p) cudaFree(p);
         if (G.h_am) cudaFreeHost(G.h_am);
         if (G.h_meta) cudaFreeHost(G.h_meta);
@@ -481,6 +482,7 @@ struct BdRun : PfRun {
             }
             gemm8::quant8(B.xn, D, T, Tp, D, B.xq, B.dx, G.s, 64);
             gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, B.xq, B.dx, Q.logits, 124160, T, Tp);
+            a8.pfk = pfk;
             const cudaError_t e = gemm8::launch9(W.L.fmt, W.L.rpl, bn_div(Tp, 128), 64, a8, G.s);
             if (e != cudaSuccess) throw std::runtime_error(std::string("bd head gemm: ") + cudaGetErrorString(e));
         } else {
@@ -604,6 +606,7 @@ int tp_batch_init(t4q_ctx* c, int n_slots, int slot_ctx, int sf16) {
         G.qa = dalloc<float>((size_t)BD_MAXB * 3072);
         G.logits = dalloc<float>((size_t)BD_MAXB * 124160);
         G.am = dalloc<float2>(BD_MAXB);
+        G.kscr = dalloc<float>((size_t)4 * BD_MAXB * 5120);
         G.hq = dalloc<int8_t>((size_t)BD_MAXB * 5120);
         G.hm = dalloc<int2>((size_t)BD_MAXB * 160);
         CK(cudaMallocHost(&G.h_am, BD_MAXB * sizeof(float2)));
@@ -738,9 +741,14 @@ int tp_batch_step(t4q_ctx* c, int n, const int32_t* slots, int32_t* out) {
     R.ga = 64;
     R.ar16 = S.pf_ar16 != 0;
     R.p2p_part = S.bd_p2p && S.p2p && R.ar16;
+    R.pfk = S.bd_pfk;
+    R.ksplit = S.bd_ksplit;
+    R.kscr[0] = b->G[0].kscr;
+    R.kscr[1] = b->G[1].kscr;
     R.nsplit = (maxpos + 1 + S.bd_ch - 1) / S.bd_ch;
     if (S.bd_prof) { R.ev = &ev; R.evn = &evn; }
     R.run_bd();
+    b->enqueue_s += secs(t0);
     for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); CK(cudaStreamSynchronize(S.G[g].s)); }
     for (int i = 0; i < n; i++) {
         const float2 a = b->G[0].h_am[i], p = b->G[1].h_am[i];
@@ -791,9 +799,10 @@ std::string tp_batch_stats(t4q_ctx* c) {
     char buf[512];
     snprintf(buf, sizeof buf,
              ", \"batch\": {\"n_slots\": %d, \"slot_ctx\": %d, \"state_f16\": %d, \"mib_per_gpu\": %.0f, \"steps\": %ld, "
-             "\"rows\": %ld, \"step_s\": %.4f, \"prefills\": %ld, \"prefill_s\": %.4f, \"head\": %d, \"ch\": %d, \"last_B\": %d",
-             b->n_slots, b->slot_ctx, b->sf16, b->bytes / 1048576.0, b->steps, b->rows, b->step_s, b->prefills,
-             b->prefill_s, S.bd_head, S.bd_ch, b->last_B);
+             "\"rows\": %ld, \"step_s\": %.4f, \"enqueue_s\": %.4f, \"prefills\": %ld, \"prefill_s\": %.4f, \"head\": %d, "
+             "\"ch\": %d, \"p2p\": %d, \"last_B\": %d",
+             b->n_slots, b->slot_ctx, b->sf16, b->bytes / 1048576.0, b->steps, b->rows, b->step_s, b->enqueue_s,
+             b->prefills, b->prefill_s, S.bd_head, S.bd_ch, S.bd_p2p, b->last_B);
     std::string s = buf;
     if (!b->prof.empty()) {
         s += ", \"profile\": {";
@@ -810,6 +819,6 @@ std::string tp_batch_stats(t4q_ctx* c) {
 void tp_batch_reset_stats(t4q_ctx* c) {
     Bd* b = (Bd*)c->tps->bd;
     if (!b) return;
-    b->step_s = 0; b->steps = 0; b->rows = 0; b->prefill_s = 0; b->prefills = 0;
+    b->step_s = 0; b->steps = 0; b->rows = 0; b->prefill_s = 0; b->prefills = 0; b->enqueue_s = 0;
     b->prof.clear();
 }

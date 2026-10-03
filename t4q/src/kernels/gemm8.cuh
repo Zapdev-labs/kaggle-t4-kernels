@@ -76,6 +76,9 @@ struct Args {
     float* odx = nullptr;  // [N/128][Tp] (64-feature groups)
     __half* yh = nullptr;  // if set: fp16 output yh[t * ldy + n] instead of y (no accumulate)
     __half* yh2 = nullptr; // gemm9: second copy of the fp16 output (the peer GPU's all-reduce mailbox, P2P stores)
+    int pfk = 0;           // gemm9: L2 prefetch of the weight planes this many 32-blocks ahead (0 = off)
+    int kz = 1;            // gemm9 split-K: grid.z K slices (K / kz a multiple of 256); slice z writes fp32 y + z * zs
+    long long zs = 0;
     int dxs = 0;           // gemm9: row stride of dx (0 = Tp); lets a launch cover a token slice of a wider batch
 };
 
@@ -479,9 +482,24 @@ struct WPtr {
     }
 };
 
+__device__ __forceinline__ void prefetch_l2(const void* p) { asm volatile("prefetch.global.L2 [%0];" ::"l"(p)); }
+
+// L2 prefetch of this thread's weight planes at 32-block kp (code group and its scale bytes)
+template <int FMT, int RPL>
+__device__ __forceinline__ void prefetch9(const WPtr<FMT, RPL>& P, int kp) {
+    const int c2 = kp >> 4, j2 = kp & 15;
+    prefetch_l2(P.code + c2 * P.cs_code + j2 * 16);
+    prefetch_l2(P.sa + c2 * P.cs_s + j2 * RPL * 2);
+    if (FMT == gemv::FAST_P4M) prefetch_l2(P.sb + c2 * P.cs_s + j2 * RPL * 2);
+    if (FMT == gemv::FAST_K5) prefetch_l2(P.hq + c2 * P.cs_h + j2 * 4);
+    if (FMT == gemv::FAST_K6) prefetch_l2(P.hq + c2 * P.cs_h + j2 * 8);
+}
+
 template <int FMT, int RPL, int BN, int GA, int AB>
 __device__ __forceinline__ void stage_load9(Stage<BN>& S, const WPtr<FMT, RPL>& P, const int8_t* xb, long long xstep,
-                                            const float* dxb, long long tps, int kb0, int tid) {
+                                            const float* dxb, long long tps, int kb0, int tid, int pfk = 0,
+                                            int kend = 0) {
+    if (pfk && kb0 + pfk < kend) prefetch9<FMT, RPL>(P, kb0 + pfk);  // more DRAM requests in flight
     if (AB & 8) {  // no loads: perturb the staged values so the data still changes per stage
         S.wq.x ^= kb0 * 0x01010101; S.wq.y += kb0; S.wq.z ^= kb0 << 3; S.wq.w += 7 * kb0;
 #pragma unroll
@@ -527,7 +545,8 @@ __global__ void __launch_bounds__(NT, BN <= 64 ? 2 : 1) gemm9_kernel(const Args 
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     const int wm = warp & 1, wn = warp >> 1;
     const int tok0 = blockIdx.x * BN, row0 = blockIdx.y * BM;
-    const int nkb = a.K >> 5;
+    const int nkb = (a.K >> 5) / gridDim.z;  // split-K: this block's K slice [kbase, kbase + nkb) in 32-blocks
+    const int kbase = blockIdx.z * nkb, kend = kbase + nkb;
     const int t4 = lane & 3;
     const float invs_st = a.invs[row0 + (tid >> 1)];
     const WPtr<FMT, RPL> P(a, row0 + (tid >> 1), tid & 1);
@@ -535,6 +554,8 @@ __global__ void __launch_bounds__(NT, BN <= 64 ? 2 : 1) gemm9_kernel(const Args 
     const long long xstep = (long long)(NT / 4) * a.K;
     const float* dxb = a.dx + tok0 + 2 * (tid & (BN / 2 - 1));
     const long long tps = a.dxs ? a.dxs : a.Tp;
+    const int pfk = a.pfk;
+    for (int k = 2; k <= pfk && k < nkb; k += 2) prefetch9<FMT, RPL>(P, kbase + k);  // the first pfk blocks (stage 0: plain load)
 
     float acc[8][NG][2];  // GA 0: int32 bits
 #pragma unroll
@@ -545,7 +566,7 @@ __global__ void __launch_bounds__(NT, BN <= 64 ? 2 : 1) gemm9_kernel(const Args 
     Stage<BN> S;
     S.dx0 = S.dx1 = make_float2(0.f, 0.f);
     float2 bkeep = make_float2(0.f, 0.f);
-    stage_load9<FMT, RPL, BN, GA, AB & 4>(S, P, xb, xstep, dxb, tps, 0, tid);
+    stage_load9<FMT, RPL, BN, GA, AB & 4>(S, P, xb, xstep, dxb, tps, kbase, tid);
     stage_store<FMT, BN, AB & 1>(S, smem, invs_st, bkeep, 0, tid);
     __syncthreads();
 
@@ -558,7 +579,7 @@ __global__ void __launch_bounds__(NT, BN <= 64 ? 2 : 1) gemm9_kernel(const Args 
     int buf = 0;
     for (int kb0 = 0; kb0 < nkb; kb0 += 2) {
         const bool more = kb0 + 2 < nkb;
-        if (more) stage_load9<FMT, RPL, BN, GA, AB>(S, P, xb, xstep, dxb, tps, kb0 + 2, tid);
+        if (more) stage_load9<FMT, RPL, BN, GA, AB>(S, P, xb, xstep, dxb, tps, kbase + kb0 + 2, tid, pfk, kend);
         const unsigned char* B = smem + ((AB & 16) ? 0 : buf) * C::BYTES;
         if (GA == 64 || GA == 0) {
             uint32_t af[4][8];
@@ -730,7 +751,9 @@ __global__ void __launch_bounds__(NT, BN <= 64 ? 2 : 1) gemm9_kernel(const Args 
                 const int tok = tok0 + wn * WN + 8 * g + 2 * t4 + e;
                 if (tok < a.T) {
                     const float v = GA == 0 ? (float)__float_as_int(acc[i][g][e]) * (a.dx[tok] * sr) : acc[i][g][e] * sr;
-                    if (a.yh) {
+                    if (gridDim.z > 1) {  // split-K slice: fp32 partial, summed by ksum_kernel
+                        a.y[blockIdx.z * a.zs + (size_t)tok * a.ldy + row] = v;
+                    } else if (a.yh) {
                         const __half hv = __float2half_rn(v);
                         a.yh[(size_t)tok * a.ldy + row] = hv;
                         if (a.yh2) a.yh2[(size_t)tok * a.ldy + row] = hv;
@@ -755,8 +778,8 @@ static cudaError_t launch9_t(const Args& a, cudaStream_t s) {
         if (e != cudaSuccess) return e;
         attr_dev_mask |= 1 << dev;
     }
-    if (a.N % BM || a.K % 256 || a.Tp % BN) return cudaErrorInvalidValue;
-    dim3 grid(a.Tp / BN, a.N / BM);
+    if (a.N % BM || a.K % (256 * a.kz) || a.Tp % BN || a.kz < 1) return cudaErrorInvalidValue;
+    dim3 grid(a.Tp / BN, a.N / BM, a.kz);
     k<<<grid, NT, smem, s>>>(a);
     return cudaGetLastError();
 }
@@ -789,6 +812,21 @@ static inline cudaError_t launch9(int fmt, int rpl, int bn, int ga, const Args& 
         return bn == 32 ? launch9_t<gemv::FAST_K6, 2, 32, 64>(a, s) : bn == 64 ? launch9_t<gemv::FAST_K6, 2, 64, 64>(a, s)
                         : launch9_t<gemv::FAST_K6, 2, 128, 64>(a, s);
     return cudaErrorInvalidValue;
+}
+
+// split-K: out = sum over the kz fp32 slices (fixed order) -> fp16 yh (and yh2) or fp32 y. grid (T, N / 256) x 256
+__global__ void ksum_kernel(const float* __restrict__ part, long long zs, int kz, int ldy, float* y, __half* yh,
+                            __half* yh2) {
+    const size_t i = (size_t)blockIdx.x * ldy + blockIdx.y * 256 + threadIdx.x;
+    float v = part[i];
+    for (int z = 1; z < kz; ++z) v += part[z * zs + i];
+    if (yh) {
+        const __half h = __float2half_rn(v);
+        yh[i] = h;
+        if (yh2) yh2[i] = h;
+    } else {
+        y[i] = v;
+    }
 }
 
 // ================================================================================================ gemm10

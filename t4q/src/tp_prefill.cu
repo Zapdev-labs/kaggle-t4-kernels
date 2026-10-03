@@ -1788,6 +1788,9 @@ struct PfRun {
     }
     bool rotw(const tp::FW& W) const { return rot && (rmask & wbit(W)); }
     int emax = 7;
+    int pfk = 0;            // gemm9 L2 weight prefetch distance in 32-blocks (batched decode option bd_pfk)
+    int ksplit = 1;         // batched decode: split-K slices for the K-split GEMMs (fp32 slices in kscr, summed by ksum)
+    float* kscr[2] = {nullptr, nullptr};
     bool p2p_part = false;  // batched decode: fp16 K-split GEMM partials also stored straight into the peer's rx slot
     int tp_force = 0;  // batched decode: GEMM token padding (32, 64 or a multiple of 128), 0 = prefill rule
     // largest gemm9 token tile <= cap that divides Tp (Tp is a multiple of 32)
@@ -1912,6 +1915,7 @@ struct PfRun {
         } else if (g8 && silu) {
             gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, B.xq, B.dx, nullptr, 0, Ts, Tps);
             a8.oq = B.xq2; a8.odx = B.dx2;
+            a8.pfk = pfk;
             e = gemm8::launch9_silu(W.L.fmt, W.L.rpl, a8, G.s, bn_div(Tps, 256));
         } else if (g8) {
             gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, in2 ? B.xq2 : B.xq, in2 ? B.dx2 : B.dx,
@@ -1921,8 +1925,24 @@ struct PfRun {
                 a8.y = nullptr;
                 if (p2p_part) a8.yh2 = (__half*)P->G[1 - g].rx[ar & 1] + (size_t)st0[s] * ldy;  // send() copies nothing
             }
+            a8.pfk = pfk;
             const int pbn = c->tps->pf_bn;
             const int bn = Tps < 128 ? bn_div(Tps, 64) : pbn ? pbn : (Tps >= 512 ? 256 : 128);
+            if (y == B.part && ksplit > 1 && kscr[g] && W.L.K % (256 * ksplit) == 0) {  // split-K, then a fixed-order sum
+                gemm8::Args az = a8;
+                az.kz = ksplit;
+                az.y = kscr[g];
+                az.zs = (long long)Tps * ldy;
+                az.yh = nullptr; az.yh2 = nullptr;
+                e = gemm8::launch9(W.L.fmt, W.L.rpl, (Tps % bn) ? bn_div(Tps, 128) : bn, ga, az, G.s);
+                if (e == cudaSuccess) {
+                    gemm8::ksum_kernel<<<dim3(Ts, ldy / 256), 256, 0, G.s>>>(kscr[g], az.zs, ksplit, ldy, a8.y, a8.yh, a8.yh2);
+                    e = cudaGetLastError();
+                }
+                if (e != cudaSuccess) throw std::runtime_error(std::string("gemm split-K: ") + cudaGetErrorString(e));
+                mark(g, W.L.K == 8704 ? "gemm_down" : W.L.fmt == gemv::FAST_K5 ? "gemm_ssm_out" : "gemm_attn_out");
+                return;
+            }
             const int nch = arc_chunks(s);
             if (y == B.part && nch > 1) {  // pf_arc: token chunks, each followed by an event for its AR copy (send)
                 const int cs = chunk_rows(s);

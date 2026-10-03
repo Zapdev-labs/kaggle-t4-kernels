@@ -187,18 +187,18 @@ def long_ids(tok, n):
 
 
 def sec_bench(eng, tok, a):
+    """spec: depth:n_slots:slot_ctx:sf16:B1,B2,..[:pf_ub[:opts1/opts2/..]] -- every option set runs every B on the
+    same slots (options are runtime switches), interleaved per B so clock drift hits all sets alike"""
     res = R.setdefault("bench", {})
     for spec in a.bench.split(";"):
-        # depth:n_slots:slot_ctx:sf16:B1,B2,..[:pf_ub[:opts]]
         parts = spec.split(":")
         depth, ns, sc, sf, bl = parts[:5]
         eng.set_option("pf_ub", int(parts[5]) if len(parts) > 5 and parts[5] else 2048)
-        opts = parts[6] if len(parts) > 6 else ""
-        apply(eng, opts)
+        osets = (parts[6] if len(parts) > 6 else "").split("/")
         depth, ns, sc, sf = int(depth), int(ns), int(sc), int(sf)
         Bs = [int(x) for x in bl.split(",")]
-        key = f"d{depth}_sf{sf}" + (f"_{opts}" if opts else "")
-        log("bench", key, "slots", ns, "ctx", sc, "B", Bs)
+        key = f"d{depth}_sf{sf}_n{ns}"
+        log("bench", key, "slots", ns, "ctx", sc, "B", Bs, "option sets", osets)
         try:
             eng.batch_init(ns, sc, sf)
         except Exception as e:  # noqa: BLE001
@@ -208,34 +208,42 @@ def sec_bench(eng, tok, a):
             continue
         ids = long_ids(tok, depth)
         t = time.time()
-        src = ns - 1  # pristine source slot; every B run starts from clones of it at the same depth
+        src = ns - 1  # pristine source slot; every run starts from clones of it at the same depth
         eng.batch_prefill(src, ids)
-        rk = {"prefill_s": round(time.time() - t, 2), "depth": depth, "n_slots": ns, "slot_ctx": sc, "per_B": {}}
+        rk = {"prefill_s": round(time.time() - t, 2), "depth": depth, "n_slots": ns, "slot_ctx": sc, "runs": {}}
         for B in Bs:
             if B > ns:
                 continue
-            for s in range(B):
-                eng.batch_clone(src, s)
-            slots = list(range(B))
-            eng.batch_step(slots)  # warm-up (each step advances every slot by one position)
-            eng.batch_step(slots)
-            n = a.steps
-            t0 = time.time()
-            for _ in range(n):
+            for opts in osets:
+                apply(eng, opts)
+                for s in range(B):
+                    eng.batch_clone(src, s)
+                slots = list(range(B))
+                eng.batch_step(slots)  # warm-up (each step advances every slot by one position)
                 eng.batch_step(slots)
-            t1 = time.time()
-            ms = 1e3 * (t1 - t0) / n
-            eng.set_option("bd_prof", 1)
-            for _ in range(2):
-                eng.batch_step(slots)
-            prof = (eng.stats().get("batch") or {}).get("profile") or {}
-            eng.set_option("bd_prof", 0)
-            prof = {k: round(v[0] / 2, 2) for k, v in prof.items()}  # ms per step (GPU0 events)
-            rk["per_B"][str(B)] = {"ms_per_step": round(ms, 2), "agg_tok_s": round(B * 1e3 / ms, 1), "t0": t0, "t1": t1,
-                                   "profile_ms": prof}
-            log(f"  B={B}: {ms:.1f} ms/step, {B * 1e3 / ms:.1f} tok/s aggregate; profile {prof}")
-            res[key] = rk
-            save()
+                n = a.steps
+                eng.set_option("bd_reset_stats", 1)
+                t0 = time.time()
+                for _ in range(n):
+                    eng.batch_step(slots)
+                t1 = time.time()
+                enq = (eng.stats().get("batch") or {}).get("enqueue_s", 0.0)
+                ms = 1e3 * (t1 - t0) / n
+                eng.set_option("bd_prof", 1)
+                for _ in range(2):
+                    eng.batch_step(slots)
+                prof = (eng.stats().get("batch") or {}).get("profile") or {}
+                eng.set_option("bd_prof", 0)
+                prof = {k: round(v[0] / 2, 2) for k, v in prof.items()}  # ms per step (GPU0 events)
+                rk["runs"][f"B{B}|{opts}"] = {"B": B, "opts": opts, "ms_per_step": round(ms, 2),
+                                              "agg_tok_s": round(B * 1e3 / ms, 1), "enqueue_ms": round(1e3 * enq / n, 2),
+                                              "t0": t0, "t1": t1, "profile_ms": prof}
+                log(f"  B={B} [{opts}]: {ms:.1f} ms/step, {B * 1e3 / ms:.1f} tok/s aggregate, enqueue "
+                    f"{1e3 * enq / n:.1f} ms; profile {prof}")
+                res[key] = rk
+                save()
+        if src >= max(Bs):
+            pass
     eng.batch_free()
 
 
@@ -358,11 +366,11 @@ def main():
     ap.add_argument("--gen", type=int, default=128)
     ap.add_argument("--tf", type=int, default=16)
     ap.add_argument("--slot_ctx", type=int, default=1024)
-    ap.add_argument("--correct_configs", default="bd_head=1,bd_p2p=0|0;bd_head=0,bd_p2p=0|0;bd_head=1,bd_p2p=0|1;"
-                                                 "bd_head=1,bd_p2p=1|1")
-    ap.add_argument("--bench", default="1000:64:1088:1:1,8,16,32,48,64::bd_p2p=0;1000:64:1088:1:16,32,64::bd_p2p=1;"
-                                       "4000:32:4128:1:1,8,16,24,32:1024:bd_p2p=0;4000:32:4128:1:32:1024:bd_p2p=1;"
-                                       "1000:40:1088:0:16,32,40::bd_p2p=0")
+    ap.add_argument("--correct_configs", default="bd_head=1,bd_pfk=16,bd_ksplit=2|0;bd_head=1,bd_pfk=16,bd_ksplit=2|1;"
+                                                 "bd_head=1,bd_pfk=0,bd_ksplit=2|1;bd_head=1,bd_pfk=0,bd_ksplit=1|1")
+    ap.add_argument("--bench", default="1000:64:1088:1:1,16,32,64::bd_pfk=0,bd_ksplit=1/bd_pfk=16,bd_ksplit=1/"
+                                       "bd_pfk=16,bd_ksplit=2/bd_pfk=32,bd_ksplit=2;"
+                                       "4000:32:4128:1:8,16,32:1024:bd_pfk=0,bd_ksplit=1/bd_pfk=16,bd_ksplit=2")
     ap.add_argument("--steps", type=int, default=12)
     ap.add_argument("--e2e_n", type=int, default=32)
     ap.add_argument("--e2e_prompt", type=int, default=500)
