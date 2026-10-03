@@ -46,7 +46,7 @@ static const Shape SHAPES[] = {
 };
 static const char* VN[] = {"g9_ga64", "g13_tok", "g16_w8", "g16_q4", "g16_w8+conv", "conv_only", "g16_w8_l2",
                            "g16_w8_swap", "g16_w8_swap_l2", "g16_q4_l2", "g17_q4_tok", "g17_q4_gsh", "g17_w8_tok",
-                           "g17_w8_gsh", "g17_w8_k1", "g17_w8_k2", "g17_w8_k4", "g17_w8_k3", "rot_conv_f32", "rot_conv_h2"};
+                           "g17_w8_gsh", "g17_w8_k1", "g17_w8_k2", "g17_w8_k4", "g17_w8_k3", "rot_conv_f32", "rot_conv_h2", "g17_w8_gb512"};
 
 static uint64_t rng_s = 0x9E3779B97F4A7C15ull;
 static inline uint64_t rnd() { rng_s ^= rng_s << 13; rng_s ^= rng_s >> 7; rng_s ^= rng_s << 17; return rng_s; }
@@ -85,6 +85,9 @@ struct Bufs {
     int8_t* xq64 = nullptr; // GA64 q8
     float* dx64 = nullptr;
     float* y = nullptr;
+    int8_t* xqb = nullptr;  // rotated per-512-block q8 (GSH 2)
+    float* dxb = nullptr;
+    float* dsrb = nullptr;
     int8_t* xqg = nullptr;  // GSH q8
     int8_t* dsh = nullptr;
     float* dxg = nullptr;
@@ -116,6 +119,10 @@ static cudaError_t run_var(int v, Bufs& b, cudaStream_t st) {
         return g16::launch17_t<0, FAST_P4, 4, 0, 0, 3>(a, st);
     }
     if (v == 18 || v == 19) return rot::convert(b.fmt, b.rpl, q, b.invs, b.w8, st, v == 19);
+    if (v == 20) {
+        a.xq = b.xqb; a.dx = b.dxb; a.dsr = b.dsrb;
+        return g16::launch17_t<0, FAST_P4, 4, 0, 2, 1>(a, st);
+    }
     if (v >= 10 && v <= 13) {
         const int gsh = (v == 11 || v == 13);
         if (gsh) { a.xq = b.xqg; a.dx = b.dxg; a.dsh = b.dsh; }
@@ -150,6 +157,9 @@ static void setup(const Shape& sh, int T, Bufs& b, std::vector<uint8_t>& src, st
     CK(cudaMalloc(&b.dx64, (size_t)b.Tp * (sh.K / 64) * 4));
     CK(cudaMalloc(&b.y, (size_t)b.Tp * sh.N * 4));
     CK(cudaMalloc(&b.xqg, (size_t)b.Tp * sh.K));
+    CK(cudaMalloc(&b.xqb, (size_t)b.Tp * sh.K));
+    CK(cudaMalloc(&b.dxb, (size_t)b.Tp * 4));
+    CK(cudaMalloc(&b.dsrb, (size_t)b.Tp * (sh.K / 512) * 4));
     CK(cudaMalloc(&b.dsh, (size_t)b.Tp * (sh.K / 64)));
     CK(cudaMalloc(&b.dxg, (size_t)b.Tp * 4));
     // activations: gaussian, a few x30 channels
@@ -162,6 +172,7 @@ static void setup(const Shape& sh, int T, Bufs& b, std::vector<uint8_t>& src, st
     gemm8::quant8(x, sh.K, T, b.Tp, sh.K, b.xq0, b.dx0, st, 0);
     gemm8::quant8(x, sh.K, T, b.Tp, sh.K, b.xq64, b.dx64, st, 64);
     g16::quant_gsh_kernel<float><<<b.Tp, 256, 0, st>>>(x, sh.K, T, sh.K, 7, b.xqg, b.dsh, b.dxg, b.Tp);
+    if (sh.K % 512 == 0) rot::quant_rot<float>(x, sh.K, T, b.Tp, sh.K, b.xqb, b.dxb, st, b.dsrb);
     CK(cudaGetLastError());
     gemm8::Args q = gemm8::make_args(b.L, b.w, b.invs, nullptr, nullptr, nullptr, 0, 0, 0);
     CK(gemm8::row_invs(sh.fmt, sh.rpl, q, b.invs, st));
@@ -171,7 +182,7 @@ static void setup(const Shape& sh, int T, Bufs& b, std::vector<uint8_t>& src, st
 }
 static void release(Bufs& b) {
     for (void* p : {(void*)b.w, (void*)b.w8, (void*)b.invs, (void*)b.xq0, (void*)b.dx0, (void*)b.xq64, (void*)b.dx64, (void*)b.y,
-                    (void*)b.xqg, (void*)b.dsh, (void*)b.dxg})
+                    (void*)b.xqg, (void*)b.dsh, (void*)b.dxg, (void*)b.xqb, (void*)b.dxb, (void*)b.dsrb})
         cudaFree(p);
     b = Bufs();
 }
@@ -222,7 +233,7 @@ static void g8_row_host(int fmt, const uint8_t* row, int K, float invs, std::vec
 
 int main(int argc, char** argv) {
     double sustain = 0;
-    std::vector<int> vars = {0, 8, 12, 14, 15, 16, 17, 18, 19};
+    std::vector<int> vars = {0, 14, 20, 19};
     std::vector<int> Ts = {512, 2048};
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -289,7 +300,12 @@ int main(int argc, char** argv) {
                     printf("CHECK {\"shape\":\"%s\",\"T\":%d,\"act_rel_err_gsh\":%.3e,\"act_rel_err_tok\":%.3e,\"act_rel_err_ga64\":%.3e}\n",
                            sh.name, T, std::sqrt(eg / rr), std::sqrt(et / rr), std::sqrt(e6 / rr));
                 }
-                for (int v : {2, 3, 8, 12, 14, 15, 16, 17}) {
+                std::vector<int8_t> xqb((size_t)b.Tp * b.K);
+                std::vector<float> dxb(b.Tp), dsrb((size_t)b.Tp * (b.K / 512));
+                CK(cudaMemcpy(xqb.data(), b.xqb, xqb.size(), cudaMemcpyDeviceToHost));
+                CK(cudaMemcpy(dxb.data(), b.dxb, b.Tp * 4, cudaMemcpyDeviceToHost));
+                CK(cudaMemcpy(dsrb.data(), b.dsrb, dsrb.size() * 4, cudaMemcpyDeviceToHost));
+                for (int v : {2, 3, 8, 12, 14, 15, 16, 17, 20}) {
                     if (v == 9 && sh.fmt != FAST_P4) continue;
                     const bool gsh = (v == 11 || v == 13);
                     CK(cudaMemset(b.y, 0, (size_t)b.T * b.N * 4));
@@ -301,7 +317,19 @@ int main(int argc, char** argv) {
                     for (int r = 0; r < b.N; r += (r < b.N - 8 ? 37 : 1))
                         for (int t = 0; t < b.T; t += (t < b.T - 3 ? 29 : 1)) {
                             double ref;
-                            if (!gsh) {
+                            if (v == 20) {
+                                const int nbk = b.K / 512;
+                                std::vector<double> es(nbk);
+                                es[nbk - 1] = dxb[t];
+                                for (int bb = nbk - 1; bb > 0; --bb) es[bb - 1] = dsrb[(size_t)bb * b.Tp + t] * es[bb];
+                                double sacc = 0;
+                                for (int bb = 0; bb < nbk; ++bb) {
+                                    long long sg = 0;
+                                    for (int k = bb * 512; k < bb * 512 + 512; ++k) sg += (long long)w8[(size_t)r * b.K + k] * xqb[(size_t)t * b.K + k];
+                                    sacc += (double)sg * es[bb];
+                                }
+                                ref = sacc / invs[r];
+                            } else if (!gsh) {
                                 long long s = 0;
                                 for (int k = 0; k < b.K; ++k) s += (long long)w8[(size_t)r * b.K + k] * xq[(size_t)t * b.K + k];
                                 ref = (double)s * dx[t] / invs[r];
@@ -322,7 +350,7 @@ int main(int argc, char** argv) {
                             e2 += (g - ref) * (g - ref); r2 += ref * ref;
                         }
                     const double rel = std::sqrt(e2 / r2);
-                    const bool ok = rel < (gsh ? 1e-5 : 1e-6) && wmis == 0;
+                    const bool ok = rel < ((gsh || v == 20) ? 1e-5 : 1e-6) && wmis == 0;
                     all_ok &= ok;
                     printf("CHECK {\"shape\":\"%s\",\"variant\":\"%s\",\"T\":%d,\"rel_l2_vs_exact\":%.3e,\"w8_mismatch\":%ld,\"ok\":%d}\n",
                            sh.name, VN[v], T, rel, wmis, (int)ok);

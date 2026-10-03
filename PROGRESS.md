@@ -485,3 +485,92 @@ All tok/s are graph-mode decode of 256 tokens after the P0/P1 chat prompts, max_
    - fuse the FA output into the q8 producer;
    - fuse conv + q/k norm into the chunk kernel's staging.
 3. Keep `pf_ga=64` and check new GEMM ideas with `tests/prefill_check.py`. KL against the decode path has stayed at or below 1.1e-3.
+
+## 2026-10-03 - P-prefill (round 3): plain-int8 GEMM pipeline, rotated per-token path (R512), activation-format study
+
+**Gate (pp2048 >= 1400 and pp512 >= 1200 tok/s, correctness preserved): NOT passed.**
+- Correct (default GA64 path, every check passes): best pp2048 **1006.1**, pp512 **870.5** (`otdoges/t4q-p` v31). Other boxes: 960.0 / 828.5 (v30) and 978.4 / 859.7 (v34). This is the round-2 path; within box variance it is unchanged (round 2: 988.6 / 855.4).
+- Fast but **not correct enough** (opt-in R512 mode): pp2048 **1213.2** (v31) and pp512 **955.9** (v31, `pf_nsub=1`). It fails the long-prompt check: last-token KL 7.1e-3 against a limit of 2e-3 (2 x llama.cpp's own spread on L, 8.2e-4). Teacher-forced continuation KL reaches max 2e-2 to 6e-1, against 6.7e-3 for GA64. Top-1 and greedy 32 tokens match everywhere.
+- No decode numbers were measured this round.
+
+Full tables: `research/p_results.md` (round 3 section). Raw outputs: `kaggle/p/out_v18..v34`, `kaggle/pg/out9..out13`.
+
+### What I built
+- **Activation-format study** (`pf_fq` modes 1-9 in `tp_prefill.cu`, `k_fq_*`):
+  - It emulates a GEMM input format on the GA64 int8 input. Every GEMM type can be selected with `pf_fq_mask`.
+  - It reports the residual and outlier-channel stats in `pf_fq`.
+  - `pf_keep_h=1` copies the final residual of every batch token into `dumps["pf_h"]`. `prefill_check.py --keep_h 1` turns that into a per-token hidden-state error against config 0, a more robust metric than one last-token KL.
+- **`t4q/src/kernels/gemm16.cuh`**: plain int8 x int8 GEMMs with int32 accumulation in the mma C operand.
+  - `gemm16` uses the 128-weight-row x 256-token tile.
+  - `gemm17` uses the CUTLASS orientation (128 tokens x 256 weight rows) with L2::128B loads. With KNOB 1 the global loads are issued at k-group 0, as in CUTLASS MmaPipelined.
+  - Weights come either pre-converted (`w8`) or from the decode layout, converted in registers.
+  - Epilogues: fp32, fp16, fused silu(gate)*up (OUT 2 fp16 / OUT 3 fp32), `nvalid` and `kstride`.
+  - Group-scale variants: GSH 1 shift-folds power-of-two 64-group scales. GSH 2 uses per-512-block scales with exact float-ratio accumulator rescaling.
+- **`t4q/src/kernels/rot.cuh`** (R512): randomized block-Hadamard rotation T = H512 * D.
+  - D is a per-32-chunk hash sign times a fixed 32-periodic element pattern.
+  - Weight converters: fp32 (all formats) and fp16x2 (P4/P4M, memory-bound, about 190-200 GB/s). Rotated row scales `invr` are computed once.
+  - Activation quantizers: register-resident `quant_rot_kernel`, plus the fused `k_pf_add_norm_rot` and `k_pf_gnorm_rot`.
+  - `w8r_f32_kernel` rotates fp32 weight rows (alpha/beta).
+  - `tests/test_rot_deq.cu` is a host-only check of the decode-layout dequant used by the converters. It passes exactly.
+- **Engine** (`pf_rot=1`, all GEMMs through gemm17):
+  - Per-GEMM-type scratch for rotated weights. The alpha/beta rows are appended to the qkvz GEMM (N 8448), which removed `k_pf_ab` (53 to 0 ms).
+  - Optional persistent rotated-weight cache in spare VRAM (`pf_wcache` MB per GPU, about 39% of the weights at 4500).
+  - Options:
+    - `pf_rot_mask`: which GEMM types use R512;
+    - `pf_rot_min`: ubatch size threshold;
+    - `pf_rgb`: per-512-block scales;
+    - `pf_rcf`: fp16 converter;
+    - `pf_rot_chk`: converter cross-check;
+    - `pf_h16`: fp16 vs fp32 silu output;
+    - `pf_abq`.
+- **Shared fixes**:
+  - `k_pf_gdnc` T-solve now uses 4 threads per column, which cut the spill from 116 to 52 B.
+  - `k_q8_64_half`.
+  - `oracle_dump` has a new `floor` job: llama.cpp's last-token spread for long prompts. `stage_p.py` runs it for L.
+  - `prefill_check.py` adds continuation KL for L, `--bench_skip` and `--prompts`.
+- **Benches**: `t4q/tools/gemm16_bench.cu` checks the kernels against an exact int64 reference, then runs burst and sustained modes. Stage `pg` runs it in section "g16".
+
+### Verified (Kaggle)
+- **GEMM, sustained, both GPUs, gateup T=2048** (pg v9-v13):
+
+  | kernel | TOPS |
+  |---|---|
+  | gemm9 GA64 (production) | 28-32 |
+  | gemm17 w8 KNOB 1 | 50.6-59.7 (1290-1335 ops/clk/SM) |
+  | CUTLASS int8 128x256, same sessions | 44.6-59.7 (1375-1490 ops/clk) |
+  | in-register Q4 conversion in the CUTLASS orientation | 10-15% slower |
+  | GSH 1 (shift fold) | 33-35 |
+  | GSH 2 (I2F/F2I rescale every 512 k) | 40.5, exact to 5e-6 |
+
+  All gemm16/17 variants match the exact reference (rel 4e-8 per-token, 5e-6 with folds).
+- **R512 speed**: in the engine its GEMMs are about 1.45x faster than gemm9 per batch. But with both GPUs fully loaded, clocks settle near 640-720 MHz instead of 900-1000 (v29: 638 / 645 MHz). Energy per op is only about 25% lower, so pp2048 gains about 20%: 1213 vs 1006 on the v31 box.
+- **Accuracy study**: per-token int8 fails (L KL 2e-2; down input alone 0.57).
+  - Clipping, top-n outlier channels and smoothing don't fix it.
+  - GA128 and GA256 fail or are borderline on L.
+  - Hadamard-512 + per-token is the best per-token format, but in the real engine it still fails L.
+  - With R512 the hidden-state error is about 1.3-1.5x GA64 (median 5-6e-2 vs 3.3-4e-2 on L), and the long prompt amplifies it.
+
+### Why the gate is out of reach (measured)
+- Prefill is energy-bound at the 70 W cap. The idle draw is about 30 W, which leaves about 40 W for compute.
+- The int8 m8n8k16 mma reads and writes its accumulators for every 1024 MACs. Even CUTLASS-level kernels sustain only about 45-55 TOPS per GPU, and at full TP load both GPUs drop to about 650-800 MHz.
+- The accurate activation format (GA64) needs a per-group fold. In the CUTLASS loop order the fold needs a second accumulator set (spills) or extra ALU work (25% for shift folding, 20% for per-512 rescale). gemm9's loop order runs at about 750 ops/clk.
+- The correct path tops out near 1000 tok/s at pp2048. R512 reaches about 1200 but fails the correctness check.
+
+### Broken or open
+- R512 fails the L check in every variant (v27-v34). In v22-v26 it had passed L (KL 2.9e-3 against the old 5e-3 limit, before the `floor` job existed). It is opt-in only.
+- GPU asymmetry: on many boxes one GPU runs about 30% slower under R512 load, and the other waits 20-38% of the batch in AR.
+- The decode step for the last prompt token still costs about 30-35 ms per prefill.
+- `pf_wcache` takes spare VRAM: the 1.2 GB margin is checked once, at cache build.
+
+### Next steps
+1. **Accuracy with the fast pipeline.** The only accurate format found is GA64-class grouping. Untested ideas:
+   - a 128x128-tile CUTLASS-order kernel with GA64 fold (64 int + 64 float accumulators per thread fit);
+   - two-digit activations (x = s1 q1 + s2 q2) for only the most sensitive GEMM type;
+   - a rotation over all of K (5120 = 5 x 1024), which spreads outliers more.
+
+   Check with `prefill_check` on L, using both the continuation-KL max and the last-token KL. One last-token KL is too noisy to pick between variants.
+2. **Correct path at about 1000 tok/s**:
+   - drop the last-token decode step (about 3%);
+   - parallelize `k_pf_gdnc` (24 blocks), currently 72-98 ms;
+   - fuse the AR add into the K-split GEMM epilogue.
+3. **On unbalanced boxes**, offload the shared work (add_norm and quant for both GPUs) to the faster GPU, and send int8 activations over P2P.

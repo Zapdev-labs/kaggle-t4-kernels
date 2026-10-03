@@ -34,9 +34,11 @@ ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "p"
 SECTIONS = ["engine"]
-FQ = ['pf_fq=0,pf_ga=32,pf_rot=0,pf_g17=0', 'pf_ga=64,pf_rot=0', 'pf_ga=64,pf_abq=1,pf_rcf=1,pf_wcache=4500,pf_nsub=2,pf_rot=1,pf_rot_mask=63,pf_rgb=0', 'pf_ga=64,pf_abq=1,pf_rcf=1,pf_wcache=4500,pf_nsub=2,pf_rot=1,pf_rot_mask=63,pf_rgb=1']
+# config 0 = production default (GA64, must pass); config 1 = R512 fast mode (opt-in, fails the L KL check)
+FQ = ['pf_ga=64,pf_rot=0,pf_nsub=2', 'pf_ga=64,pf_rot=1,pf_rot_mask=63,pf_wcache=4500,pf_abq=1,pf_rcf=1,pf_rgb=0,pf_h16=1,pf_nsub=2']
 PF_CONFIGS = ";".join(FQ)
 PF_SECTIONS = "correct,bench"
+PF_PROMPTS = "P0,P1,W,L"
 RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
@@ -256,6 +258,7 @@ def prepare_inputs(t4q):
         jobs.append(f"seq {name} {WORK / (name + '.i32')} 1")
     for name in ("P0", "P1", "W", "L"):
         jobs.append(f"last {name} {WORK / (name + '.i32')} 0")
+    jobs.append(f"floor L {WORK / 'L.i32'} 0")
     for name, n in (("P0", 64), ("P1", 64), ("W", 32), ("L", 32)):
         jobs.append(f"gen gen_{name} {WORK / (name + '.i32')} {n}")
     (WORK / "jobs.txt").write_text("\n".join(jobs) + "\n")
@@ -434,7 +437,7 @@ def main():
         remaining = DEADLINE - el() - 60
         rc, o = stream([sys.executable, "-u", str(t4q / "tests" / "prefill_check.py"), "--model", model, "--work",
                         str(WORK), "--oracle", str(ORC), "--out", str(vout), "--lib", str(t4q / "build" / "libt4q.so"),
-                        "--configs", PF_CONFIGS, "--bench_n", "512,2048", "--reps", "2", "--sections", PF_SECTIONS, "--keep_h", "1", "--bench_skip", "0"],
+                        "--configs", PF_CONFIGS, "--bench_n", "512,2048", "--reps", "3", "--sections", PF_SECTIONS, "--keep_h", "1", "--bench_skip", "", "--prompts", PF_PROMPTS],
                        "prefill_check.log", timeout=max(300, remaining))
         val = json.loads(vout.read_text()) if vout.exists() else {}
         for k, v in (val.get("bench") or {}).items():

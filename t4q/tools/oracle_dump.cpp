@@ -2,6 +2,7 @@
 //
 // usage: oracle_dump <model.gguf> <jobs.txt> <outdir> [layer|tensor]
 // jobs.txt lines (token-id files are raw little-endian int32):
+//   floor <name> <ids.i32>             -> <name>.tbt.f32 (1 x V: prefix n-1 in 512-token batches, then one decode step)
 //   seq  <name> <ids.i32> <tbt_last>   -> <name>.batch.f32 (n x V logits, one batch), <name>.tbt.f32 (last tbt_last
 //                                         positions decoded one token at a time after a batch prefix)
 //   gen  <name> <ids.i32> <n_gen>      -> <name>.gen.i32 (greedy tokens), <name>.gen.txt (tok top1 top2 gap)
@@ -173,6 +174,16 @@ int main(int argc, char** argv) {
                 if (decode(ctx, {ids[p]}, p, true)) { fprintf(stderr, "ORACLE_ERROR decode tbt failed\n"); return 1; }
                 memcpy(tb.data() + (size_t)i * V, llama_get_logits_ith(ctx, 0), V * 4);
             }
+            write_f32(out + "/" + name + ".tbt.f32", tb);
+        } else if (kind == "floor") {  // llama's own batch-vs-step spread for long prompts: prefix in 512 chunks + 1 step
+            std::vector<int32_t> ids = read_ids(file);
+            const int n = (int)ids.size();
+            clear(ctx);
+            std::vector<int32_t> pre(ids.begin(), ids.end() - 1);
+            if (decode_chunked(ctx, pre, 0)) { fprintf(stderr, "ORACLE_ERROR floor prefix failed\n"); return 1; }
+            if (decode(ctx, {ids[n - 1]}, n - 1, true)) { fprintf(stderr, "ORACLE_ERROR floor step failed\n"); return 1; }
+            std::vector<float> tb(V);
+            memcpy(tb.data(), llama_get_logits_ith(ctx, 0), V * 4);
             write_f32(out + "/" + name + ".tbt.f32", tb);
         } else if (kind == "last") {
             std::vector<int32_t> ids = read_ids(file);

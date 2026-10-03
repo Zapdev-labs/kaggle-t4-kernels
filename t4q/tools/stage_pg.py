@@ -33,7 +33,7 @@ WORK.mkdir(exist_ok=True)
 ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "pg"
-SECTIONS = ["g16", "ref"]
+SECTIONS = ["g16"]
 REF_ONLY = "cut_i8_128x256"
 PF_CONFIGS = "pf_g8=1,pf_ga=64,pf_fuse=1;pf_g8=1,pf_ga=32,pf_fuse=1"
 RESULTS = {"stage": STAGE}
@@ -398,7 +398,7 @@ def summarize_sustain(S):
 
 REF_SUSTAIN = 8
 G16_SUSTAIN = 8
-G16_SVARS = "12,14,15,16,17,12"
+G16_SVARS = "14,20,14,20"
 GEMM_KBU = [2]
 GEMM_TABLE = True
 GEMM_SASS = ["_ZN3t4q5gemm815gemm15_kernelILi0ELi4EEEvNS0_4ArgsE"]

@@ -188,3 +188,95 @@ In the kernels, gemm9's rel L2 against the host mirror is 1.0e-4 to 2.3e-4 (fp32
   - `-lmc` is "not supported for GPU";
   - `-ac` with a 405 MHz memory clock is "not supported" (the only memory application clock is 5001 MHz).
 - So the 70 W cap and the memory clock are fixed.
+
+# Round 3 (2026-10-02/03, `otdoges/t4q-p` v18-v34, `otdoges/t4q-pg` v9-v13)
+
+Raw outputs: `kaggle/p/out_v18` ... `kaggle/p/out_v34`, `kaggle/pg/out9` ... `kaggle/pg/out13` (git-ignored, kept on disk).
+
+## Gate: NOT passed
+
+| version | config | pp2048 | pp512 | clocks GPU0 / GPU1 (pp2048) | correctness |
+|---|---|---|---|---|---|
+| v30 | GA64 (round-2 default) | 960.0 | 828.5 | 908 / 938 | pass |
+| v31 | GA64 (round-2 default) | 1006.1 | 870.5 | 975 / 990 | pass |
+| v26 | R512 + weight cache 4.5 GB, nsub 2 | 1173.8 | 856.1 | 998 / 728 | pass (L KL 2.9e-3; build before the T-solve change) |
+| v30 | R512 + cache, nsub 2 | 1197.5 | 879.7 | 825 / 720 | fails L (KL 7.1e-3) |
+| v34 | GA64 (round-2 default) | 978.4 | 859.7 | 945 / 982 | pass |
+| **v31** | **R512 + cache, nsub 2** | **1213.2** | 895.7 | 825 / 705 | **fails L (KL 7.1e-3 vs limit 2e-3)** |
+| v31 | R512 + cache, nsub 1 | 1125.7 | **955.9** | 878 / 908 | fails L |
+| gate | | >= 1400 | >= 1200 | | |
+
+R512 = Hadamard-rotated per-token int8 activations x rotated per-row int8 weights (below). "fails L": last-token
+KL(decode path || batched prefill) on the 2048-token prompt is 7.1e-3; llama.cpp's own batch-vs-step spread on L
+(new `floor` oracle job, v31) is 8.2e-4, so the limit is 2e-3. Top-1 and greedy 32 tokens match on every prompt.
+**R512 is not correctness-preserving** (v32-v34): every R512 variant fails L (last-token KL 2.5e-3 to 1.6e-1,
+teacher-forced continuation KL max up to 0.64), while GA64 stays at KL 3.2e-4 and continuation max 6.7e-3. It stays
+an opt-in fast mode (`pf_rot=1`); the default remains GA64.
+
+R512 accuracy variants on L (v32-v34; KL = last token vs the decode path, cont = 16 teacher-forced positions):
+
+| variant | L KL | L cont mean / max | W KL |
+|---|---|---|---|
+| GA64 (default) | 3.2e-4 | 1.1e-3 / 6.7e-3 | 4.3e-4 |
+| R512, all GEMMs | 7.1e-3 | 2.0e-3 / 2.3e-2 | 1.6e-3 |
+| R512, fp32 silu output (`pf_h16=0`) | 3.1e-3 | 4.1e-2 / 6.4e-1 | 1.0e-3 |
+| R512, fp32 alpha/beta (`pf_abq=0`) | 5.9e-3 | 3.0e-3 / 4.6e-2 | 2.1e-3 |
+| R512 + per-512-block scales (`pf_rgb=1`) | 1.6e-2 | 1.2e-3 / 1.0e-2 | 2.8e-3 |
+| R512 except ssm_out / attn_out (mask 15) | 3.0e-3 | 4.5e-3 / 6.3e-2 | 9.7e-4 |
+| R512 only gateup + down (mask 12) | 4.3e-2 | 3.4e-2 / 3.6e-1 | 2.2e-3 |
+| R512 only ssm_out + attn_out (mask 48) | 1.7e-3 | 1.6e-3 / 2.2e-2 | 1.5e-3 |
+
+No subset of GEMMs on R512 gets the continuation error down to GA64's level, so per-token int8 (even after rotation)
+is too coarse for this model on long prompts; GA128 and GA256 already failed L in the emulation study.
+
+## Activation-format study (v18-v20, `pf_fq`: emulated on the GA64 input of every GEMM)
+
+Hidden-state metric: relative L2 error of the final residual of every prompt token vs the GA32 run (median shown).
+
+| format | L last-token KL | L median h error | note |
+|---|---|---|---|
+| GA64 (production) | 5.4e-4 | 3.3e-2 | reference point |
+| per token | 2.1e-2 | 2.0e-1 | fails; down input alone: KL 0.57 |
+| per token, clip 8 rms + exact residual | 1.0e-2 | | union of residual channels 2307 of 8704 (down) |
+| top-32 channels exact + per token | 1.2e-1 | | outliers are not channel-structured |
+| GA256 | 5.0e-3 | 6.4e-2 | borderline |
+| GA512 | 9.1e-2 | | fails |
+| block Hadamard 512 + per token | 1.5e-3 | 4.6e-2 | best per-token format (emulation adds a GA64 rounding) |
+| per-channel smoothing + per token | 8.5e-1 | 8.1e-2 | fails |
+| per token x 2^-e per 64 (shift-foldable, e <= 7) | 5.9e-2 | 5.3e-2 | |
+
+## GEMM (pg v9-v13, gateup T=2048, sustained, both GPUs)
+
+| kernel | TOPS | ops/clk/SM | note |
+|---|---|---|---|
+| gemm9 GA64 (production) | 28-32 | 730-760 | |
+| gemm16 (128 rows x 256 tokens, plain int8, per token) | 35-39 | 1050-1090 | in-kernel Q4 conversion costs nothing in this orientation |
+| gemm16 swap (128 tokens x 256 rows, CUTLASS orientation) | 39-42 | 1320-1350 | |
+| gemm16 swap + L2::128B loads | 44.5-52.6 | 1200-1260 | |
+| gemm17 w8, loads at k-group 0 (KNOB 1, used by R512) | 50.6-59.7 | 1290-1335 | |
+| gemm17 in-place Q4 (swap) | 38.6-42.8 | 1140-1170 | conversion costs 10-15% in this orientation |
+| gemm17 shift-folded GA64 (GSH 1) | 33-35 | 850-890 | 2 shifts per accumulator per stage |
+| gemm17 per-512-block scales, I2F/F2I rescale (GSH 2) | 40.3-40.7 | 1040-1050 | exact (rel 5e-6), 20% slower |
+| CUTLASS int8 128x256 (same sessions) | 44.6-59.7 | 1375-1490 | |
+
+`.satfinite` and non-serpentine mma order: no gain. Rotated-weight converter (`rot::convert`): fp32 version 135 GB/s,
+fp16x2 version 190-200 GB/s (Q4 read + int8 write), memory-bound.
+
+## R512 engine profile (v31, pp2048, GPU0 = the faster GPU, ms per 2048-token batch)
+
+| part | GA64 (v31) | R512 + cache (v31) |
+|---|---|---|
+| GEMMs | 1665 | 1165 |
+| weight rotation (uncached 61%) | - | 64 |
+| alpha/beta | 52 | 0 (rows appended to the qkvz GEMM) |
+| quant (down input, attn out) | 3 | 26 |
+| DeltaNet scan | 72 | 82 |
+| attention + prep | 55 | 66 |
+| conv / gnorm | 43 | 40 |
+| AR wait + add_norm | 104 | 212 |
+| batch total | 2003 | 1663 |
+
+Under R512 load both GPUs settle near 640-720 MHz when equally loaded (v29: 638 / 645 MHz), against 900-1000 MHz under
+GA64. The rotated int8 GEMM does about 1.75x the ops per clock of gemm9, so per-op energy is only about 25% lower and
+the clock drops. On boxes where one GPU is less efficient it runs at about 700 MHz while the other idles 20-35% in
+the all-reduce wait.

@@ -525,19 +525,20 @@ __global__ void __launch_bounds__(NT, 1) gemm17_kernel(const Args a) {
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
         const int tok = tok0 + wm * 64 + i * 8 + (lane >> 2);
-        if (OUT != 2 && tok >= a.T) continue;  // OUT 2 shuffles below: all lanes stay (dx of padding tokens is 0)
+        if (OUT < 2 && tok >= a.T) continue;  // OUT 2/3 shuffle below: all lanes stay (dx of padding tokens is 0)
         const float d = a.dx[tok];
 #pragma unroll
         for (int g = 0; g < 8; ++g) {
             const int row = row0 + wn * 64 + 8 * g + 2 * t4;
             const float v0 = (float)acc[i][g][0] * (d * srv[g][0]), v1 = (float)acc[i][g][1] * (d * srv[g][1]);
-            if (OUT != 2 && row >= a.nvalid) continue;
-            if (OUT == 2) {  // gate|up rows interleaved by 4: lanes t4 0,1 gate rows, lane ^ 2 the matching up rows
+            if (OUT < 2 && row >= a.nvalid) continue;
+            if (OUT == 2 || OUT == 3) {  // gate|up rows interleaved by 4: lanes t4 0,1 gate rows, lane ^ 2 the up rows
                 const float u0 = __shfl_xor_sync(0xffffffffu, v0, 2), u1 = __shfl_xor_sync(0xffffffffu, v1, 2);
                 if (t4 < 2 && tok < a.T) {
                     const int f = ((row0 + wn * 64 + 8 * g) >> 1) + 2 * t4;
-                    *(__half2*)(a.yh + (size_t)tok * a.ldy + f) =
-                        __floats2half2_rn((v0 / (1.0f + expf(-v0))) * u0, (v1 / (1.0f + expf(-v1))) * u1);
+                    const float h0 = (v0 / (1.0f + expf(-v0))) * u0, h1 = (v1 / (1.0f + expf(-v1))) * u1;
+                    if (OUT == 2) *(__half2*)(a.yh + (size_t)tok * a.ldy + f) = __floats2half2_rn(h0, h1);
+                    else *(float2*)(a.y + (size_t)tok * a.ldy + f) = make_float2(h0, h1);  // fp32: no fp16 overflow
                 }
             } else if (OUT == 1) {
                 *(__half2*)(a.yh + (size_t)tok * a.ldy + row) = __floats2half2_rn(v0, v1);

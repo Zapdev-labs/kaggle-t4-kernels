@@ -1683,9 +1683,15 @@ struct PfRun {
             a7.w8 = cached ? W.w8c : B.w8r[slot]; a7.invs = cached ? W.invc : abrows ? B.invq : W.invr; a7.xq = B.xq; a7.dx = B.dxt;
             a7.N = abrows ? 8448 : W.L.N; a7.K = W.L.K; a7.T = Ts; a7.Tp = Tps;
             if (rgb) a7.dsr = B.dsr;
-            if (silu) {  // fp16 silu(gate) * up rows of 8704 into g32
-                a7.yh = (__half*)B.g32 + (size_t)st0[s] * 8704; a7.ldy = 8704;
-                e = rgb ? g16::launch17_t<0, gemv::FAST_P4, 4, 2, 2, 1>(a7, G.s) : g16::launch17_t<0, gemv::FAST_P4, 4, 2, 0, 1>(a7, G.s);
+            if (silu) {  // silu(gate) * up rows of 8704 into g32 (fp32; pf_h16: fp16)
+                a7.ldy = 8704;
+                if (c->tps->pf_h16) {
+                    a7.yh = (__half*)B.g32 + (size_t)st0[s] * 8704;
+                    e = rgb ? g16::launch17_t<0, gemv::FAST_P4, 4, 2, 2, 1>(a7, G.s) : g16::launch17_t<0, gemv::FAST_P4, 4, 2, 0, 1>(a7, G.s);
+                } else {
+                    a7.y = B.g32 + (size_t)st0[s] * 8704;
+                    e = rgb ? g16::launch17_t<0, gemv::FAST_P4, 4, 3, 2, 1>(a7, G.s) : g16::launch17_t<0, gemv::FAST_P4, 4, 3, 0, 1>(a7, G.s);
+                }
             } else {
                 a7.y = y + (size_t)st0[s] * ldy; a7.ldy = ldy;
                 if (ar16 && y == B.part) { a7.yh = (__half*)B.part + (size_t)st0[s] * ldy; a7.y = nullptr; }
@@ -1974,9 +1980,14 @@ struct PfRun {
             add_norm(g, s, L.post_norm, true, true, false, true);
             gemm(g, s, L.gateup, nullptr, 0, true);  // silu(gate) * up -> fp16 rows of g32
             const int Tps = tpad(Ts);
-            if (rd) rot::quant_rot<__half>((const __half*)B.g32 + (size_t)t0 * 8704, 8704, Ts, Tps, 8704, B.xq, B.dxt, G.s,
-                                           rgb ? B.dsr : nullptr);
-            else k_q8_64_half<<<dim3(Tps, 8704 / 64 / 8), 256, 0, G.s>>>((const __half*)B.g32 + (size_t)t0 * 8704, Ts, Tps, 8704, B.xq, B.dx);
+            if (S.pf_h16) {
+                if (rd) rot::quant_rot<__half>((const __half*)B.g32 + (size_t)t0 * 8704, 8704, Ts, Tps, 8704, B.xq, B.dxt, G.s,
+                                               rgb ? B.dsr : nullptr);
+                else k_q8_64_half<<<dim3(Tps, 8704 / 64 / 8), 256, 0, G.s>>>((const __half*)B.g32 + (size_t)t0 * 8704, Ts, Tps, 8704, B.xq, B.dx);
+            } else {
+                if (rd) rot::quant_rot<float>(B.g32 + (size_t)t0 * 8704, 8704, Ts, Tps, 8704, B.xq, B.dxt, G.s, rgb ? B.dsr : nullptr);
+                else gemm8::quant8(B.g32 + (size_t)t0 * 8704, 8704, Ts, Tps, 8704, B.xq, B.dx, G.s, 64);
+            }
             ck_launch("quant_down");
             mark(g, "quant");
             gemm(g, s, L.down, B.part, D);
