@@ -1,0 +1,1031 @@
+{
+ "stage": "verify",
+ "download": {
+  "ok": true,
+  "secs": 86,
+  "gb": 16.06
+ },
+ "build": {
+  "ok": true,
+  "secs": 274,
+  "tail": ""
+ },
+ "llama_libs": {
+  "n": 38,
+  "commit": "a4cb4c61fd9d9c2066c7c1747821d3d65b8943bd Fri Oct 2 11:56:04 2026 +0200 llama, server: add /v1/systemone API (models: laya, julia-1, lev, openjev, kev) (#29818)\n"
+ },
+ "build_oracle": {
+  "ok": true,
+  "tail": ""
+ },
+ "inputs": {
+  "tokenizer": "transformers",
+  "P0": 81,
+  "P1": 72,
+  "L": 2048,
+  "batch_prompts": 64,
+  "batch_distinct": 64,
+  "batch_len_min_max": [
+   379,
+   577
+  ]
+ },
+ "oracle": {
+  "rc": 0,
+  "secs": 111,
+  "files": [
+   "L2048.last.f32",
+   "L512.last.f32",
+   "gen_P0.gen.i32",
+   "gen_P0.gen.txt",
+   "gen_P1.gen.i32",
+   "gen_P1.gen.txt"
+  ],
+  "tail": ""
+ },
+ "t4q_single": {
+  "rc": 0,
+  "secs": 160,
+  "tail": "",
+  "load": {
+   "secs": 7.2,
+   "p2p": 1,
+   "vram": [
+    8615,
+    8615
+   ],
+   "selftest_worst": 4.158e-07,
+   "mtp": {
+    "loaded": 1,
+    "dv": 32768,
+    "spec_k": 0,
+    "spec_dv": 1
+   }
+  },
+  "single": {
+   "plain": {
+    "P0_r0": {
+     "n": 512,
+     "tok_s": 30.42,
+     "secs": 16.797,
+     "same_as_r0": true,
+     "t0": 1791020572.6665187,
+     "t1": 1791020589.4636946,
+     "clocks": {
+      "0": {
+       "samples": 16,
+       "sm_mhz": 1096,
+       "min_sm_mhz": 1065.0,
+       "power_w": 68.4,
+       "temp_c": 71.5
+      },
+      "1": {
+       "samples": 16,
+       "sm_mhz": 1076,
+       "min_sm_mhz": 1050.0,
+       "power_w": 67.4,
+       "temp_c": 73.4
+      }
+     }
+    },
+    "P1_r0": {
+     "n": 512,
+     "tok_s": 30.25,
+     "secs": 16.89,
+     "same_as_r0": true,
+     "t0": 1791020589.6986442,
+     "t1": 1791020606.5889332,
+     "clocks": {
+      "0": {
+       "samples": 16,
+       "sm_mhz": 1027,
+       "min_sm_mhz": 990.0,
+       "power_w": 67.5,
+       "temp_c": 77.0
+      },
+      "1": {
+       "samples": 16,
+       "sm_mhz": 1019,
+       "min_sm_mhz": 975.0,
+       "power_w": 67.1,
+       "temp_c": 77.8
+      }
+     }
+    },
+    "P0_r1": {
+     "n": 512,
+     "tok_s": 30.06,
+     "secs": 17.002,
+     "same_as_r0": true,
+     "t0": 1791020606.832592,
+     "t1": 1791020623.8347154,
+     "clocks": {
+      "0": {
+       "samples": 16,
+       "sm_mhz": 971,
+       "min_sm_mhz": 960.0,
+       "power_w": 67.1,
+       "temp_c": 80.7
+      },
+      "1": {
+       "samples": 16,
+       "sm_mhz": 950,
+       "min_sm_mhz": 930.0,
+       "power_w": 66.6,
+       "temp_c": 81.6
+      }
+     }
+    },
+    "P1_r1": {
+     "n": 512,
+     "tok_s": 30.21,
+     "secs": 16.914,
+     "same_as_r0": true,
+     "t0": 1791020624.0744371,
+     "t1": 1791020640.988774,
+     "clocks": {
+      "0": {
+       "samples": 17,
+       "sm_mhz": 1024,
+       "min_sm_mhz": 1005.0,
+       "power_w": 67.8,
+       "temp_c": 77.1
+      },
+      "1": {
+       "samples": 17,
+       "sm_mhz": 1002,
+       "min_sm_mhz": 960.0,
+       "power_w": 67.5,
+       "temp_c": 77.9
+      }
+     }
+    }
+   },
+   "mtp": {
+    "P0_r0": {
+     "n": 512,
+     "tok_s": 71.85,
+     "secs": 7.112,
+     "identical_to_plain": true,
+     "first_div": -1,
+     "accept_rate": 0.807,
+     "tokens_per_step": 3.4211,
+     "t0": 1791020641.2285328,
+     "t1": 1791020648.340377,
+     "clocks": {
+      "0": {
+       "samples": 7,
+       "sm_mhz": 1050,
+       "min_sm_mhz": 1005.0,
+       "power_w": 67.3,
+       "temp_c": 74.7
+      },
+      "1": {
+       "samples": 7,
+       "sm_mhz": 1039,
+       "min_sm_mhz": 1020.0,
+       "power_w": 67.0,
+       "temp_c": 75.3
+      }
+     }
+    },
+    "P1_r0": {
+     "n": 512,
+     "tok_s": 68.08,
+     "secs": 7.506,
+     "identical_to_plain": true,
+     "first_div": -1,
+     "accept_rate": 0.7305,
+     "tokens_per_step": 3.1914,
+     "t0": 1791020648.5769691,
+     "t1": 1791020656.0829315,
+     "clocks": {
+      "0": {
+       "samples": 7,
+       "sm_mhz": 1061,
+       "min_sm_mhz": 1050.0,
+       "power_w": 67.6,
+       "temp_c": 74.0
+      },
+      "1": {
+       "samples": 7,
+       "sm_mhz": 1050,
+       "min_sm_mhz": 1035.0,
+       "power_w": 66.9,
+       "temp_c": 74.9
+      }
+     }
+    },
+    "P0_r1": {
+     "n": 512,
+     "tok_s": 72.54,
+     "secs": 7.045,
+     "identical_to_plain": true,
+     "first_div": -1,
+     "accept_rate": 0.807,
+     "tokens_per_step": 3.4211,
+     "t0": 1791020656.320057,
+     "t1": 1791020663.364765,
+     "clocks": {
+      "0": {
+       "samples": 7,
+       "sm_mhz": 1059,
+       "min_sm_mhz": 1050.0,
+       "power_w": 66.9,
+       "temp_c": 74.1
+      },
+      "1": {
+       "samples": 7,
+       "sm_mhz": 1048,
+       "min_sm_mhz": 1035.0,
+       "power_w": 66.9,
+       "temp_c": 75.0
+      }
+     }
+    },
+    "P1_r1": {
+     "n": 512,
+     "tok_s": 68.0,
+     "secs": 7.515,
+     "identical_to_plain": true,
+     "first_div": -1,
+     "accept_rate": 0.7305,
+     "tokens_per_step": 3.1914,
+     "t0": 1791020663.5981317,
+     "t1": 1791020671.1130695,
+     "clocks": {
+      "0": {
+       "samples": 8,
+       "sm_mhz": 1054,
+       "min_sm_mhz": 1035.0,
+       "power_w": 67.8,
+       "temp_c": 75.0
+      },
+      "1": {
+       "samples": 8,
+       "sm_mhz": 1044,
+       "min_sm_mhz": 1035.0,
+       "power_w": 67.6,
+       "temp_c": 75.2
+      }
+     }
+    }
+   },
+   "oracle": {
+    "P0": {
+     "n_oracle": 256,
+     "greedy_prefix_match": 74,
+     "llama_gap_at_div": 0.041683,
+     "t4q_plain_identical_first_256": false,
+     "tf_top1_agree": 255,
+     "tf_positions": 256,
+     "tf_top1_agree_pct": 99.61,
+     "tf_top1_agree_pct_excl_neartie": 100.0,
+     "n_neartie": 2,
+     "tf_disagree_positions": [
+      {
+       "j": 74,
+       "llama_gap": 0.0417,
+       "t4q_gap": 0.0687
+      }
+     ]
+    },
+    "P1": {
+     "n_oracle": 256,
+     "greedy_prefix_match": 256,
+     "llama_gap_at_div": null,
+     "t4q_plain_identical_first_256": true,
+     "tf_top1_agree": 256,
+     "tf_positions": 256,
+     "tf_top1_agree_pct": 100.0,
+     "tf_top1_agree_pct_excl_neartie": 100.0,
+     "n_neartie": 5,
+     "tf_disagree_positions": []
+    }
+   },
+   "prefill": {
+    "pp512": {
+     "n": 512,
+     "tok_s_median": 904.7,
+     "tok_s_best": 908.5,
+     "tok_s_all": [
+      904.7,
+      908.5,
+      900.9
+     ],
+     "t0": 1791020695.0327322,
+     "t1": 1791020696.730512,
+     "oracle_top1_equal": true,
+     "kl_llama_t4q": 0.043352777247497074,
+     "oracle_top2_gap": 1.2968425750732422,
+     "greedy32_pf_vs_decode_prefix": 32,
+     "kl_decodepath_vs_prefill_last": 0.05402359785153891,
+     "clocks": {
+      "0": {
+       "samples": 2,
+       "sm_mhz": 1260,
+       "min_sm_mhz": 1245.0,
+       "power_w": 65.3,
+       "temp_c": 78.5
+      },
+      "1": {
+       "samples": 2,
+       "sm_mhz": 1200,
+       "min_sm_mhz": 1170.0,
+       "power_w": 68.2,
+       "temp_c": 79.0
+      }
+     }
+    },
+    "pp2048": {
+     "n": 2048,
+     "tok_s_median": 1033.2,
+     "tok_s_best": 1033.9,
+     "tok_s_all": [
+      1031.6,
+      1033.9,
+      1033.2
+     ],
+     "t0": 1791020718.3287857,
+     "t1": 1791020724.2771008,
+     "oracle_top1_equal": true,
+     "kl_llama_t4q": 3.806548633188433e-08,
+     "oracle_top2_gap": 13.642158508300781,
+     "clocks": {
+      "0": {
+       "samples": 6,
+       "sm_mhz": 1010,
+       "min_sm_mhz": 1005.0,
+       "power_w": 66.5,
+       "temp_c": 77.8
+      },
+      "1": {
+       "samples": 6,
+       "sm_mhz": 1020,
+       "min_sm_mhz": 1005.0,
+       "power_w": 65.7,
+       "temp_c": 77.8
+      }
+     }
+    }
+   }
+  }
+ },
+ "t4q_batch": {
+  "rc": 0,
+  "secs": 77,
+  "tail": "",
+  "load": {
+   "secs": 6.8,
+   "p2p": 1,
+   "vram": [
+    8411,
+    8411
+   ],
+   "selftest_worst": 4.158e-07,
+   "mtp": {
+    "loaded": 0,
+    "dv": 0,
+    "spec_k": 0,
+    "spec_dv": 1
+   }
+  },
+  "batch": {
+   "n_prompts": 64,
+   "lens": [
+    379,
+    413,
+    452,
+    488,
+    523,
+    563,
+    400,
+    435,
+    474,
+    510,
+    545,
+    385,
+    423,
+    456,
+    496,
+    532,
+    567,
+    406,
+    445,
+    479,
+    518,
+    554,
+    389,
+    429,
+    465,
+    501,
+    540,
+    576,
+    411,
+    451,
+    488,
+    523,
+    562,
+    398,
+    432,
+    473,
+    511,
+    545,
+    384,
+    419,
+    455,
+    494,
+    532,
+    567,
+    406,
+    442,
+    477,
+    517,
+    554,
+    389,
+    428,
+    464,
+    499,
+    539,
+    577,
+    411,
+    450,
+    486,
+    521,
+    561,
+    398,
+    433,
+    472,
+    508
+   ],
+   "n_distinct_prompts": 64,
+   "prefill_64_s": 38.7,
+   "runs": {
+    "B16": {
+     "B": 16,
+     "steps": 32,
+     "ms_per_step": 88.3,
+     "agg_tok_s": 181.2,
+     "distinct_token_streams": 16,
+     "pos_range": [
+      413,
+      597
+     ],
+     "t0": 1791020784.9137416,
+     "t1": 1791020787.7392142,
+     "clocks": {
+      "0": {
+       "samples": 3,
+       "sm_mhz": 980,
+       "min_sm_mhz": 960.0,
+       "power_w": 67.6,
+       "temp_c": 75.7
+      },
+      "1": {
+       "samples": 3,
+       "sm_mhz": 995,
+       "min_sm_mhz": 990.0,
+       "power_w": 66.4,
+       "temp_c": 76.0
+      }
+     }
+    },
+    "B32": {
+     "B": 32,
+     "steps": 32,
+     "ms_per_step": 101.69,
+     "agg_tok_s": 314.7,
+     "distinct_token_streams": 32,
+     "pos_range": [
+      418,
+      610
+     ],
+     "t0": 1791020787.9417875,
+     "t1": 1791020791.1958807,
+     "clocks": {
+      "0": {
+       "samples": 4,
+       "sm_mhz": 968,
+       "min_sm_mhz": 960.0,
+       "power_w": 68.0,
+       "temp_c": 75.0
+      },
+      "1": {
+       "samples": 4,
+       "sm_mhz": 960,
+       "min_sm_mhz": 930.0,
+       "power_w": 67.0,
+       "temp_c": 75.0
+      }
+     }
+    },
+    "B64": {
+     "B": 64,
+     "steps": 32,
+     "ms_per_step": 144.46,
+     "agg_tok_s": 443.0,
+     "distinct_token_streams": 64,
+     "pos_range": [
+      423,
+      644
+     ],
+     "t0": 1791020791.4830587,
+     "t1": 1791020796.105744,
+     "clocks": {
+      "0": {
+       "samples": 4,
+       "sm_mhz": 934,
+       "min_sm_mhz": 915.0,
+       "power_w": 66.4,
+       "temp_c": 75.0
+      },
+      "1": {
+       "samples": 4,
+       "sm_mhz": 926,
+       "min_sm_mhz": 915.0,
+       "power_w": 67.0,
+       "temp_c": 75.0
+      }
+     }
+    },
+    "B64_clones": {
+     "B": 64,
+     "steps": 32,
+     "ms_per_step": 140.21,
+     "agg_tok_s": 456.5,
+     "distinct_token_streams": 1,
+     "pos_range": [
+      576,
+      576
+     ],
+     "t0": 1791020796.4586053,
+     "t1": 1791020800.9452522,
+     "clocks": {
+      "0": {
+       "samples": 4,
+       "sm_mhz": 964,
+       "min_sm_mhz": 930.0,
+       "power_w": 67.0,
+       "temp_c": 74.0
+      },
+      "1": {
+       "samples": 4,
+       "sm_mhz": 971,
+       "min_sm_mhz": 960.0,
+       "power_w": 67.4,
+       "temp_c": 75.0
+      }
+     }
+    }
+   },
+   "batched_vs_single_prefix_match_of_35": {
+    "0": 35,
+    "1": 35,
+    "2": 33,
+    "3": 35,
+    "4": 35,
+    "5": 35,
+    "6": 35,
+    "7": 35
+   }
+  }
+ },
+ "llama_bench_tensor": {
+  "rc": 0,
+  "secs": 47,
+  "rows": [
+   {
+    "test": "pp512",
+    "split_mode": "tensor",
+    "avg_ts": 532.63,
+    "stddev_ts": 0.56,
+    "n_batch": 2048,
+    "n_ubatch": 512
+   },
+   {
+    "test": "pp2048",
+    "split_mode": "tensor",
+    "avg_ts": 512.27,
+    "stddev_ts": 3.63,
+    "n_batch": 2048,
+    "n_ubatch": 512
+   },
+   {
+    "test": "tg128",
+    "split_mode": "tensor",
+    "avg_ts": 20.94,
+    "stddev_ts": 0.25,
+    "n_batch": 2048,
+    "n_ubatch": 512
+   }
+  ],
+  "t0": 1791020801.9617755,
+  "t1": 1791020848.7278492,
+  "clocks": {
+   "0": {
+    "samples": 45,
+    "sm_mhz": 1022,
+    "min_sm_mhz": 585.0,
+    "power_w": 61.1,
+    "temp_c": 76.8
+   },
+   "1": {
+    "samples": 45,
+    "sm_mhz": 1013,
+    "min_sm_mhz": 585.0,
+    "power_w": 60.8,
+    "temp_c": 77.3
+   }
+  },
+  "err": ""
+ },
+ "server_nospec": {
+  "ok": true,
+  "load_s": 9,
+  "args": "--host 127.0.0.1 --port 18080 -ngl 99 -sm tensor -fa on -c 8192 -np 1 -fit off -t 4 --no-webui -cram 0",
+  "runs": [
+   {
+    "prompt": "P0",
+    "round": 0,
+    "prompt_n": 81,
+    "decode_n": 512,
+    "decode_tok_s": 21.48,
+    "n_tokens": 512,
+    "draft_n": null,
+    "draft_accepted": null,
+    "clocks": {
+     "0": {
+      "samples": 24,
+      "sm_mhz": 972,
+      "min_sm_mhz": 885.0,
+      "power_w": 66.4,
+      "temp_c": 75.5
+     },
+     "1": {
+      "samples": 24,
+      "sm_mhz": 954,
+      "min_sm_mhz": 855.0,
+      "power_w": 65.5,
+      "temp_c": 76.1
+     }
+    }
+   },
+   {
+    "prompt": "P1",
+    "round": 0,
+    "prompt_n": 72,
+    "decode_n": 512,
+    "decode_tok_s": 21.17,
+    "n_tokens": 512,
+    "draft_n": null,
+    "draft_accepted": null,
+    "clocks": {
+     "0": {
+      "samples": 24,
+      "sm_mhz": 959,
+      "min_sm_mhz": 915.0,
+      "power_w": 65.5,
+      "temp_c": 77.5
+     },
+     "1": {
+      "samples": 24,
+      "sm_mhz": 949,
+      "min_sm_mhz": 915.0,
+      "power_w": 65.8,
+      "temp_c": 78.2
+     }
+    }
+   },
+   {
+    "prompt": "P0",
+    "round": 1,
+    "prompt_n": 81,
+    "decode_n": 512,
+    "decode_tok_s": 21.41,
+    "n_tokens": 512,
+    "draft_n": null,
+    "draft_accepted": null,
+    "clocks": {
+     "0": {
+      "samples": 24,
+      "sm_mhz": 972,
+      "min_sm_mhz": 945.0,
+      "power_w": 67.6,
+      "temp_c": 76.2
+     },
+     "1": {
+      "samples": 24,
+      "sm_mhz": 961,
+      "min_sm_mhz": 915.0,
+      "power_w": 67.6,
+      "temp_c": 76.6
+     }
+    }
+   },
+   {
+    "prompt": "P1",
+    "round": 1,
+    "prompt_n": 72,
+    "decode_n": 512,
+    "decode_tok_s": 21.41,
+    "n_tokens": 512,
+    "draft_n": null,
+    "draft_accepted": null,
+    "clocks": {
+     "0": {
+      "samples": 23,
+      "sm_mhz": 969,
+      "min_sm_mhz": 945.0,
+      "power_w": 67.8,
+      "temp_c": 76.0
+     },
+     "1": {
+      "samples": 23,
+      "sm_mhz": 958,
+      "min_sm_mhz": 900.0,
+      "power_w": 67.3,
+      "temp_c": 76.7
+     }
+    }
+   }
+  ],
+  "spec_log": [
+   "0.01.008.270 W model has unused tensor blk.64.nextn.eh_proj.weight (size = 55705600 bytes) -- ignoring",
+   "0.01.008.275 W model has unused tensor blk.64.nextn.enorm.weight (size = 20480 bytes) -- ignoring",
+   "0.01.008.280 W model has unused tensor blk.64.nextn.hnorm.weight (size = 20480 bytes) -- ignoring",
+   "0.01.008.295 W model has unused tensor blk.64.nextn.shared_head_norm.weight (size = 20480 bytes) -- ignoring"
+  ]
+ },
+ "server_mtp": {
+  "ok": true,
+  "load_s": 9,
+  "args": "--host 127.0.0.1 --port 18080 -ngl 99 -sm tensor -fa on -c 8192 -np 1 -fit off -t 4 --no-webui -cram 0 --spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-ngl 99",
+  "runs": [
+   {
+    "prompt": "P0",
+    "round": 0,
+    "prompt_n": 81,
+    "decode_n": 512,
+    "decode_tok_s": 37.87,
+    "n_tokens": 512,
+    "draft_n": 434,
+    "draft_accepted": 366,
+    "clocks": {
+     "0": {
+      "samples": 14,
+      "sm_mhz": 990,
+      "min_sm_mhz": 885.0,
+      "power_w": 64.4,
+      "temp_c": 75.2
+     },
+     "1": {
+      "samples": 14,
+      "sm_mhz": 995,
+      "min_sm_mhz": 780.0,
+      "power_w": 64.0,
+      "temp_c": 76.1
+     }
+    },
+    "accept_rate": 0.843
+   },
+   {
+    "prompt": "P1",
+    "round": 0,
+    "prompt_n": 72,
+    "decode_n": 512,
+    "decode_tok_s": 33.19,
+    "n_tokens": 512,
+    "draft_n": 479,
+    "draft_accepted": 351,
+    "clocks": {
+     "0": {
+      "samples": 15,
+      "sm_mhz": 1006,
+      "min_sm_mhz": 900.0,
+      "power_w": 65.3,
+      "temp_c": 80.0
+     },
+     "1": {
+      "samples": 15,
+      "sm_mhz": 984,
+      "min_sm_mhz": 900.0,
+      "power_w": 62.6,
+      "temp_c": 80.9
+     }
+    },
+    "accept_rate": 0.733
+   },
+   {
+    "prompt": "P0",
+    "round": 1,
+    "prompt_n": 81,
+    "decode_n": 512,
+    "decode_tok_s": 37.31,
+    "n_tokens": 512,
+    "draft_n": 431,
+    "draft_accepted": 367,
+    "clocks": {
+     "0": {
+      "samples": 13,
+      "sm_mhz": 991,
+      "min_sm_mhz": 915.0,
+      "power_w": 67.6,
+      "temp_c": 78.8
+     },
+     "1": {
+      "samples": 13,
+      "sm_mhz": 967,
+      "min_sm_mhz": 930.0,
+      "power_w": 66.8,
+      "temp_c": 79.5
+     }
+    },
+    "accept_rate": 0.852
+   },
+   {
+    "prompt": "P1",
+    "round": 1,
+    "prompt_n": 72,
+    "decode_n": 512,
+    "decode_tok_s": 34.56,
+    "n_tokens": 512,
+    "draft_n": 479,
+    "draft_accepted": 351,
+    "clocks": {
+     "0": {
+      "samples": 15,
+      "sm_mhz": 997,
+      "min_sm_mhz": 930.0,
+      "power_w": 68.1,
+      "temp_c": 75.5
+     },
+     "1": {
+      "samples": 15,
+      "sm_mhz": 996,
+      "min_sm_mhz": 960.0,
+      "power_w": 66.9,
+      "temp_c": 76.1
+     }
+    },
+    "accept_rate": 0.733
+   }
+  ],
+  "spec_log": [
+   "0.06.106.038 I common_speculative_init_result: creating MTP draft context against the target model '/tmp/t4q/models/Qwen3.8-27B-Q4_0.gguf'",
+   "0.23.588.392 I slot print_timing: id  0 | task 3 | draft acceptance = 0.84332 (  366 accepted /   434 generated), mean len =  3.52",
+   "0.39.493.805 I slot print_timing: id  0 | task 151 | draft acceptance = 0.73278 (  351 accepted /   479 generated), mean len =  3.19",
+   "0.53.706.154 I slot print_timing: id  0 | task 314 | draft acceptance = 0.85151 (  367 accepted /   431 generated), mean len =  3.55",
+   "1.08.995.933 I slot print_timing: id  0 | task 461 | draft acceptance = 0.73278 (  351 accepted /   479 generated), mean len =  3.19"
+  ]
+ },
+ "token_agreement": {
+  "P0": {
+   "llama_tensor_mtp~llama_tensor_nospec": {
+    "common": 512,
+    "prefix_match": 142
+   },
+   "llama_tensor_mtp~oracle_layer": {
+    "common": 256,
+    "prefix_match": 74
+   },
+   "llama_tensor_mtp~t4q_plain": {
+    "common": 512,
+    "prefix_match": 317
+   },
+   "llama_tensor_nospec~oracle_layer": {
+    "common": 256,
+    "prefix_match": 74
+   },
+   "llama_tensor_nospec~t4q_plain": {
+    "common": 512,
+    "prefix_match": 142
+   },
+   "oracle_layer~t4q_plain": {
+    "common": 256,
+    "prefix_match": 74
+   }
+  },
+  "P1": {
+   "llama_tensor_mtp~llama_tensor_nospec": {
+    "common": 512,
+    "prefix_match": 17
+   },
+   "llama_tensor_mtp~oracle_layer": {
+    "common": 256,
+    "prefix_match": 203
+   },
+   "llama_tensor_mtp~t4q_plain": {
+    "common": 512,
+    "prefix_match": 203
+   },
+   "llama_tensor_nospec~oracle_layer": {
+    "common": 256,
+    "prefix_match": 17
+   },
+   "llama_tensor_nospec~t4q_plain": {
+    "common": 512,
+    "prefix_match": 17
+   },
+   "oracle_layer~t4q_plain": {
+    "common": 256,
+    "prefix_match": 256
+   }
+  }
+ },
+ "llama_batched_B16": {
+  "rc": 0,
+  "secs": 32,
+  "rows": [
+   {
+    "PP": 512,
+    "TG": 64,
+    "B": 16,
+    "N_KV": 9216,
+    "S_PP": 520.45,
+    "T_TG": 9.729,
+    "S_TG": 105.26
+   }
+  ],
+  "clocks": {
+   "0": {
+    "samples": 31,
+    "sm_mhz": 1051,
+    "min_sm_mhz": 585.0,
+    "power_w": 59.4,
+    "temp_c": 74.3
+   },
+   "1": {
+    "samples": 31,
+    "sm_mhz": 1040,
+    "min_sm_mhz": 585.0,
+    "power_w": 60.7,
+    "temp_c": 74.9
+   }
+  },
+  "err": ""
+ },
+ "llama_batched_B32": {
+  "rc": 0,
+  "secs": 55,
+  "rows": [
+   {
+    "PP": 512,
+    "TG": 64,
+    "B": 32,
+    "N_KV": 18432,
+    "S_PP": 511.15,
+    "T_TG": 15.848,
+    "S_TG": 129.22
+   }
+  ],
+  "clocks": {
+   "0": {
+    "samples": 54,
+    "sm_mhz": 1047,
+    "min_sm_mhz": 585.0,
+    "power_w": 61.9,
+    "temp_c": 77.3
+   },
+   "1": {
+    "samples": 54,
+    "sm_mhz": 1034,
+    "min_sm_mhz": 585.0,
+    "power_w": 62.9,
+    "temp_c": 78.0
+   }
+  },
+  "err": ""
+ },
+ "llama_batched_B64": {
+  "rc": 0,
+  "secs": 99,
+  "rows": [
+   {
+    "PP": 512,
+    "TG": 64,
+    "B": 64,
+    "N_KV": 36864,
+    "S_PP": 514.86,
+    "T_TG": 28.048,
+    "S_TG": 146.03
+   }
+  ],
+  "clocks": {
+   "0": {
+    "samples": 96,
+    "sm_mhz": 1053,
+    "min_sm_mhz": 585.0,
+    "power_w": 64.1,
+    "temp_c": 75.9
+   },
+   "1": {
+    "samples": 96,
+    "sm_mhz": 1022,
+    "min_sm_mhz": 585.0,
+    "power_w": 64.4,
+    "temp_c": 76.5
+   }
+  },
+  "err": ""
+ }
+}

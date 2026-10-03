@@ -816,3 +816,41 @@ tokens after the chat-templated prompt, stop on EOS (none hit), wall time of `t4
 2. Fix the gate|up M>1 slowdown (wave quantization: 272 blocks on 80 slots, try a persistent tile loop).
 3. Spec in the batched engine for B <= 2 (two sequences x (k+1) columns through the same M-column kernels needs
    per-sequence state buffers), and the low-bit speed mode (Q3_K/IQ3 fast formats) with KL vs Q4_0/Q8_0.
+
+## 2026-10-03 - Independent verification audit (stage verify)
+
+**Verdict: the headline claims reproduce.** I measured everything in one fresh run, `otdoges/t4q-verify` **v1**, on a
+P2P box, with llama.cpp a4cb4c61 in the same session on the same Q4_0 GGUF and the same token ids. The engine is
+unchanged at `407f0ee`; the audit harness is new: `t4q/tests/verify_check.py` and `t4q/tools/stage_verify.py`.
+Full table and caveats: `research/VERIFY.md`. Raw JSON and llama logs: `research/verify_v1/`.
+
+| metric | t4q | llama.cpp (same session) |
+|---|---|---|
+| plain greedy decode P0 / P1 (512 tok) | 30.42 / 30.25 (rerun 30.06 / 30.21) | server -sm tensor 21.48 / 21.17; tg128 20.94 |
+| MTP k=3 P0 / P1 | 71.85 / 68.08 (rerun 72.54 / 68.00), byte-identical to plain | draft-mtp n_max 3: 37.87 / 33.19 (rerun 37.31 / 34.56) |
+| pp512 / pp2048 (median of 3) | 904.7 / 1033.2 | 532.63 / 512.27 |
+| batched aggregate B=16 / 32 / 64 (64 distinct prompts, ctx 0.4-0.65k) | 181.2 / 314.7 / 443.0 | llama-batched-bench S_TG 105.26 / 129.22 / 146.03 |
+
+### Correctness
+- t4q greedy vs the llama layer-split oracle over 256 tokens: P1 matches 256/256. P0 matches the first 74 tokens, then diverges at a near-tie where llama's top-2 gap is 0.042.
+- For comparison, llama's own tensor split vs its layer split agree for only 74 (P0) and 17 (P1) tokens.
+- Teacher-forced top-1 agreement: 255/256 on P0 and 256/256 on P1. Excluding near-ties, both are 100%.
+- Batched rows vs single-stream (35 greedy tokens, distinct prompts): 7 of 8 are identical.
+
+### Audit findings
+- No timing or token-count bugs found:
+  - every timed path ends with a device sync;
+  - throughput is computed as (n - 1) / wall time;
+  - each bench starts with a reset and a fresh prefill.
+- One methodology issue in the builders' batched bench: `batch_check.py` cloned a single prompt into all slots. My control run shows duplicate slots are only about 3% faster (456.5 vs 443.0 at B=64), so the claim is not materially inflated.
+- Open item: on my stdlib-code prompt, the last-position KL at pp512 is 4.3e-2 against llama. Top-1 is equal and the top-2 gap is 1.30. t4q's own decode path vs its prefill path shows a similar KL, 5.4e-2. llama's own floor on this prompt was not measured, so this is unresolved. At pp2048 the KL is 3.8e-8.
+
+### Not re-verified
+- Decode at 4k depth (claimed 29.3; the depth gate was never met).
+- Batched decode at 1k and 4k context.
+- No-P2P boxes.
+
+### Next steps
+1. Run the oracle `floor` job and a decode-path `last` on several 512-token prompts. That separates a sensitive position from a real prefill accuracy problem.
+2. Change `batch_check.py`'s bench to distinct prompts, reusing `verify_check.py`'s approach, and re-measure B=64 at 1k and B=32 at 4k.
+3. Measure depth-4k single-stream decode and MTP in the same session as llama.cpp.
