@@ -280,3 +280,113 @@ Under R512 load both GPUs settle near 640-720 MHz when equally loaded (v29: 638 
 GA64. The rotated int8 GEMM does about 1.75x the ops per clock of gemm9, so per-op energy is only about 25% lower and
 the clock drops. On boxes where one GPU is less efficient it runs at about 700 MHz while the other idles 20-35% in
 the all-reduce wait.
+
+# Round 4 (2026-10-02/03, `otdoges/t4q-p` v35-v38, `otdoges/t4q-pg` v14-v16)
+
+Raw outputs: `kaggle/p/out_v35` ... `kaggle/p/out_v38`, `kaggle/pg/out14` ... `kaggle/pg/out16` (git-ignored).
+
+## Gate: NOT passed
+
+All rows pass the correctness check (every prompt, top-1 equal, greedy 32 identical or diverging only at W's known
+near-tie, last-token KL within max(2e-3, 2 x llama floor)). Same-run comparisons only; boxes differ by 5-10%.
+
+| version | config | pp512 | pp2048 | note |
+|---|---|---|---|---|
+| v36 | round-3 default (last token through a decode step) | 893.4 | 1019.9 | same box as the next three rows |
+| v36 | **+ pf_head 1** (last token in the batch, head only) | 947.1 | **1032.6** | |
+| v36 | + pf_head 1, one sub-batch | **962.4** | 922.4 | pp512 prefers nsub 1, pp2048 nsub 2 |
+| v36 | GA32 + pf_head 1 (accuracy reference) | 828.3 | 904.9 | W greedy diverges at 25 vs pf0 (near-tie) |
+| v37 | new default (pf_head 1, nsub 2 only from 1024 tokens) | 906.2 | 1013.2 | GPU imbalance box (pp512 AR wait 142 ms) |
+| v38 | new default | 923.2 | 988.5 | GPU1 ~7% slower than GPU0 |
+| gate | | >= 1200 | >= 1400 | |
+
+Round-3 best on the correct path was 870.5 / 1006.1 (v31).
+
+## pf_head (v36)
+
+The last prompt token used to run a full 64-layer decode step after the batch (34-35 ms, `total_s - batch_s`). It now
+goes through the batch with the other tokens, and only the head runs decode-style: `tp::ar_norm` (output norm + q8 of
+the final residual row), `tp::gemv` lm_head shard, `tp::argmax_step` (advances StepState pos/step/token and the ring
+exactly like a decode step's head). KV, conv ring and DeltaNet state for the last token come from the batch path.
+
+| prompt | KL pf0 vs pf1, head 0 | head 1 | KL vs llama.cpp batch logits, head 1 |
+|---|---|---|---|
+| P0 | 9.3e-4 | 1.0e-3 | 1.1e-3 |
+| P1 | 1.4e-4 | 2.7e-4 | 5.3e-5 |
+| W | 4.6e-4 | 2.4e-4 | 1.2e-3 |
+| L | 1.1e-3 | 3.4e-4 | 2.1e-4 |
+
+Greedy 32 tokens identical to the decode path on every prompt (W: both diverge from llama.cpp at its near-tie 25).
+
+## Alpha/beta kernel (v35-v36)
+
+`k_pf_ab` rewritten: 16 K slices (was 4), 128 threads with 8 tokens x 6 rows per thread, register prefetch of the
+next k tile. pp2048: 51.6 -> 34 ms; pp512: 31.7 -> 10.8 ms. Changing the slice count changes the fp32 summation
+order only, yet it moved the GA64 L metrics from (last-token KL 3.2e-4, cont mean 1.1e-3, cont max 6.7e-3) to
+(1.1e-3, 4.9e-3, 3.9e-2): the L-prompt metrics are dominated by chaotic sensitivity, not by format accuracy (below).
+
+## Accuracy: the L-prompt metrics are noise-dominated (v35, v36)
+
+- A pure summation-order change (alpha/beta K slices 4 -> 16) changed GA64's L last-token KL 3.4x and cont mean 4.7x.
+- GA32 (exact q8 blocks, strictly more accurate than GA64) vs GA64: hidden-state h_rel on L median 0.042, p99 0.86;
+  cont max 4.0e-2 against GA64's 6.7e-2. The heavy h_rel tails that round 3 read as R512 inaccuracy appear between two
+  accurate formats too.
+- R512 is still clearly worse at the last token on L: subsets measured in v35 (all with GA64 elsewhere):
+
+| R512 GEMM mask | L last-token KL | L cont mean / max | pp2048 | pp512 |
+|---|---|---|---|---|
+| none (GA64) | 1.1e-3 | 4.9e-3 / 3.9e-2 | 993.3 | 877.6 |
+| 55 (all but down) | 3.9e-2 | 3.9e-2 / 0.62 | 1178.9 | 914.1 |
+| 21 (qkvz, gateup, ssm_out) | 1.4e-1 | 2.7e-3 / 3.5e-2 | 1164.3 | 924.8 |
+| 4 (gateup only) | 3.7e-2 | 3.3e-2 / 0.51 | 1062.0 | 872.2 |
+
+  Even gateup alone on R512 fails L by 20x, so per-token rotated activations stay opt-in.
+
+## Int4 tensor-core W4A8 GEMM (`kernels/gemm20.cuh`, pg v14)
+
+Native Q4_0 codes as the s4 B operand (c ^ 8 per nibble, no requantization), GA64 activations split into
+hi (s4) / lo (u4) nibble planes in the weights' nibble order, two m8n8k32 mmas per 32-block, exact fold per 64
+(`v = fma(d0, P0', -(d0 + d1) MAGIC); v = fma(d1, P1', v); F = fma(a, v, F)`). Error vs the exact Q4_0 x q8 product
+4.4e-4 rel L2 (gemm9: 6.3e-3). Sustained, both GPUs, gateup T = 2048:
+
+| kernel | TOPS | ops/clk/SM | MHz | W |
+|---|---|---|---|---|
+| gemm9 GA64 (production) | 31.0-31.9 | 742-744 | 1041-1073 | 67-68 |
+| gemm17 w8 per token (R512 GEMM) | 56.3-57.9 | 1296-1300 | 1082-1117 | 64-66 |
+| gemm20 exact | 26.0-26.8 | 609-613 | 1060-1100 | 67-68 |
+| gemm20 without the fold (timing only, wrong numbers) | 42.3-43.2 | 968-976 | 1082-1115 | 67 |
+
+Even with no fold the int4 two-digit form does less work per joule than plain int8 (43 vs 57 TOPS at the same
+power); the fold (2.5 ALU instructions per int4 mma) costs another 38%. CUTLASS's int4 GEMM (126 TOPS at 59 W, round 2)
+is far more efficient than this kernel, but any exact W4A8 form needs the per-32 weight fold. Dead end.
+
+## gemm9 numerics in the CUTLASS orientation (`kernels/gemm21.cuh`, pg v15-v16)
+
+Tile-outer loop within each 64-k stage, MAGIC-started 4-mma chains folded right away (FB 0 exact: 1.7e-7 rel vs the
+int8 mirror; FB 1 bias trick: 1.2e-4, same as gemm9). Sustained gateup T = 2048, both GPUs:
+
+| kernel | v15 TOPS | v16 TOPS | ops/clk/SM |
+|---|---|---|---|
+| gemm9 GA64 | 30.7 / 31.0 | 29.2 / 31.4 | 743-749 |
+| gemm21 128 tok x 256 rows, in-place Q4 | 31.7-32.1 | 30.9 / 33.5 | 741-812 |
+| gemm21 256 tok x 128 rows | - | 25.9 / 27.7 | 606-608 |
+| gemm21 pre-converted int8 weights | - | 28.9 / 30.9 | 691-695 |
+| gemm17 w8 per token | 44.7 / 46.8 | 40.1 / 42.2 | 1384-1428 |
+
++3% over gemm9 at best, and removing the weight conversion does not help: the fold structure (short MAGIC chains,
+255 registers, 4-80 B spills) is the cost, not the conversion. Not integrated.
+
+## pf_gdnc 2 and pf_arc (v37, v38)
+
+- `pf_gdnc 2`: the chunked DeltaNet's state-independent part (gates, P, T = (I - A)^-1) runs first for all chunks in
+  parallel (`k_pf_gdnp`, grid 24 x chunks), the scan loads it. Bit-identical results, but 83.4 vs 78.8 ms: the T
+  solve is not what limits the 24-block scan. Off by default.
+- `pf_arc N`: K-split GEMMs (ssm_out, attn_out, down) in N token chunks, each chunk's peer copy issued as soon as it
+  is done. Bit-identical. pp512 nsub 1: AR wait 138 -> 113-117 ms but the chunked GEMMs are slower; pp2048 nsub 1 +
+  arc 4/8: 954-957 vs 988-999 with nsub 2. The AR wait is mostly GPU imbalance (the profiled GPU0 waits for a 6-10%
+  slower GPU1), not copy time. Off by default.
+
+## v36 pp2048 profile (GPU0, pf_head 1, ms per 2047-token batch)
+
+GEMMs 1655 (gateup 779, down 348, qkvz 286, ssm_out 122, attn_qkv 83, attn_out 38); AR wait + add_norm 103; DeltaNet
+scan 77; attention 47 + prep 7; ab 34; conv 22; gated norm 20; quant 3. Batch 1.981 s, total 1.983 s.

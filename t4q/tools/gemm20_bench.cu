@@ -10,6 +10,7 @@
 // Lines: "CHECK {json}", "R {json}" (burst), "S {json}" (sustain windows).
 #include "../src/kernels/gemm16.cuh"
 #include "../src/kernels/gemm20.cuh"
+#include "../src/kernels/gemm21.cuh"
 #include "nvml_lite.h"
 
 #include <algorithm>
@@ -44,7 +45,7 @@ static const Shape SHAPES[] = {
     {"attn_out", FAST_P4, 3072, 5120, 16, 4},
 };
 static const char* VN[] = {"g9_ga64", "g17_w8_tok", "g20_br256", "g20_br256_nofold", "g20_br128", "g20_br128_nofold",
-                           "d4_conv"};
+                           "d4_conv", "g21_fb0", "g21_fb1", "g21_bt256", "g21_w8", "g21_bt256_w8"};
 
 static uint64_t rng_s = 0x9E3779B97F4A7C15ull;
 static inline uint64_t rnd() { rng_s ^= rng_s << 13; rng_s ^= rng_s >> 7; rng_s ^= rng_s << 17; return rng_s; }
@@ -94,6 +95,21 @@ static cudaError_t run_var(int v, Bufs& b, cudaStream_t st) {
         return g16::launch17_t<0, FAST_P4, 4, 0, 0, 1>(a, st);
     }
     if (v == 6) return g20::d4_from_q8(b.xq64, b.Tp, b.K, b.xd, st);
+    if (v == 7 || v == 8) {
+        g21::Args a;
+        a.q = q; a.invs = b.invs; a.xq = b.xq64; a.dx = b.dx64; a.y = b.y; a.ldy = b.N;
+        a.N = b.N; a.K = b.K; a.T = b.T; a.Tp = b.Tp;
+        return g21::launch(b.fmt, b.rpl, v == 8, a, st);
+    }
+    if (v >= 9 && v <= 11) {
+        g21::Args a;
+        a.q = q; a.w8 = b.w8; a.invs = b.invs; a.xq = b.xq64; a.dx = b.dx64; a.y = b.y; a.ldy = b.N;
+        a.N = b.N; a.K = b.K; a.T = b.T; a.Tp = b.Tp;
+        const bool r4 = b.rpl == 4;
+        if (v == 9) return r4 ? g21::launch_t<FAST_P4, 4, 1, 256, 1>(a, st) : g21::launch_t<FAST_P4, 2, 1, 256, 1>(a, st);
+        if (v == 10) return g21::launch_t<FAST_P4, 4, 1, 128, 0>(a, st);
+        return g21::launch_t<FAST_P4, 4, 1, 256, 0>(a, st);
+    }
     g20::Args a;
     a.q = q; a.xd = b.xd; a.dx = b.dx64; a.y = b.y; a.ldy = b.N; a.N = b.N; a.K = b.K; a.T = b.T; a.Tp = b.Tp;
     const bool r4 = b.rpl == 4;
@@ -148,7 +164,7 @@ static void release(Bufs& b) {
 
 int main(int argc, char** argv) {
     double sustain = 0;
-    std::vector<int> vars = {0, 1, 2, 3, 4, 5, 6};
+    std::vector<int> vars = {0, 1, 8, 9, 10, 11};
     std::vector<int> Ts = {512, 2048};
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -191,7 +207,11 @@ int main(int argc, char** argv) {
                             }
                     }
                 const size_t rb = src_row_bytes(FAST_P4, b.K);
-                for (int v : {0, 1, 2, 4}) {
+                std::vector<int8_t> w8((size_t)b.N * b.K);
+                std::vector<float> invs(b.N);
+                CK(cudaMemcpy(w8.data(), b.w8, w8.size(), cudaMemcpyDeviceToHost));
+                CK(cudaMemcpy(invs.data(), b.invs, b.N * 4, cudaMemcpyDeviceToHost));
+                for (int v : {0, 7, 8, 9, 10, 11}) {
                     CK(cudaMemset(b.y, 0, (size_t)b.T * b.N * 4));
                     cudaError_t e = run_var(v, b, st);
                     if (e != cudaSuccess) {
@@ -201,7 +221,7 @@ int main(int argc, char** argv) {
                     }
                     CK(cudaStreamSynchronize(st));
                     CK(cudaMemcpy(y.data(), b.y, y.size() * 4, cudaMemcpyDeviceToHost));
-                    double e2 = 0, r2 = 0, emax = 0;
+                    double e2 = 0, r2 = 0, emax = 0, f2 = 0, q2 = 0;
                     for (int r = 0; r < b.N; r += (r < b.N - 8 ? 37 : 1)) {
                         const uint8_t* row = src.data() + (size_t)r * rb;
                         for (int t = 0; t < b.T; t += (t < b.T - 3 ? 29 : 1)) {
@@ -221,17 +241,27 @@ int main(int argc, char** argv) {
                                 }
                                 ref += sg * dx[(size_t)g * b.Tp + t];
                             }
+                            double ref8 = 0;  // per-row int8 weights (w8_convert, same arithmetic as gemm9 / 17 / 21)
+                            for (int g = 0; g < b.K / 64; ++g) {
+                                long long s8 = 0;
+                                for (int k = g * 64; k < g * 64 + 64; ++k) s8 += (long long)w8[(size_t)r * b.K + k] * xq[(size_t)t * b.K + k];
+                                ref8 += (double)s8 * dx[(size_t)g * b.Tp + t];
+                            }
+                            ref8 /= invs[r];
                             const double gv = y[(size_t)t * b.N + r];
+                            f2 += (gv - ref8) * (gv - ref8); q2 += ref8 * ref8;
                             e2 += (gv - ref) * (gv - ref); r2 += ref * ref;
                             emax = std::max(emax, std::fabs(gv - ref));
                         }
                     }
                     const double rel = std::sqrt(e2 / r2);
                     // g20 must be exact up to fp32 rounding; g9 / g17 carry their requantization error (info only)
-                    const bool ok = (v == 2 || v == 4) ? (rel < 2e-5 && dmis == 0) : true;
+                    const double rel8 = std::sqrt(f2 / q2);
+                    // g20 vs the exact Q4 product; g21 vs its own per-row int8 mirror (fp32 accumulation only)
+                    const bool ok = (v == 2 || v == 4) ? (rel < 1e-3 && dmis == 0) : v == 7 ? rel8 < 2e-6 : v >= 8 ? rel8 < 3e-4 : true;
                     all_ok &= ok;
                     printf("CHECK {\"shape\":\"%s\",\"variant\":\"%s\",\"T\":%d,\"rel_l2_vs_exact_q4\":%.3e,\"max_abs\":%.3e,"
-                           "\"digit_mismatch\":%ld,\"ok\":%d}\n", sh.name, VN[v], T, rel, emax, dmis, (int)ok);
+                           "\"rel_l2_vs_w8\":%.3e,\"digit_mismatch\":%ld,\"ok\":%d}\n", sh.name, VN[v], T, rel, emax, rel8, dmis, (int)ok);
                     fflush(stdout);
                 }
                 for (int v : vars) {

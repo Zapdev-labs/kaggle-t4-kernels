@@ -283,12 +283,16 @@ struct State {
     int pf_fuse = 1;      // 1: norm / silu / gated norm quantize straight into the GEMM activation layout
     int pf_fa = 1;        // 1: tensor-core flash attention for prefill (0: SIMT online-softmax kernel)
     int pf_nsub = 2;      // sub-batches per ubatch (AR copy of one overlaps the other's compute); 1 = off
+    int pf_arc = 1;       // K-split GEMMs (ssm_out, attn_out, down) in this many token chunks, each chunk's all-reduce
+                          // copy starting as soon as it is done (1 = off; gemm8 path)
+    int pf_nsub_min = 1024; // ubatches shorter than this run as one sub-batch (round 4: nsub 1 is faster at pp512)
     int pf_g8 = 1;        // 1: gemm8 (in-kernel per-row int8 requant, one FFMA per output per block); 0: gemm.cuh W4A8
     int pf_ga = 64;       // gemm8 activation scale group: 32 (exact q8 blocks), 64, or 0 (one scale per token)
     int pf_silu = 1;      // 1: gate|up GEMM epilogue writes q8(silu(gate) * up) for down (gemm8 GA 64 only)
     int pf_gdn2 = 0;
     int pf_ar16 = 1;      // 1: fp16 all-reduce partials (gemm8 path)
-    int pf_gdnc = 1;      // 1: chunked DeltaNet scan on fp16 tensor cores (k_pf_gdnc)
+    int pf_gdnc = 1;      // 1: chunked DeltaNet scan on fp16 tensor cores (k_pf_gdnc); 2: + state-independent part (gates, P, T)
+                          //    for all chunks in parallel first (k_pf_gdnp), so the sequential scan skips it
     int pf_gdnc_chk = 0;  // 1: first DeltaNet call of each batched prefill also runs the sequential scan and compares
     std::string pf_gdnc_json;      // 1: DeltaNet scan computes o_t and kv_{t+1} in one pass over the state (0: two passes)
     int pf_bn = 0;        // gemm8 token tile: 128 / 256, 0 = auto (256 when the sub-batch has >= 512 padded tokens)
@@ -314,7 +318,7 @@ struct State {
     int pf_fq_a = 0;      // clip multiple of the token rms, in tenths (mode 2/4)
     int pf_fq_n = 0;      // top-n channels (mode 3/4) or group size (mode 5)
     int pf_fq_mask = 63;  // GEMM types: 1 qkvz, 2 attn_qkv, 4 gateup, 8 down, 16 ssm_out, 32 attn_out
-    int pf_head = 0;      // 1: the last prompt token also goes through the batch path; only the head (norm, lm_head,
+    int pf_head = 1;      // 1: the last prompt token also goes through the batch path; only the head (norm, lm_head,
                           //    argmax) runs decode-style afterwards (0: the last token runs a full decode step)
     int pf_keep_h = 0;    // 1: copy GPU0's final residual of every batch token into dumps["pf_h"] (accuracy studies)
     std::string pf_fq_json;

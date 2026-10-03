@@ -74,6 +74,7 @@ struct Args {
     int8_t* oq = nullptr;  // [Tp][N/2]
     float* odx = nullptr;  // [N/128][Tp] (64-feature groups)
     __half* yh = nullptr;  // if set: fp16 output yh[t * ldy + n] instead of y (no accumulate)
+    int dxs = 0;           // gemm9: row stride of dx (0 = Tp); lets a launch cover a token slice of a wider batch
 };
 
 static inline Args make_args(const gemv::Layout& L, const uint8_t* base, const float* invs, const int8_t* xq,
@@ -492,7 +493,7 @@ __global__ void __launch_bounds__(NT, 1) gemm9_kernel(const Args a) {
     const int8_t* xb = a.xq + (size_t)(tok0 + (tid >> 2)) * a.K + (tid & 3) * 16;
     const long long xstep = (long long)(NT / 4) * a.K;
     const float* dxb = a.dx + tok0 + 2 * (tid & (BN / 2 - 1));
-    const long long tps = a.Tp;
+    const long long tps = a.dxs ? a.dxs : a.Tp;
 
     float acc[8][NG][2];  // GA 0: int32 bits
 #pragma unroll

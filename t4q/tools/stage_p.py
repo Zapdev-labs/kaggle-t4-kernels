@@ -34,10 +34,10 @@ ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "p"
 SECTIONS = ["engine"]
-# config 0 = candidate default (GA64 + pf_head: last token in the batch, decode-style head only); 1 = round-3 default
-# (last token through a full decode step); 2 = config 0 with one sub-batch; 3 = GA32 (exact q8 blocks, accuracy reference)
-FQ = ['pf_ga=64,pf_rot=0,pf_nsub=2,pf_head=1', 'pf_ga=64,pf_rot=0,pf_nsub=2,pf_head=0', 'pf_ga=64,pf_rot=0,pf_nsub=1,pf_head=1',
-      'pf_ga=32,pf_rot=0,pf_nsub=2,pf_head=1']
+# config 0 = default (GA64, pf_head 1, nsub 2 from 1024 tokens); 1-3: pf_arc (K-split GEMMs in token chunks, each
+# chunk's AR copy overlapping the next chunk's GEMM; must be bit-identical to config 0 where nsub matches)
+FQ = ['pf_ga=64,pf_rot=0,pf_arc=1,pf_nsub=2', 'pf_ga=64,pf_rot=0,pf_arc=4,pf_nsub=2', 'pf_ga=64,pf_rot=0,pf_arc=4,pf_nsub=1',
+      'pf_ga=64,pf_rot=0,pf_arc=8,pf_nsub=1']
 PF_CONFIGS = ";".join(FQ)
 PF_SECTIONS = "correct,bench"
 PF_PROMPTS = "P0,P1,W,L"

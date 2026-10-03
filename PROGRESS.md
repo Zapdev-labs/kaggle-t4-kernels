@@ -574,3 +574,63 @@ Full tables: `research/p_results.md` (round 3 section). Raw outputs: `kaggle/p/o
    - parallelize `k_pf_gdnc` (24 blocks), currently 72-98 ms;
    - fuse the AR add into the K-split GEMM epilogue.
 3. **On unbalanced boxes**, offload the shared work (add_norm and quant for both GPUs) to the faster GPU, and send int8 activations over P2P.
+
+## 2026-10-03 - P-prefill (round 4): pf_head, faster alpha/beta, int4 and CUTLASS-orientation GEMM probes (negative)
+
+**Gate (pp2048 >= 1400 and pp512 >= 1200 tok/s, correctness preserved): NOT passed.**
+- Best on the correct default path: **pp2048 1032.6** (`otdoges/t4q-p` v36, config `pf_head=1`, nsub 2) and **pp512
+  962.4** (v36, `pf_head=1`, nsub 1; both are what the new defaults pick for those sizes). Round 3 best was 1006.1 /
+  870.5 (v31). Other boxes with the final defaults: 1013.2 / 906.2 (v37), 988.5 / 923.2 (v38; GPU1 ~7% slower).
+- Every prompt passes in v36-v38 (top-1 equal, greedy 32 identical to the decode path, W diverging only at its known
+  near-tie, last-token KL <= max(2e-3, 2 x llama floor)). L last-token KL 3.4e-4 with `pf_head=1`.
+- No decode numbers were measured this round.
+
+Full tables: `research/p_results.md` (round 4 section). Raw: `kaggle/p/out_v35..v38`, `kaggle/pg/out14..16`.
+
+### What changed (defaults)
+- `pf_head` (default 1, `tp_prefill.cu`): the last prompt token goes through the batch; afterwards only the head runs
+  decode-style (`tp::ar_norm` on the final residual row, lm_head `tp::gemv`, `tp::argmax_step`, which advances
+  StepState/ring like a decode step). Removes the 34-35 ms decode step: pp512 893 -> 947, pp2048 1020 -> 1033 (v36).
+- `pf_nsub_min` (default 1024): ubatches below it run as one sub-batch (pp512 962 vs 947).
+- `k_pf_ab` rewritten (16 K slices, 8x6 thread tiles, register prefetch): 51.6 -> 34 ms at pp2048, 31.7 -> 10.8 ms
+  at pp512. Consumers sum `AB_KS` slices generically.
+- R512 weight cache now only caches GEMM types in `pf_rot_mask`.
+
+### New options, off by default (measured, no gain)
+- `pf_gdnc=2`: `k_pf_gdnp` computes gates, P and T = (I-A)^-1 for all chunks in parallel, `k_pf_gdnc<1>` loads them.
+  Bit-identical, 83 vs 79 ms (the T solve is not the scan's bottleneck).
+- `pf_arc=N`: K-split GEMMs in N token chunks with per-chunk peer copies (`gemm8::Args::dxs` = dx row stride for
+  token slices). Bit-identical, no end-to-end gain: AR wait is mostly GPU imbalance, not copy time.
+
+### GEMM probes (bench `t4q/tools/gemm20_bench.cu`, stage pg section `g20`)
+- `kernels/gemm20.cuh`: W4A8 on int4 tensor cores, native Q4_0 codes (s4 via c ^ 8) x GA64 activations as hi/lo
+  nibble planes, exact per-64 fold. 4.4e-4 rel error vs the exact Q4 product (gemm9 6.3e-3), but 26-27 TOPS sustained
+  (gemm9 31-32); even with no fold only 42-43 TOPS vs gemm17's 56-58 at the same 67 W. Int4 is not a way around the
+  power cap for an exact W4A8.
+- `kernels/gemm21.cuh`: gemm9's numerics in gemm17's CUTLASS orientation (tile-outer, MAGIC-started 4-mma chains
+  folded per 64-k stage). Exact (1.7e-7 vs its int8 mirror) but only +3% over gemm9 (741-812 ops/clk); pre-converted
+  int8 weights or a 256-token tile are not faster. The fold structure, not the Q4 conversion, is the cost.
+
+### Accuracy findings
+- The L-prompt metrics are noise-dominated near 1e-3: changing only the alpha/beta fp32 summation order moved GA64's L
+  last-token KL 3.2e-4 -> 1.1e-3 and cont mean 1.1e-3 -> 4.9e-3; GA32 (more accurate than GA64) shows the same heavy
+  h_rel tails vs GA64 (p99 0.86) that round 3 attributed to R512.
+- R512 is still clearly worse on L: mask 55 (all but down) 3.9e-2, mask 21 1.4e-1, gateup alone 3.7e-2 last-token KL
+  (GA64 3.4e-4-1.1e-3). Speed: mask 55 1178.9 / 914.1, mask 21 1164.3 / 924.8 vs GA64 993.3 / 877.6 (v35). Stays opt-in.
+
+### Why the gate is still out of reach
+- GEMMs are 1655 ms of a 1981 ms pp2048 batch (v36) at 29-34 TOPS. Three more exact-GEMM structures were measured this
+  round (int4 digits, CUTLASS orientation with fold, 256-token tile) and none beats gemm9 by more than 3% at the 70 W
+  cap. 1400 tok/s needs the GEMMs at <= ~1.2 s, i.e. >= 41 TOPS sustained on the slower GPU with an accurate format;
+  the only kernels that reach that (gemm17 / CUTLASS per-token int8) need per-token activations, which fail on L.
+- Non-GEMM work left at pp2048: AR wait 103-233 ms (mostly the slower GPU), DeltaNet 77, attention 54, ab 34, conv 22,
+  gated norm 20.
+
+### Next steps
+1. Balance the two GPUs: one is 6-10% slower on most boxes and the other waits for it (100-230 ms per pp2048 batch).
+   A runtime-calibrated uneven N split for the N-split GEMMs (the faster GPU keeps a few % of the peer's weight rows)
+   could recover most of it.
+2. Overlap the 24-block DeltaNet scan (uses 24 of 40 SMs) with the other sub-batch's GEMM on a second stream.
+3. If a better accuracy metric is wanted: average last-token KL over several long prompts; the single L prompt swings
+   3x from fp32 summation order alone.
+4. pf_head could also skip the batch path's final add_norm/xn write for all but the last row (small).

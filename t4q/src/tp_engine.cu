@@ -1275,6 +1275,8 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     if (k == "pf_ar16") { S.pf_ar16 = v; return 0; }
     if (k == "pf_gdnc_chk") { S.pf_gdnc_chk = v; return 0; }
     if (k == "pf_head") { S.pf_head = v; return 0; }
+    if (k == "pf_arc") { if (v < 1 || v > 8) throw std::runtime_error("pf_arc out of range"); S.pf_arc = v; return 0; }
+    if (k == "pf_nsub_min") { S.pf_nsub_min = v; return 0; }
     if (k == "pf_ga") { if (v != 0 && v != 32 && v != 64) throw std::runtime_error("pf_ga must be 0, 32 or 64"); S.pf_ga = v; return 0; }
     if (k == "pf_fq") { S.pf_fq = v; return 0; }
     if (k == "pf_g17") { S.pf_g17 = v; return 0; }

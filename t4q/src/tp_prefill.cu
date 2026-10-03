@@ -619,6 +619,7 @@ constexpr int O_P = 32768;             // Ph [64][64] fp16 (8 KB)
 constexpr int O_R = 40960;             // Rh / Uh [64][128] fp16 (16 KB)
 constexpr int O_G = 57344;             // G[64], beta[64] fp32
 constexpr int BYTES = O_G + 2 * 64 * 4;
+constexpr int SCR = 8192 + 8192 + 512;  // k_pf_gdnp scratch bytes per (head, chunk)
 // 16-B unit swizzles: 256-B rows (16 units) and 128-B rows (8 units)
 __device__ __forceinline__ int off256(int row, int col) {  // fp16 element (row, col) in a [*][128] matrix
     return row * 256 + ((((col >> 3) ^ (row & 7))) << 4) + (col & 7) * 2;
@@ -642,9 +643,11 @@ __device__ __forceinline__ uint32_t pack_h2(float a, float b) {
 }
 }  // namespace gdnc
 
+template <int PRE>
 __global__ void __launch_bounds__(256, 1) k_pf_gdnc(const float* __restrict__ qkv, const float* __restrict__ yab, int ab_ss,
                                                     int T, const float* __restrict__ ssm_a,
-                                                    const float* __restrict__ ssm_dt, float* S, float* o) {
+                                                    const float* __restrict__ ssm_dt, float* S, float* o,
+                                                    const unsigned char* __restrict__ scr) {
     using namespace gdnc;
     extern __shared__ __align__(16) unsigned char sm[];
     const int vl = blockIdx.x, kl = vl & 7, tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
@@ -677,6 +680,13 @@ __global__ void __launch_bounds__(256, 1) k_pf_gdnc(const float* __restrict__ qk
             *(uint2*)(sm + O_Q + off256(t, f)) = make_uint2(pack_h2(q.x, q.y), pack_h2(q.z, q.w));
             *(uint2*)(sm + O_K + off256(t, f)) = make_uint2(pack_h2(kk.x, kk.y), pack_h2(kk.z, kk.w));
         }
+        if (PRE) {  // G, beta, P from the k_pf_gdnp pass (scratch row of this (head, chunk))
+            const unsigned char* cs = scr + ((size_t)vl * ((T + C - 1) / C) + c0 / C) * SCR;
+            if (tid < 128) Gs[tid] = ((const float*)(cs + 16384))[tid];  // Gs[64] then Bs[64] (contiguous)
+#pragma unroll
+            for (int u = tid; u < 512; u += 256)
+                *(int4*)(sm + O_P + off128(u >> 3, (u & 7) * 8)) = ((const int4*)(cs + 8192))[u];
+        } else {
         if (warp == 0) {
             float lg[2], bt[2];
 #pragma unroll
@@ -714,6 +724,7 @@ __global__ void __launch_bounds__(256, 1) k_pf_gdnc(const float* __restrict__ qk
             Bs[2 * lane] = bt[0];
             Bs[2 * lane + 1] = bt[1];
         }
+        }
         __syncthreads();
         const float GC = Gs[63];
         // ---- per warp: QS0 = Q S0^T and KS0 = K S0^T for v cols [16w, 16w+16): [64 t][16 v] = 4 mt x 2 nt tiles
@@ -749,6 +760,7 @@ __global__ void __launch_bounds__(256, 1) k_pf_gdnc(const float* __restrict__ qk
                 }
             }
         }
+        if (!PRE)
         // ---- KK and QK [64 t][64 s]: warp w computes rows mt = w & 3, cols s in [32 * (w >> 2), +32) (4 n8 tiles)
         {
             const int mt = warp & 3, s0 = 32 * (warp >> 2);
@@ -807,6 +819,13 @@ __global__ void __launch_bounds__(256, 1) k_pf_gdnc(const float* __restrict__ qk
                     ks[mt][nt][hh * 2] = 0.f; ks[mt][nt][hh * 2 + 1] = 0.f;  // reused as the P U accumulator
                 }
         __syncthreads();
+        if (PRE) {  // T = (I - A)^{-1} from scratch over Qh's region (QS0 is done: the barrier above)
+            const unsigned char* cs = scr + ((size_t)vl * ((T + C - 1) / C) + c0 / C) * SCR;
+#pragma unroll
+            for (int u = tid; u < 512; u += 256)
+                *(int4*)(sm + O_Q + off128(u >> 3, (u & 7) * 8)) = ((const int4*)cs)[u];
+            __syncthreads();
+        } else
         // ---- T = (I - A)^{-1}: 4 threads per column j (tid = 4j + r, r owns rows t = r mod 4), forward substitution
         // with the 4 partial sums combined by 2 shuffles per row; then Th (fp16, [64][64]) over Am's region
         {
@@ -958,6 +977,145 @@ __global__ void __launch_bounds__(256, 1) k_pf_gdnc(const float* __restrict__ qk
         for (int j = 0; j < 16; ++j) {
             *(float2*)(Sp + 8 * j) = make_float2(st[j][0], st[j][1]);
             *(float2*)(Sp + 8 * 128 + 8 * j) = make_float2(st[j][2], st[j][3]);
+        }
+    }
+}
+
+// k_pf_gdnc's state-independent part, for all chunks in parallel (pf_gdnc 2): per (head, chunk) the gates G / beta,
+// P = (Q K^T * D) and T = (I - A)^{-1} (same arithmetic as k_pf_gdnc<0>) -> scr [head][chunk][T fp16 64x64 | P fp16
+// 64x64 | G[64] B[64] fp32]. grid (24, nchunks), 256 threads.
+__global__ void __launch_bounds__(256, 1) k_pf_gdnp(const float* __restrict__ qkv, const float* __restrict__ yab, int ab_ss,
+                                                    int T, const float* __restrict__ ssm_a,
+                                                    const float* __restrict__ ssm_dt, unsigned char* __restrict__ scr) {
+    using namespace gdnc;
+    extern __shared__ __align__(16) unsigned char sm[];
+    const int vl = blockIdx.x, kl = vl & 7, tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const int g = lane >> 2, t4 = lane & 3;
+    float* Gs = (float*)(sm + O_G);
+    float* Bs = Gs + 64;
+    const float dtv = ssm_dt[vl], av = ssm_a[vl];
+    const int c0 = blockIdx.y * C;
+    const int n = min(C, T - c0);
+    const unsigned sb = (unsigned)__cvta_generic_to_shared(sm);
+    unsigned char* cs = scr + ((size_t)vl * gridDim.y + blockIdx.y) * SCR;
+    __half* Tg = (__half*)cs;
+    __half* Pg = (__half*)(cs + 8192);
+    {
+        // ---- stage Q, K (fp16), gates
+        for (int i = tid; i < 64 * 32; i += 256) {
+            const int t = i >> 5, f = (i & 31) * 4;
+            float4 q = make_float4(0.f, 0.f, 0.f, 0.f), kk = q;
+            if (t < n) {
+                const float* row = qkv + (size_t)(c0 + t) * 5120;
+                q = *(const float4*)(row + kl * 128 + f);
+                kk = *(const float4*)(row + 1024 + kl * 128 + f);
+            }
+            *(uint2*)(sm + O_Q + off256(t, f)) = make_uint2(pack_h2(q.x, q.y), pack_h2(q.z, q.w));
+            *(uint2*)(sm + O_K + off256(t, f)) = make_uint2(pack_h2(kk.x, kk.y), pack_h2(kk.z, kk.w));
+        }
+        if (warp == 0) {
+            float lg[2], bt[2];
+#pragma unroll
+            for (int h = 0; h < 2; ++h) {
+                const int t = lane * 2 + h;
+                lg[h] = 0.f; bt[h] = 0.f;
+                if (t < n) {
+                    float ya_ = 0.f, yb = 0.f;
+                    if (ab_ss < 0) {  // one slice, row stride -ab_ss (alpha/beta columns of the R512 qkvz GEMM)
+                        ya_ = __ldg(yab + (size_t)(c0 + t) * (-ab_ss) + vl);
+                        yb = __ldg(yab + (size_t)(c0 + t) * (-ab_ss) + 24 + vl);
+                    } else {
+#pragma unroll
+                        for (int kz = 0; kz < AB_KS; ++kz) {
+                            ya_ += __ldg(yab + (size_t)kz * ab_ss + (size_t)(c0 + t) * 48 + vl);
+                            yb += __ldg(yab + (size_t)kz * ab_ss + (size_t)(c0 + t) * 48 + 24 + vl);
+                        }
+                    }
+                    bt[h] = 1.0f / (1.0f + expf(-yb));
+                    const float xg = ya_ + dtv;
+                    const float sp = xg > 20.0f ? xg : logf(1.0f + expf(xg));
+                    lg[h] = sp * av;
+                }
+            }
+            // inclusive scan of lg over 64 tokens (2 per lane)
+            float v = lg[0] + lg[1];
+#pragma unroll
+            for (int o2 = 1; o2 < 32; o2 <<= 1) {
+                const float u = __shfl_up_sync(0xffffffffu, v, o2);
+                if (lane >= o2) v += u;
+            }
+            const float ex = v - (lg[0] + lg[1]);  // exclusive prefix
+            Gs[2 * lane] = ex + lg[0];
+            Gs[2 * lane + 1] = ex + lg[0] + lg[1];
+            Bs[2 * lane] = bt[0];
+            Bs[2 * lane + 1] = bt[1];
+        }
+        __syncthreads();
+        if (tid < 128) ((float*)(cs + 16384))[tid] = Gs[tid];
+        // ---- KK and QK [64 t][64 s]: warp w computes rows mt = w & 3, cols s in [32 * (w >> 2), +32) (4 n8 tiles)
+        {
+            const int mt = warp & 3, s0 = 32 * (warp >> 2);
+            float kk[4][4], qk[4][4];
+#pragma unroll
+            for (int nt = 0; nt < 4; ++nt)
+#pragma unroll
+                for (int e = 0; e < 4; ++e) { kk[nt][e] = 0.f; qk[nt][e] = 0.f; }
+#pragma unroll
+            for (int jj = 0; jj < 16; jj += 2) {
+                const int row = mt * 16 + (lane & 15), col = jj * 8 + (lane >> 4) * 8;
+                uint32_t a0, a1, a2, a3, q0, q1, q2, q3;
+                ldsm4(a0, a1, a2, a3, sb + O_K + off256(row, col));
+                ldsm4(q0, q1, q2, q3, sb + O_Q + off256(row, col));
+#pragma unroll
+                for (int np = 0; np < 2; ++np) {  // pairs of n8 tiles: B = K rows s (non-trans), 2 k steps
+                    // matrices: (s rows np*16 + 0-7, k jj), (s 8-15, k jj), (s 0-7, k jj+1), (s 8-15, k jj+1)
+                    const int srow = s0 + np * 16 + (lane & 7) + ((lane >> 3) & 1) * 8, scol = jj * 8 + (lane >> 4) * 8;
+                    uint32_t b0, b1, b2, b3;
+                    ldsm4(b0, b1, b2, b3, sb + O_K + off256(srow, scol));
+                    mma16816(kk[np * 2], a0, a1, b0);
+                    mma16816(kk[np * 2], a2, a3, b2);
+                    mma16816(kk[np * 2 + 1], a0, a1, b1);
+                    mma16816(kk[np * 2 + 1], a2, a3, b3);
+                    mma16816(qk[np * 2], q0, q1, b0);
+                    mma16816(qk[np * 2], q2, q3, b2);
+                    mma16816(qk[np * 2 + 1], q0, q1, b1);
+                    mma16816(qk[np * 2 + 1], q2, q3, b3);
+                }
+            }
+            __syncthreads();  // all warps done reading Qh (QS0 above, QK here) before Am overwrites it
+            float* Am = (float*)(sm + O_Q);
+#pragma unroll
+            for (int nt = 0; nt < 4; ++nt)
+#pragma unroll
+                for (int e = 0; e < 4; ++e) {
+                    const int t = mt * 16 + g + (e >> 1) * 8, sI = s0 + nt * 8 + 2 * t4 + (e & 1);
+                    const float dg = sI <= t ? __expf(Gs[t] - Gs[sI]) : 0.f;
+                    Am[t * 64 + sI] = sI < t ? -Bs[t] * dg * kk[nt][e] : 0.f;
+                    Pg[t * 64 + sI] = __float2half_rn(dg * qk[nt][e]);
+                }
+        }
+        __syncthreads();  // Am complete
+        // ---- T = (I - A)^{-1}: 4 threads per column j (tid = 4j + r, r owns rows t = r mod 4), forward substitution
+        // with the 4 partial sums combined by 2 shuffles per row; then Th (fp16, [64][64]) over Am's region
+        {
+            float tc[16];
+            const int j = tid >> 2, r = tid & 3;
+            const float* Am = (const float*)(sm + O_Q);
+#pragma unroll
+            for (int t = 0; t < 64; ++t) {
+                float a0 = 0.f, a1 = 0.f;
+#pragma unroll
+                for (int i = 0; i < 16; i += 2) {
+                    if (4 * i + r < t) a0 += Am[t * 64 + 4 * i + r] * tc[i];
+                    if (4 * (i + 1) + r < t) a1 += Am[t * 64 + 4 * (i + 1) + r] * tc[i + 1];
+                }
+                float v = a0 + a1;
+                v += __shfl_xor_sync(0xffffffffu, v, 1);
+                v += __shfl_xor_sync(0xffffffffu, v, 2);
+                if (r == (t & 3)) tc[t >> 2] = v + ((t == j) ? 1.f : 0.f);
+            }
+#pragma unroll
+            for (int i = 0; i < 16; ++i) Tg[(4 * i + r) * 64 + j] = __float2half_rn(tc[i]);
         }
     }
 }
@@ -1231,6 +1389,8 @@ struct PfGpu {
     int* ids = nullptr;
     float *h = nullptr, *xn = nullptr, *y = nullptr, *part = nullptr, *rx[2] = {nullptr, nullptr};
     float *yab = nullptr, *qkv = nullptr, *o = nullptr, *g32 = nullptr, *qa = nullptr;
+    unsigned char* gscr = nullptr;  // k_pf_gdnp scratch [24][chunks][gdnc::SCR]
+    cudaEvent_t ch_ev[2][8] = {};    // pf_arc: end of K-split GEMM chunk c of sub-batch s
     int8_t* xq = nullptr;
     float2* xs = nullptr;
     float* xsum = nullptr;
@@ -1465,7 +1625,7 @@ Pf* pf_get(t4q_ctx* c) {
             CK(cudaDeviceSynchronize());
             PfGpu& B = P->G[g];
             for (void* p : {(void*)B.ids, (void*)B.h, (void*)B.xn, (void*)B.y, (void*)B.part, (void*)B.rx[0],
-                            (void*)B.rx[1], (void*)B.yab, (void*)B.qkv, (void*)B.o, (void*)B.g32, (void*)B.qa,
+                            (void*)B.rx[1], (void*)B.yab, (void*)B.gscr, (void*)B.qkv, (void*)B.o, (void*)B.g32, (void*)B.qa,
                             (void*)B.xq, (void*)B.xs, (void*)B.xsum, (void*)B.dx, (void*)B.xq2, (void*)B.dx2,
                             (void*)B.dsh, (void*)B.dxt, (void*)B.dsr})
                 cudaFree(p);
@@ -1489,6 +1649,7 @@ Pf* pf_get(t4q_ctx* c) {
         B.rx[0] = dalloc<float>(U * D);
         B.rx[1] = dalloc<float>(U * D);
         B.yab = dalloc<float>(U * 48 * AB_KS);
+        B.gscr = dalloc<unsigned char>((size_t)24 * ((U + gdnc::C - 1) / gdnc::C) * gdnc::SCR);
         B.qkv = dalloc<float>(U * 5120);
         B.o = dalloc<float>(U * 3072);
         B.g32 = dalloc<float>(U * 8704);
@@ -1614,6 +1775,7 @@ struct PfRun {
     bool i4 = false;
     bool g8 = false;  // gemm8 path (pf_g8)
     int chk_done[2] = {0, 0};
+    bool chunked[2][NSUB] = {};  // the last K-split GEMM of (gpu, sub-batch) ran in pf_arc chunks
     int rchk_done[2] = {0, 0};
     bool ar16 = false;  // pf_ar16: K-split GEMMs write fp16 partials, the all-reduce copies fp16
     int ga = 32;      // gemm8 activation scale group (pf_ga)
@@ -1627,6 +1789,16 @@ struct PfRun {
     bool rotw(const tp::FW& W) const { return rot && (rmask & wbit(W)); }
     int emax = 7;
     int tpad(int Ts) const { return g8 ? (Ts + 255) / 256 * 256 : (Ts + 127) / 128 * 128; }
+    // pf_arc: chunk rows (a multiple of 128) and count for sub-batch s; 1 chunk = off
+    int chunk_rows(int s) const {
+        const int n = c->tps->pf_arc;
+        return ((sT[s] + n - 1) / n + 127) / 128 * 128;
+    }
+    int arc_chunks(int s) const {
+        if (!g8 || c->tps->pf_arc <= 1) return 1;
+        const int cs = chunk_rows(s);
+        return (sT[s] + cs - 1) / cs;
+    }
     // profiling (option pf_prof): events on GPU0's stream after each op group, named by the op that just ended
     std::vector<cudaEvent_t>* ev = nullptr;
     std::vector<const char*>* evn = nullptr;
@@ -1661,6 +1833,7 @@ struct PfRun {
         const int Ts = sT[s], Tps = tpad(Ts);
         cudaError_t e;
         gemm::GemmArgs a = gemm::make_args(W.L, W.base, B.xq, B.xs, B.xsum, y + (size_t)st0[s] * ldy, ldy, Ts, Tps);
+        if (y == B.part) chunked[g][s] = false;
         if (g8 && !g17 && !rotw(W) && c->tps->pf_fq) fq(g, s, W, in2);
         if (rotw(W)) {
             const int slot = (W.L.N == 8192 || W.L.N == 7168) ? 0 : W.L.N == 17408 ? 2 : W.L.K == 8704 ? 3 : 1;
@@ -1738,7 +1911,28 @@ struct PfRun {
             if (ar16 && y == B.part) { a8.yh = (__half*)B.part + (size_t)st0[s] * ldy; a8.y = nullptr; }
             const int pbn = c->tps->pf_bn;
             const int bn = pbn ? pbn : (Tps >= 512 ? 256 : 128);
-            e = gemm8::launch9(W.L.fmt, W.L.rpl, (Tps % bn) ? 128 : bn, ga, a8, G.s);
+            const int nch = arc_chunks(s);
+            if (y == B.part && nch > 1) {  // pf_arc: token chunks, each followed by an event for its AR copy (send)
+                const int cs = chunk_rows(s);
+                for (int ci = 0; ci < nch; ci++) {
+                    const int r0 = ci * cs, rows = std::min(cs, Ts - r0);
+                    gemm8::Args ac = a8;
+                    ac.xq = a8.xq + (size_t)r0 * W.L.K;
+                    ac.dx = a8.dx + r0;
+                    ac.dxs = Tps;
+                    if (ac.yh) ac.yh = a8.yh + (size_t)r0 * ldy;
+                    if (ac.y) ac.y = a8.y + (size_t)r0 * ldy;
+                    ac.T = rows;
+                    ac.Tp = (rows + 127) / 128 * 128;
+                    e = gemm8::launch9(W.L.fmt, W.L.rpl, (ac.Tp % 256) ? 128 : 256, ga, ac, G.s);
+                    if (e != cudaSuccess) break;
+                    if (!B.ch_ev[s][ci]) CK(cudaEventCreateWithFlags(&B.ch_ev[s][ci], cudaEventDisableTiming));
+                    CK(cudaEventRecord(B.ch_ev[s][ci], G.s));
+                }
+                chunked[g][s] = true;
+            } else {
+                e = gemm8::launch9(W.L.fmt, W.L.rpl, (Tps % bn) ? 128 : bn, ga, a8, G.s);
+            }
         } else if (i4 && W.L.fmt != gemv::FAST_K5) {
             if (W.L.fmt == gemv::FAST_P4) e = W.L.rpl == 4 ? gemm::gemm_launch<gemv::FAST_P4, 4, 3>(a, G.s)
                                                              : gemm::gemm_launch<gemv::FAST_P4, 2, 3>(a, G.s);
@@ -1816,12 +2010,24 @@ struct PfRun {
         for (int g = 0; g < 2; g++) {
             CK(cudaSetDevice(g));
             PfGpu& B = P->G[g];
+            const int nch = (ar16 && chunked[g][s]) ? arc_chunks(s) : 1;
+            if (nch > 1) {  // pf_arc: copy each chunk as soon as its GEMM launch is done
+                const int cs = chunk_rows(s);
+                for (int ci = 0; ci < nch; ci++) {
+                    const int r0 = ci * cs, rows = std::min(cs, sT[s] - r0);
+                    const size_t o2 = off + (size_t)r0 * D;
+                    CK(cudaStreamWaitEvent(B.sc, B.ch_ev[s][ci], 0));
+                    CK(cudaMemcpyPeerAsync((__half*)P->G[1 - g].rx[sl] + o2, 1 - g, (const __half*)B.part + o2, g,
+                                           (size_t)rows * D * 2, B.sc));
+                }
+            } else {
             CK(cudaEventRecord(B.part_ev[s], S.G[g].s));
             CK(cudaStreamWaitEvent(B.sc, B.part_ev[s], 0));
             if (ar16)
                 CK(cudaMemcpyPeerAsync((__half*)P->G[1 - g].rx[sl] + off, 1 - g, (const __half*)B.part + off, g, bytes / 2, B.sc));
             else
                 CK(cudaMemcpyPeerAsync(P->G[1 - g].rx[sl] + off, 1 - g, B.part + off, g, bytes, B.sc));
+            }
             CK(cudaEventRecord(B.sent[s][sl], B.sc));
         }
     }
@@ -1906,7 +2112,9 @@ struct PfRun {
                 if (!carve[g]) {
                     CK(cudaFuncSetAttribute(k_pf_gdn<0>, cudaFuncAttributePreferredSharedMemoryCarveout, 100));
                     CK(cudaFuncSetAttribute(k_pf_gdn<1>, cudaFuncAttributePreferredSharedMemoryCarveout, 100));
-                    CK(cudaFuncSetAttribute(k_pf_gdnc, cudaFuncAttributeMaxDynamicSharedMemorySize, gdnc::BYTES));
+                    CK(cudaFuncSetAttribute(k_pf_gdnc<0>, cudaFuncAttributeMaxDynamicSharedMemorySize, gdnc::BYTES));
+                    CK(cudaFuncSetAttribute(k_pf_gdnc<1>, cudaFuncAttributeMaxDynamicSharedMemorySize, gdnc::BYTES));
+                    CK(cudaFuncSetAttribute(k_pf_gdnp, cudaFuncAttributeMaxDynamicSharedMemorySize, gdnc::BYTES));
                     carve[g] = 1;
                 }
             }
@@ -1922,8 +2130,8 @@ struct PfRun {
                 CK(cudaMemcpyAsync(s1, L.S, sn * 4, cudaMemcpyDeviceToDevice, G.s));
                 k_pf_gdn<0><<<96, 256, 0, G.s>>>(B.qkv + (size_t)t0 * 5120, B.yab + (size_t)t0 * 48, P->cap * 48, Ts,
                                                  L.ssm_a, L.ssm_dt, s1, o1);
-                k_pf_gdnc<<<24, 256, gdnc::BYTES, G.s>>>(B.qkv + (size_t)t0 * 5120, B.yab + (size_t)t0 * 48, P->cap * 48,
-                                                         Ts, L.ssm_a, L.ssm_dt, L.S, B.o + (size_t)t0 * 3072);
+                k_pf_gdnc<0><<<24, 256, gdnc::BYTES, G.s>>>(B.qkv + (size_t)t0 * 5120, B.yab + (size_t)t0 * 48, P->cap * 48,
+                                                            Ts, L.ssm_a, L.ssm_dt, L.S, B.o + (size_t)t0 * 3072, nullptr);
                 k_maxdiff<<<64, 256, 0, G.s>>>(B.o + (size_t)t0 * 3072, o1, on, dd);
                 k_maxdiff<<<64, 256, 0, G.s>>>(L.S, s1, sn, dd + 2);
                 unsigned hd[4];
@@ -1940,10 +2148,17 @@ struct PfRun {
                 CK(cudaFreeAsync(dd, G.s));
                 mark(g, "gdn_scan");
             } else if (S.pf_gdnc) {
-                k_pf_gdnc<<<24, 256, gdnc::BYTES, G.s>>>(B.qkv + (size_t)t0 * 5120,
-                                                         abin ? B.y + (size_t)t0 * qld + 8192 : B.yab + (size_t)t0 * 48,
-                                                         abin ? -qld : P->cap * 48,
-                                                         Ts, L.ssm_a, L.ssm_dt, L.S, B.o + (size_t)t0 * 3072);
+                const float* yb = abin ? B.y + (size_t)t0 * qld + 8192 : B.yab + (size_t)t0 * 48;
+                const int yss = abin ? -qld : P->cap * 48;
+                if (S.pf_gdnc == 2) {  // state-independent part for all chunks in parallel, then the sequential scan
+                    k_pf_gdnp<<<dim3(24, (Ts + gdnc::C - 1) / gdnc::C), 256, gdnc::BYTES, G.s>>>(
+                        B.qkv + (size_t)t0 * 5120, yb, yss, Ts, L.ssm_a, L.ssm_dt, B.gscr);
+                    k_pf_gdnc<1><<<24, 256, gdnc::BYTES, G.s>>>(B.qkv + (size_t)t0 * 5120, yb, yss, Ts, L.ssm_a, L.ssm_dt,
+                                                                L.S, B.o + (size_t)t0 * 3072, B.gscr);
+                } else {
+                    k_pf_gdnc<0><<<24, 256, gdnc::BYTES, G.s>>>(B.qkv + (size_t)t0 * 5120, yb, yss, Ts, L.ssm_a, L.ssm_dt,
+                                                                L.S, B.o + (size_t)t0 * 3072, nullptr);
+                }
                 mark(g, "gdn_scan");
             } else {
             auto gk = S.pf_gdn2 ? k_pf_gdn<1> : k_pf_gdn<0>;
@@ -2039,7 +2254,7 @@ struct PfRun {
 
     void run(const int32_t* ids) {
         tp::State& S = *c->tps;
-        nsub = (S.pf_nsub >= 2 && T >= 256) ? 2 : 1;
+        nsub = (S.pf_nsub >= 2 && T >= std::max(256, S.pf_nsub_min)) ? 2 : 1;
         const int al = g8 ? 256 : 128;  // sub-batch 0 rows: a multiple of the GEMM token tile
         const int half = nsub == 2 ? ((T / 2 + al - 1) / al) * al : T;
         st0[0] = 0; sT[0] = std::min(T, half);
