@@ -398,7 +398,7 @@ def summarize_sustain(S):
 
 REF_SUSTAIN = 8
 G16_SUSTAIN = 8
-G16_SVARS = "8,10,11,13,12,0,10"
+G16_SVARS = "12,14,15,16,17,12"
 GEMM_KBU = [2]
 GEMM_TABLE = True
 GEMM_SASS = ["_ZN3t4q5gemm815gemm15_kernelILi0ELi4EEEvNS0_4ArgsE"]

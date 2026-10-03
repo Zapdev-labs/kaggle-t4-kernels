@@ -8,6 +8,7 @@
 //           3 g16 in-place Q4 (early conversion), 4 g16 w8 + w8_convert before every GEMM, 5 w8_convert alone
 // Lines: "CHECK {json}", "R {json}" (burst), "S {json}" (sustain windows).
 #include "../src/kernels/gemm16.cuh"
+#include "../src/kernels/rot.cuh"
 #include "nvml_lite.h"
 
 #include <algorithm>
@@ -45,7 +46,7 @@ static const Shape SHAPES[] = {
 };
 static const char* VN[] = {"g9_ga64", "g13_tok", "g16_w8", "g16_q4", "g16_w8+conv", "conv_only", "g16_w8_l2",
                            "g16_w8_swap", "g16_w8_swap_l2", "g16_q4_l2", "g17_q4_tok", "g17_q4_gsh", "g17_w8_tok",
-                           "g17_w8_gsh"};
+                           "g17_w8_gsh", "g17_w8_k1", "g17_w8_k2", "g17_w8_k4", "g17_w8_k3", "rot_conv_f32", "rot_conv_h2"};
 
 static uint64_t rng_s = 0x9E3779B97F4A7C15ull;
 static inline uint64_t rnd() { rng_s ^= rng_s << 13; rng_s ^= rng_s >> 7; rng_s ^= rng_s << 17; return rng_s; }
@@ -107,6 +108,14 @@ static cudaError_t run_var(int v, Bufs& b, cudaStream_t st) {
     g16::Args a;
     a.w8 = b.w8; a.q = q; a.invs = b.invs; a.xq = b.xq0; a.dx = b.dx0; a.y = b.y; a.ldy = b.N;
     a.N = b.N; a.K = b.K; a.T = b.T; a.Tp = b.Tp;
+    if (v >= 14 && v <= 17) {
+        a.kstride = 0;
+        if (v == 14) return g16::launch17_t<0, FAST_P4, 4, 0, 0, 1>(a, st);
+        if (v == 15) return g16::launch17_t<0, FAST_P4, 4, 0, 0, 2>(a, st);
+        if (v == 16) return g16::launch17_t<0, FAST_P4, 4, 0, 0, 4>(a, st);
+        return g16::launch17_t<0, FAST_P4, 4, 0, 0, 3>(a, st);
+    }
+    if (v == 18 || v == 19) return rot::convert(b.fmt, b.rpl, q, b.invs, b.w8, st, v == 19);
     if (v >= 10 && v <= 13) {
         const int gsh = (v == 11 || v == 13);
         if (gsh) { a.xq = b.xqg; a.dx = b.dxg; a.dsh = b.dsh; }
@@ -213,7 +222,7 @@ static void g8_row_host(int fmt, const uint8_t* row, int K, float invs, std::vec
 
 int main(int argc, char** argv) {
     double sustain = 0;
-    std::vector<int> vars = {0, 3, 8, 9, 10, 11, 12, 13};
+    std::vector<int> vars = {0, 8, 12, 14, 15, 16, 17, 18, 19};
     std::vector<int> Ts = {512, 2048};
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -280,7 +289,7 @@ int main(int argc, char** argv) {
                     printf("CHECK {\"shape\":\"%s\",\"T\":%d,\"act_rel_err_gsh\":%.3e,\"act_rel_err_tok\":%.3e,\"act_rel_err_ga64\":%.3e}\n",
                            sh.name, T, std::sqrt(eg / rr), std::sqrt(et / rr), std::sqrt(e6 / rr));
                 }
-                for (int v : {2, 3, 6, 7, 8, 9, 10, 11, 12, 13}) {
+                for (int v : {2, 3, 8, 12, 14, 15, 16, 17}) {
                     if (v == 9 && sh.fmt != FAST_P4) continue;
                     const bool gsh = (v == 11 || v == 13);
                     CK(cudaMemset(b.y, 0, (size_t)b.T * b.N * 4));
@@ -330,7 +339,7 @@ int main(int argc, char** argv) {
                     CK(cudaEventSynchronize(e1));
                     float ms = 0; CK(cudaEventElapsedTime(&ms, e0, e1));
                     const double us = ms * 1e3 / R, tops = 2.0 * b.N * b.K * T / (us * 1e-6) / 1e12;
-                    const double wgb = v == 5 ? ((double)b.L.bytes + (double)b.N * b.K) / (us * 1e-6) / 1e9 : 0;
+                    const double wgb = (v == 5 || v == 18 || v == 19) ? ((double)b.L.bytes + (double)b.N * b.K) / (us * 1e-6) / 1e9 : 0;
                     printf("R {\"shape\":\"%s\",\"variant\":\"%s\",\"T\":%d,\"us\":%.1f,\"TOPS\":%.2f,\"conv_GBs\":%.1f,\"sm_mhz\":%u,"
                            "\"power_w\":%.1f,\"ops_per_clk_sm\":%.0f}\n", sh.name, VN[v], T, us, tops, wgb, smp.sm,
                            smp.mw / 1000.0, smp.sm ? tops * 1e12 / (smp.sm * 1e6) / 40.0 : 0.0);

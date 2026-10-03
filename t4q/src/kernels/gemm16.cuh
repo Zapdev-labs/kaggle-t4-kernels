@@ -355,7 +355,13 @@ struct Stg17 {
     int4 dsh;      // GSH: 16 B of shift deltas (threads < 8)
 };
 
-template <int WSRC, int FMT, int RPL, int OUT, int GSH>
+// KNOB (bench A/B): bit 0 global loads of stage s+1 issued at k-group 0 of stage s (CUTLASS MmaPipelined order) instead
+// of right after the barrier; bit 1 mma .satfinite; bit 2 plain (non-serpentine) mma order
+__device__ __forceinline__ void mma_s8sat(int& d0, int& d1, uint32_t a, uint32_t b, int c0, int c1) {
+    asm("mma.sync.aligned.m8n8k16.row.col.satfinite.s32.s8.s8.s32 {%0,%1}, {%2}, {%3}, {%4,%5};"
+        : "=r"(d0), "=r"(d1) : "r"(a), "r"(b), "r"(c0), "r"(c1));
+}
+template <int WSRC, int FMT, int RPL, int OUT, int GSH, int KNOB = 0>
 __global__ void __launch_bounds__(NT, 1) gemm17_kernel(const Args a) {
     extern __shared__ __align__(16) unsigned char smem[];
     constexpr int ST = STAGE_BYTES + (GSH ? 128 : 0);  // + 128 B of shift deltas per stage
@@ -460,7 +466,7 @@ __global__ void __launch_bounds__(NT, 1) gemm17_kernel(const Args a) {
     convert();
     store(0);
     __syncthreads();
-    if (nst > 1) load(1);
+    if (!(KNOB & 1) && nst > 1) load(1);
     frag(0, 0, 0);
     int buf = 0;
     for (int s = 0; s < nst; ++s) {
@@ -484,15 +490,17 @@ __global__ void __launch_bounds__(NT, 1) gemm17_kernel(const Args a) {
                 if (s + 1 < nst) store(buf ^ 1);
                 __syncthreads();
                 buf ^= 1;
-                if (s + 2 < nst) load(s + 2);
+                if (!(KNOB & 1) && s + 2 < nst) load(s + 2);
             }
             if (!(u == 3 && s + 1 == nst)) frag((u + 1) & 1, buf, (u + 1) & 3);
+            if ((KNOB & 1) && u == 0 && s + 1 < nst) load(s + 1);
 #pragma unroll
             for (int g = 0; g < 8; ++g)
 #pragma unroll
                 for (int ii = 0; ii < 8; ++ii) {
-                    const int i = (g & 1) ? 7 - ii : ii;
-                    gemm8::mma_s8p(acc[i][g][0], acc[i][g][1], fa[u & 1][i], fb[u & 1][g], acc[i][g][0], acc[i][g][1]);
+                    const int i = ((g & 1) && !(KNOB & 4)) ? 7 - ii : ii;
+                    if (KNOB & 2) mma_s8sat(acc[i][g][0], acc[i][g][1], fa[u & 1][i], fb[u & 1][g], acc[i][g][0], acc[i][g][1]);
+                    else gemm8::mma_s8p(acc[i][g][0], acc[i][g][1], fa[u & 1][i], fb[u & 1][g], acc[i][g][0], acc[i][g][1]);
                 }
         }
     }
@@ -529,9 +537,9 @@ __global__ void __launch_bounds__(NT, 1) gemm17_kernel(const Args a) {
     }
 }
 
-template <int WSRC, int FMT, int RPL, int OUT, int GSH>
+template <int WSRC, int FMT, int RPL, int OUT, int GSH, int KNOB = 0>
 static cudaError_t launch17_t(const Args& a, cudaStream_t s) {
-    auto k = gemm17_kernel<WSRC, FMT, RPL, OUT, GSH>;
+    auto k = gemm17_kernel<WSRC, FMT, RPL, OUT, GSH, KNOB>;
     const int smem = 2 * (STAGE_BYTES + (GSH ? 128 : 0));
     static int attr_dev_mask = 0;
     int dev = 0;

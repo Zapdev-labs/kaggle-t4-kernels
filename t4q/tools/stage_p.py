@@ -34,7 +34,7 @@ ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "p"
 SECTIONS = ["engine"]
-FQ = ['pf_fq=0,pf_ga=32,pf_rot=0,pf_g17=0', 'pf_ga=64,pf_rot=1,pf_abq=1,pf_rcf=1,pf_rot_chk=1', 'pf_ga=64,pf_rot=1,pf_abq=1,pf_rcf=0,pf_rot_chk=0']
+FQ = ['pf_fq=0,pf_ga=32,pf_rot=0,pf_g17=0', 'pf_ga=64,pf_rot=1,pf_abq=1,pf_rcf=1,pf_rot_chk=0', 'pf_ga=64,pf_rot=0']
 PF_CONFIGS = ";".join(FQ)
 PF_SECTIONS = "correct,bench"
 RESULTS = {"stage": STAGE}

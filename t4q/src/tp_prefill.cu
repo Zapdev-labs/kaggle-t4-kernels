@@ -183,6 +183,32 @@ __global__ void __launch_bounds__(256) k_pf_add_norm_q8(float* h, const PT* own,
     }
 }
 
+// R512: gated RMSNorm of the 24 local heads (o * rsqrt(mean o^2) * w * silu(z)) into smem, then T(.) quantized per
+// token (ssm_out input, K = 3072). grid T x 256 (warp w: heads 3w..3w+2, 4 elements per lane), dynamic smem 3072 floats
+__global__ void __launch_bounds__(256) k_pf_gnorm_rot(const float* __restrict__ o, const float* __restrict__ y, int ldy,
+                                                      const float* __restrict__ w, int8_t* xq, float* dx) {
+    extern __shared__ __align__(16) float xs[];
+    __shared__ float red[8];
+    const int t = blockIdx.x, lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+#pragma unroll
+    for (int hh = 0; hh < 3; ++hh) {
+        const int vl = warp * 3 + hh;
+        const float4 x = *(const float4*)(o + (size_t)t * 3072 + vl * 128 + lane * 4);
+        float ss = x.x * x.x + x.y * x.y + x.z * x.z + x.w * x.w;
+        ss = warp_sum(ss);  // same value in every lane
+        const float scale = rsqrtf(ss / 128.0f + 1e-6f);
+        const float4 zz = *(const float4*)(y + (size_t)t * ldy + 5120 + vl * 128 + lane * 4);
+        const float4 ww = *(const float4*)(w + lane * 4);
+        float* d = xs + vl * 128 + lane * 4;
+        d[0] = ((x.x * scale) * ww.x) * (zz.x / (1.0f + expf(-zz.x)));
+        d[1] = ((x.y * scale) * ww.y) * (zz.y / (1.0f + expf(-zz.y)));
+        d[2] = ((x.z * scale) * ww.z) * (zz.z / (1.0f + expf(-zz.z)));
+        d[3] = ((x.w * scale) * ww.w) * (zz.w / (1.0f + expf(-zz.w)));
+    }
+    __syncthreads();
+    rot::rot_quant_row(xs, xs, 3072, xq + (size_t)t * 3072, dx + t, red);
+}
+
 // R512: [h += partials]; x = rmsnorm(h) * w (xn written if non-null), then T(x) quantized per token into xq / dx.
 // grid T x 256, dynamic smem 5120 floats
 template <class PT>
@@ -621,10 +647,15 @@ __global__ void __launch_bounds__(256, 1) k_pf_gdnc(const float* __restrict__ qk
                 lg[h] = 0.f; bt[h] = 0.f;
                 if (t < n) {
                     float ya_ = 0.f, yb = 0.f;
+                    if (ab_ss < 0) {  // one slice, row stride -ab_ss (alpha/beta columns of the R512 qkvz GEMM)
+                        ya_ = __ldg(yab + (size_t)(c0 + t) * (-ab_ss) + vl);
+                        yb = __ldg(yab + (size_t)(c0 + t) * (-ab_ss) + 24 + vl);
+                    } else {
 #pragma unroll
-                    for (int kz = 0; kz < AB_KS; ++kz) {
-                        ya_ += __ldg(yab + (size_t)kz * ab_ss + (size_t)(c0 + t) * 48 + vl);
-                        yb += __ldg(yab + (size_t)kz * ab_ss + (size_t)(c0 + t) * 48 + 24 + vl);
+                        for (int kz = 0; kz < AB_KS; ++kz) {
+                            ya_ += __ldg(yab + (size_t)kz * ab_ss + (size_t)(c0 + t) * 48 + vl);
+                            yb += __ldg(yab + (size_t)kz * ab_ss + (size_t)(c0 + t) * 48 + 24 + vl);
+                        }
                     }
                     bt[h] = 1.0f / (1.0f + expf(-yb));
                     const float xg = ya_ + dtv;
@@ -1174,6 +1205,7 @@ struct PfGpu {
     float* dx2 = nullptr;
     int8_t* dsh = nullptr;  // gemm17 GSH shift deltas [K/64][Tp] (permuted token order)
     int8_t* w8r[4] = {nullptr, nullptr, nullptr, nullptr};  // R512 rotated int8 weights: qkvz|qkv_a, ssm_out|wo, gateup, down
+    float* invq = nullptr;  // R512: invr of qkvz + the alpha/beta rows [8448]
     float* dxt = nullptr;   // gemm17 per-token final factor [Tp]
     cudaStream_t sc = nullptr;              // copy stream (AR payloads)
     cudaEvent_t part_ev[NSUB] = {};         // compute stream: partial rows of sub s written
@@ -1468,7 +1500,8 @@ void pf_rot_prep(t4q_ctx* c) {
         CK(cudaSetDevice(g));
         tp::Gpu& G = S.G[g];
         PfGpu& B = P->G[g];
-        const size_t sz[4] = {(size_t)8192 * 5120, (size_t)5120 * 3072, (size_t)17408 * 5120, (size_t)5120 * 8704};
+        const size_t sz[4] = {(size_t)8448 * 5120, (size_t)5120 * 3072, (size_t)17408 * 5120, (size_t)5120 * 8704};
+        if (!B.invq) CK(cudaMalloc(&B.invq, 8448 * 4));
         for (int i = 0; i < 4; i++)
             if (!B.w8r[i]) CK(cudaMalloc(&B.w8r[i], sz[i]));
         for (int il = 0; il < 64; il++) {
@@ -1549,6 +1582,16 @@ struct PfRun {
         if (rot) {
             const int slot = (W.L.N == 8192 || W.L.N == 7168) ? 0 : W.L.N == 17408 ? 2 : W.L.K == 8704 ? 3 : 1;
             gemm8::Args q = gemm8::make_args(W.L, W.base, nullptr, nullptr, nullptr, nullptr, 0, 0, 0);
+            const bool abrows = W.L.N == 8192 && ldy == 8448;  // + 256 alpha/beta rows (48 used) of this layer
+            const tp::Layer* Lab = nullptr;
+            if (abrows)
+                for (int il2 = 0; il2 < 64 && !Lab; il2++)
+                    if (&c->tps->G[g].L[il2].qkvz == &W) Lab = &c->tps->G[g].L[il2];
+            if (s == 0 && abrows) {
+                CK(cudaMemcpyAsync(B.w8r[0] + (size_t)8192 * W.L.K, Lab->ab8r, (size_t)256 * W.L.K, cudaMemcpyDeviceToDevice, G.s));
+                CK(cudaMemcpyAsync(B.invq, W.invr, 8192 * 4, cudaMemcpyDeviceToDevice, G.s));
+                CK(cudaMemcpyAsync(B.invq + 8192, Lab->ab8i, 256 * 4, cudaMemcpyDeviceToDevice, G.s));
+            }
             if (s == 0) {  // both sub-batches use the same converted weights
                 CK(rot::convert(W.L.fmt, W.L.rpl, q, W.invr, B.w8r[slot], G.s, c->tps->pf_rcf != 0));
                 if (c->tps->pf_rot_chk && !(rchk_done[g] & (1 << slot))) {  // fp16 converter vs the fp32 one, once per slot
@@ -1575,15 +1618,15 @@ struct PfRun {
                 mark(g, "rot_convert");
             }
             g16::Args a7;
-            a7.w8 = B.w8r[slot]; a7.invs = W.invr; a7.xq = B.xq; a7.dx = B.dxt;
-            a7.N = W.L.N; a7.K = W.L.K; a7.T = Ts; a7.Tp = Tps;
+            a7.w8 = B.w8r[slot]; a7.invs = abrows ? B.invq : W.invr; a7.xq = B.xq; a7.dx = B.dxt;
+            a7.N = abrows ? 8448 : W.L.N; a7.K = W.L.K; a7.T = Ts; a7.Tp = Tps;
             if (silu) {  // fp16 silu(gate) * up rows of 8704 into g32
                 a7.yh = (__half*)B.g32 + (size_t)st0[s] * 8704; a7.ldy = 8704;
-                e = g16::launch17_t<0, gemv::FAST_P4, 4, 2, 0>(a7, G.s);
+                e = g16::launch17_t<0, gemv::FAST_P4, 4, 2, 0, 1>(a7, G.s);
             } else {
                 a7.y = y + (size_t)st0[s] * ldy; a7.ldy = ldy;
                 if (ar16 && y == B.part) { a7.yh = (__half*)B.part + (size_t)st0[s] * ldy; a7.y = nullptr; }
-                e = a7.yh ? g16::launch17_t<0, gemv::FAST_P4, 4, 1, 0>(a7, G.s) : g16::launch17_t<0, gemv::FAST_P4, 4, 0, 0>(a7, G.s);
+                e = a7.yh ? g16::launch17_t<0, gemv::FAST_P4, 4, 1, 0, 1>(a7, G.s) : g16::launch17_t<0, gemv::FAST_P4, 4, 0, 0, 1>(a7, G.s);
             }
         } else if (g17) {
             g16::Args a7;
@@ -1739,26 +1782,29 @@ struct PfRun {
         const int t0 = st0[s], Ts = sT[s], ps = p0 + t0;
         const bool fu = fused(), fq8 = fu || rot;
         add_norm(g, s, L.attn_norm, il > 0, fq8, !L.attn && !(rot && S.pf_abq && L.ab8r));
+        const bool abin = rot && S.pf_abq && L.ab8r;  // alpha/beta rows appended to the qkvz GEMM
+        const int qld = abin ? 8448 : 8192;
         if (!L.attn) {
-            if (fq8) gemm(g, s, L.qkvz, B.y, 8192);
+            if (fq8) gemm(g, s, L.qkvz, B.y, qld);
             else qg(g, s, L.qkvz, B.xn, D, B.y, 8192);
-            if (rot && S.pf_abq && L.ab8r) {  // rotated int8 GEMM on the qkvz activations; slices 1..3 stay zero
+            if (abin) {
+            } else if (rot && S.pf_abq && L.ab8r) {  // rotated int8 GEMM on the qkvz activations; slices 1..3 stay zero
                 for (int kz = 0; kz < AB_KS; kz++) {  // K-slices into the consumer's partial-sum slices
                     g16::Args aa;
                     aa.w8 = L.ab8r + kz * (D / AB_KS); aa.xq = B.xq + kz * (D / AB_KS); aa.kstride = D;
                     aa.invs = L.ab8i; aa.dx = B.dxt;
                     aa.y = B.yab + (size_t)kz * P->cap * 48 + (size_t)t0 * 48; aa.ldy = 48; aa.nvalid = 48;
                     aa.N = 256; aa.K = D / AB_KS; aa.T = Ts; aa.Tp = tpad(Ts);
-                    CK((g16::launch17_t<0, gemv::FAST_P4, 4, 0, 0>(aa, G.s)));
+                    CK((g16::launch17_t<0, gemv::FAST_P4, 4, 0, 0, 1>(aa, G.s)));
                 }
             } else {
                 k_pf_ab<<<dim3((Ts + 127) / 128, AB_KS), 256, 0, G.s>>>(B.xn + (size_t)t0 * D, L.ab, Ts, B.yab + (size_t)t0 * 48,
                                                                        P->cap * 48);
             }
             mark(g, "ab");
-            k_pf_conv<<<dim3(Ts, 40), 128, 0, G.s>>>(B.y + (size_t)t0 * 8192, 8192, L.conv_ring, L.conv_w, ps,
+            k_pf_conv<<<dim3(Ts, 40), 128, 0, G.s>>>(B.y + (size_t)t0 * qld, qld, L.conv_ring, L.conv_w, ps,
                                                      B.qkv + (size_t)t0 * 5120);
-            k_pf_ring<<<20, 256, 0, G.s>>>(B.y + (size_t)t0 * 8192, 8192, Ts, ps, L.conv_ring);
+            k_pf_ring<<<20, 256, 0, G.s>>>(B.y + (size_t)t0 * qld, qld, Ts, ps, L.conv_ring);
             mark(g, "conv");
             {
                 static int carve[2] = {0, 0};
@@ -1799,7 +1845,9 @@ struct PfRun {
                 CK(cudaFreeAsync(dd, G.s));
                 mark(g, "gdn_scan");
             } else if (S.pf_gdnc) {
-                k_pf_gdnc<<<24, 256, gdnc::BYTES, G.s>>>(B.qkv + (size_t)t0 * 5120, B.yab + (size_t)t0 * 48, P->cap * 48,
+                k_pf_gdnc<<<24, 256, gdnc::BYTES, G.s>>>(B.qkv + (size_t)t0 * 5120,
+                                                         abin ? B.y + (size_t)t0 * qld + 8192 : B.yab + (size_t)t0 * 48,
+                                                         abin ? -qld : P->cap * 48,
                                                          Ts, L.ssm_a, L.ssm_dt, L.S, B.o + (size_t)t0 * 3072);
                 mark(g, "gdn_scan");
             } else {
@@ -1808,7 +1856,13 @@ struct PfRun {
                                           L.S, B.o + (size_t)t0 * 3072);
             mark(g, "gdn_scan");
             }
-            if (fu) {
+            if (rot) {
+                k_pf_gnorm_rot<<<Ts, 256, 3072 * 4, G.s>>>(B.o + (size_t)t0 * 3072, B.y + (size_t)t0 * qld, qld,
+                                                           L.ssm_norm, B.xq, B.dxt);
+                ck_launch("gnorm_rot");
+                mark(g, "gnorm_q8");
+                gemm(g, s, L.ssm_out, B.part, D);
+            } else if (fu) {
                 k_pf_gnorm_q8<<<dim3(Ts, 24), 128, 0, G.s>>>(B.o + (size_t)t0 * 3072, B.y + (size_t)t0 * 8192, 8192,
                                                               L.ssm_norm, q8out(g, s, 3072));
                 ck_launch("deltanet");
