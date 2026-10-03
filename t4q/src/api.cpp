@@ -176,4 +176,22 @@ void t4q_free(t4q_ctx* c) {
     delete c;
 }
 
+
+#define BD_CALL(expr)                                                        \
+    API_TRY                                                                  \
+    if (!c->tps) throw std::runtime_error("batched decode needs the TP engine"); \
+    return expr;                                                             \
+    API_CATCH(-1)
+int t4q_batch_init(t4q_ctx* c, int n_slots, int slot_ctx, int state_f16) { BD_CALL(tp_batch_init(c, n_slots, slot_ctx, state_f16)) }
+int t4q_batch_prefill(t4q_ctx* c, int slot, const int32_t* ids, int n) { BD_CALL(tp_batch_prefill(c, slot, ids, n)) }
+int t4q_batch_clone(t4q_ctx* c, int src, int dst) { BD_CALL(tp_batch_clone(c, src, dst)) }
+int t4q_batch_set_token(t4q_ctx* c, int slot, int token) { BD_CALL(tp_batch_set_token(c, slot, token)) }
+int t4q_batch_pos(t4q_ctx* c, int slot) { BD_CALL(tp_batch_pos(c, slot)) }
+int t4q_batch_step(t4q_ctx* c, int n, const int32_t* slots, int32_t* out) { BD_CALL(tp_batch_step(c, n, slots, out)) }
+int t4q_batch_logits(t4q_ctx* c, int row, float* out) { BD_CALL(tp_batch_logits(c, row, out)) }
+void t4q_batch_free(t4q_ctx* c) {
+    try { tp_batch_free(c); } catch (const std::exception& e) { g_err = e.what(); }
+}
+#undef BD_CALL
+
 }  // extern "C"

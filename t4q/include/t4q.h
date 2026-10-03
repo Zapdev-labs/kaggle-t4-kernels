@@ -32,6 +32,20 @@ void t4q_stats(t4q_ctx*, char* json, int cap);   /* tok/s, load info, repack che
 int  t4q_n_vocab(t4q_ctx*);
 int  t4q_pos(t4q_ctx*);
 const char* t4q_last_error(void);
+/* batched decode (TP engine only). Slots hold independent sequences (DeltaNet state, conv ring, KV cache).
+   init: (re)allocates n_slots slots of slot_ctx positions (state_f16: fp16 DeltaNet state storage, fp32 math).
+   prefill: runs the prompt through the single-stream engine and copies its state into the slot; returns the first
+   generated token (greedy) or <0. step: one greedy decode step for n slots (each consumes its pending token, which
+   the step replaces with the argmax written to out[i]); returns n or <0. set_token overrides a slot's pending token
+   (teacher forcing). logits: row `row` of the last step (n_vocab floats). */
+int  t4q_batch_init(t4q_ctx*, int n_slots, int slot_ctx, int state_f16);
+int  t4q_batch_prefill(t4q_ctx*, int slot, const int32_t* ids, int n);
+int  t4q_batch_clone(t4q_ctx*, int src, int dst);
+int  t4q_batch_set_token(t4q_ctx*, int slot, int token);
+int  t4q_batch_pos(t4q_ctx*, int slot);
+int  t4q_batch_step(t4q_ctx*, int n, const int32_t* slots, int32_t* out);
+int  t4q_batch_logits(t4q_ctx*, int row, float* out);
+void t4q_batch_free(t4q_ctx*);
 void t4q_reset(t4q_ctx*);
 void t4q_free(t4q_ctx*);
 

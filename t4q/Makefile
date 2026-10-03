@@ -10,7 +10,7 @@ OBJS = $(patsubst %.cu,$(BUILD)/%.o,$(CU_SRCS)) $(patsubst %.cpp,$(BUILD)/%.o,$(
 
 all: $(BUILD)/libt4q.so
 
-$(BUILD)/%.o: %.cu src/*.h src/kernels/*.h src/kernels/*.cuh include/t4q.h
+$(BUILD)/%.o: %.cu src/*.h src/*.cuh src/kernels/*.h src/kernels/*.cuh include/t4q.h
 	@mkdir -p $(dir $@)
 	$(NVCC) $(NVFLAGS) -Xptxas -v -c $< -o $@ 2> $@.ptxas.txt || (cat $@.ptxas.txt; false)
 

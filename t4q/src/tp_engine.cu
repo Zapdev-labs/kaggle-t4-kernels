@@ -1294,6 +1294,10 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     if (k == "pf_fq_n") { S.pf_fq_n = v; return 0; }
     if (k == "pf_fq_mask") { S.pf_fq_mask = v; return 0; }
     if (k == "pf_keep_h") { S.pf_keep_h = v; return 0; }
+    if (k == "bd_head") { if (v != 0 && v != 1) throw std::runtime_error("bd_head must be 0 or 1"); S.bd_head = v; return 0; }
+    if (k == "bd_ch") { if (v != 64 && v != 128 && v != 256 && v != 512) throw std::runtime_error("bd_ch must be 64..512"); S.bd_ch = v; return 0; }
+    if (k == "bd_prof") { S.bd_prof = v; tp_batch_reset_stats(c); return 0; }
+    if (k == "bd_reset_stats") { tp_batch_reset_stats(c); return 0; }
     if (k == "pf_bn") { if (v != 0 && v != 128 && v != 256) throw std::runtime_error("pf_bn must be 0, 128 or 256"); S.pf_bn = v; return 0; }
     if (k == "spin_ns") {
         S.spin_ns = v;
@@ -1496,5 +1500,6 @@ std::string tp_stats_json(t4q_ctx* c) {
     if (S.pf_wcache_used) s += ", \"pf_wcache_mb\": " + std::to_string(S.pf_wcache_used >> 20);
     if (!S.trace_json.empty()) s += ", \"trace\": " + S.trace_json;
     if (!S.dbg_json.empty()) s += ", \"dbgts\": " + S.dbg_json;
+    s += tp_batch_stats(c);
     return s;
 }

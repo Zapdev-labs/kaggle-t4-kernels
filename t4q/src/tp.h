@@ -324,6 +324,13 @@ struct State {
     std::string pf_fq_json;
     double pf_last_batch_s = 0, pf_last_total_s = 0;
     int pf_last_n = 0;
+    // batched decode (milestone B, tp_batch.cuh): B concurrent sequences in slots, each with its own DeltaNet state,
+    // conv ring and KV cache; GEMMs at m = B through gemm9 (64-token tile up to B = 64)
+    void* bd = nullptr;   // slot buffers (tp_batch_init)
+    int bd_head = 1;      // lm_head: 1 = gemm9 on Q6_K (per-row int8 requant, GA64 activations); 0 = dp4a GEMV, 8 columns per pass
+    int bd_ch = 128;      // attention positions per split block (fixed, so results do not depend on B)
+    int bd_prof = 0;      // 1: per-op event profile of GPU0 per step, accumulated in stats "bd_profile"
+    std::string bd_json;
 };
 
 }  // namespace tp

@@ -134,6 +134,10 @@ __device__ __forceinline__ float block_absmax(const Args& a, int R, int kb) {
         return fmaxf(fabsf(m), fabsf(15.f * d + m));
     }
     const uint8_t* sp = a.sc + ((p.tc * 32 + p.lane) * RPL + p.r) * 2;
+    if (FMT == gemv::FAST_K6) {  // w = d * sc[half] * (q - 32), |q - 32| <= 32
+        const float d = h2f(a.d[((p.tc * 2 + p.h) * 2 + (p.j >> 3)) * RPL + p.r]);
+        return 32.f * fabsf(d) * fmaxf(fabsf((float)(int8_t)sp[0]), fabsf((float)(int8_t)sp[1]));
+    }
     const uint32_t dd = ((const uint32_t*)a.d)[((p.tc * 2 + p.h) * 2 + (p.j >> 3)) * RPL + p.r];
     const float A = h2f(dd) * (float)sp[0], B = h2f(dd >> 16) * (float)sp[1];
     return fmaxf(fabsf(B), fabsf(31.f * A - B));
@@ -156,7 +160,8 @@ template <int BN>
 struct Stage {
     int4 wq;          // 16 B of codes: one (row, block)
     uint32_t s0, s1;  // P4: d | P4M: d, m | K5: {sc, mn} bytes, {d, dmin}
-    uint32_t hb;      // K5 high bits
+    uint32_t hb;      // K5 high bits; K6: high 2-bit plane of the low 16 weights
+    uint32_t hb2;     // K6: high 2-bit plane of the high 16 weights
     int4 xa[Cfg<BN>::NXA];
     float2 dx0, dx1;  // threads < BN/2: token pair p, blocks kb0 and kb0 + 1
 };
@@ -218,6 +223,28 @@ __device__ __forceinline__ void stage_store(const Stage<BN>& S, unsigned char* b
                 const uint32_t t1 = h2_bits(__hfma2(__hsub2(v1, k1032), r, k1536));
                 const uint32_t t2 = h2_bits(__hfma2(__hsub2(v2, k1152), r16, k1536));
                 const uint32_t t3 = h2_bits(__hfma2(__hsub2(v3, k1152), r16, k1536));
+                lo[w] = __byte_perm(t0, t1, 0x6240);
+                hi[w] = __byte_perm(t2, t3, 0x6240);
+            }
+        } else if (FMT == gemv::FAST_K6) {
+            // q6 = nibble | (2 high bits << 4); low 16 weights (low nibbles, plane hb) scale sc[0], high 16 (high
+            // nibbles, plane hb2) sc[1]. Word w byte b takes high bits (H >> (8b + 2w)) & 3 (gemv.cuh group_dot).
+            const float d = h2f(S.s1) * invs;
+            const float aL = d * (float)(int8_t)(S.s0 & 0xff), aH = d * (float)(int8_t)((S.s0 >> 8) & 0xff);
+            const __half2 rl = __float2half2_rn(aL), rh16 = __float2half2_rn(aH * 0.0625f);
+            const __half2 k1056 = __float2half2_rn(1056.f), k1536b = __float2half2_rn(1536.f);
+#pragma unroll
+            for (int w = 0; w < 4; ++w) {
+                const uint32_t x = q[w], x8 = x >> 8;
+                const uint32_t HL = S.hb >> (2 * w), HH = S.hb2 >> (2 * w);
+                const __half2 v0 = as_h2((x & 0x000F000Fu) | ((HL << 4) & 0x00300030u) | 0x64006400u);
+                const __half2 v1 = as_h2((x8 & 0x000F000Fu) | ((HL >> 4) & 0x00300030u) | 0x64006400u);
+                const __half2 v2 = as_h2((x & 0x00F000F0u) | ((HH << 8) & 0x03000300u) | 0x64006400u);
+                const __half2 v3 = as_h2((x8 & 0x00F000F0u) | (HH & 0x03000300u) | 0x64006400u);
+                const uint32_t t0 = h2_bits(__hfma2(__hsub2(v0, k1056), rl, k1536));
+                const uint32_t t1 = h2_bits(__hfma2(__hsub2(v1, k1056), rl, k1536));
+                const uint32_t t2 = h2_bits(__hfma2(__hsub2(v2, k1536b), rh16, k1536));
+                const uint32_t t3 = h2_bits(__hfma2(__hsub2(v3, k1536b), rh16, k1536));
                 lo[w] = __byte_perm(t0, t1, 0x6240);
                 hi[w] = __byte_perm(t2, t3, 0x6240);
             }
@@ -434,6 +461,12 @@ struct WPtr {
             hq = a.qh + (tc0 * RPL + r) * 128 + lane0 * 4;
             cs_d = dtc * 4 * RPL * 4;
             cs_h = dtc * RPL * 128;
+        } else if (FMT == gemv::FAST_K6) {  // sc: 2 x int8 per (lane, r); d: fp16 per 256; qh: 8 B per (lane, r)
+            sa = a.sc + ((tc0 * 32 + lane0) * RPL + r) * 2;
+            sb = (const uint8_t*)a.d + (((tc0 * 2 + h) * 2) * RPL + r) * 2;
+            hq = a.qh + (tc0 * RPL + r) * 256 + lane0 * 8;
+            cs_d = dtc * 4 * RPL * 2;
+            cs_h = dtc * RPL * 256;
         } else {
             sa = (const uint8_t*)(a.d + (tc0 * 32 + lane0) * RPL + r);
             sb = FMT == gemv::FAST_P4M ? (const uint8_t*)((const uint16_t*)a.sc + (tc0 * 32 + lane0) * RPL + r) : nullptr;
@@ -460,6 +493,11 @@ __device__ __forceinline__ void stage_load9(Stage<BN>& S, const WPtr<FMT, RPL>& 
         S.s0 = (uint32_t)__ldg((const unsigned short*)(P.sa + c * P.cs_s + jj * RPL * 2));
         S.s1 = __ldg((const unsigned int*)(P.sb + c * P.cs_d + (jj >> 3) * RPL * 4));
         S.hb = __ldg((const unsigned int*)(P.hq + c * P.cs_h + jj * 4));
+    } else if (FMT == gemv::FAST_K6) {
+        S.s0 = (uint32_t)__ldg((const unsigned short*)(P.sa + c * P.cs_s + jj * RPL * 2));
+        S.s1 = (uint32_t)__ldg((const unsigned short*)(P.sb + c * P.cs_d + (jj >> 3) * RPL * 2));
+        const uint2 hh = __ldg((const uint2*)(P.hq + c * P.cs_h + jj * 8));
+        S.hb = hh.x; S.hb2 = hh.y;
     } else {
         S.s0 = (uint32_t)__ldg((const unsigned short*)(P.sa + c * P.cs_s + jj * RPL * 2));
         if (FMT == gemv::FAST_P4M) S.s1 = (uint32_t)__ldg((const unsigned short*)(P.sb + c * P.cs_s + jj * RPL * 2));
@@ -479,7 +517,7 @@ __device__ __forceinline__ void stage_load9(Stage<BN>& S, const WPtr<FMT, RPL>& 
 }
 
 template <int FMT, int RPL, int BN, int GA, int AB = 0>
-__global__ void __launch_bounds__(NT, 1) gemm9_kernel(const Args a) {
+__global__ void __launch_bounds__(NT, BN == 64 ? 2 : 1) gemm9_kernel(const Args a) {
     using C = Cfg<BN>;
     constexpr int NG = C::NG, WN = C::WN;
     extern __shared__ __align__(16) unsigned char smem[];
@@ -718,9 +756,12 @@ static cudaError_t launch9_t(const Args& a, cudaStream_t s) {
     return cudaGetLastError();
 }
 
-// gate|up GEMM with the silu * up -> q8 (GA 64) epilogue into a.oq / a.odx (P4 weights, Tp % 256 == 0)
-static inline cudaError_t launch9_silu(int fmt, int rpl, const Args& a, cudaStream_t s) {
+// gate|up GEMM with the silu * up -> q8 (GA 64) epilogue into a.oq / a.odx (P4 weights, Tp % bn == 0; bn 256, 128
+// or 64 -- 64 / 128 for batched decode)
+static inline cudaError_t launch9_silu(int fmt, int rpl, const Args& a, cudaStream_t s, int bn = 256) {
     if (fmt != gemv::FAST_P4) return cudaErrorInvalidValue;
+    if (bn == 64) return rpl == 4 ? launch9_t<gemv::FAST_P4, 4, 64, 64, 64>(a, s) : launch9_t<gemv::FAST_P4, 2, 64, 64, 64>(a, s);
+    if (bn == 128) return rpl == 4 ? launch9_t<gemv::FAST_P4, 4, 128, 64, 64>(a, s) : launch9_t<gemv::FAST_P4, 2, 128, 64, 64>(a, s);
     return rpl == 4 ? launch9_t<gemv::FAST_P4, 4, 256, 64, 64>(a, s) : launch9_t<gemv::FAST_P4, 2, 256, 64, 64>(a, s);
 }
 
@@ -728,7 +769,8 @@ static inline cudaError_t launch9_silu(int fmt, int rpl, const Args& a, cudaStre
 static inline cudaError_t launch9(int fmt, int rpl, int bn, int ga, const Args& a, cudaStream_t s) {
 #define T4Q_G9(F, R)                                                                                     \
     if (fmt == F && rpl == R) {                                                                          \
-        if (ga == 64) return bn == 256 ? launch9_t<F, R, 256, 64>(a, s) : launch9_t<F, R, 128, 64>(a, s); \
+        if (ga == 64) return bn == 256 ? launch9_t<F, R, 256, 64>(a, s) : bn == 64 ? launch9_t<F, R, 64, 64>(a, s) \
+                                       : launch9_t<F, R, 128, 64>(a, s);                                 \
         if (ga == 0) return bn == 256 ? launch9_t<F, R, 256, 0>(a, s) : launch9_t<F, R, 128, 0>(a, s);    \
         return bn == 256 ? launch9_t<F, R, 256, 32>(a, s) : launch9_t<F, R, 128, 32>(a, s);               \
     }
@@ -736,6 +778,9 @@ static inline cudaError_t launch9(int fmt, int rpl, int bn, int ga, const Args& 
     T4Q_G9(gemv::FAST_P4M, 4) T4Q_G9(gemv::FAST_P4M, 2)
     T4Q_G9(gemv::FAST_K5, 4) T4Q_G9(gemv::FAST_K5, 2)
 #undef T4Q_G9
+    // K6 (Q6_K lm_head, batched decode head): GA 64, bn 64 / 128 only
+    if (fmt == gemv::FAST_K6 && rpl == 2 && ga == 64)
+        return bn == 64 ? launch9_t<gemv::FAST_K6, 2, 64, 64>(a, s) : launch9_t<gemv::FAST_K6, 2, 128, 64>(a, s);
     return cudaErrorInvalidValue;
 }
 
@@ -1773,6 +1818,7 @@ static inline cudaError_t row_invs(int fmt, int rpl, const Args& a, float* invs,
     T4Q_RI(gemv::FAST_P4, 4) T4Q_RI(gemv::FAST_P4, 2)
     T4Q_RI(gemv::FAST_P4M, 4) T4Q_RI(gemv::FAST_P4M, 2)
     T4Q_RI(gemv::FAST_K5, 4) T4Q_RI(gemv::FAST_K5, 2)
+    T4Q_RI(gemv::FAST_K6, 2)
 #undef T4Q_RI
     return cudaErrorInvalidValue;
 }

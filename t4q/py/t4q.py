@@ -42,6 +42,15 @@ class T4Q:
         L.t4q_n_vocab.argtypes = [C.c_void_p]
         L.t4q_pos.argtypes = [C.c_void_p]
         L.t4q_last_error.restype = C.c_char_p
+        P32 = C.POINTER(C.c_int32)
+        L.t4q_batch_init.argtypes = [C.c_void_p, C.c_int, C.c_int, C.c_int]
+        L.t4q_batch_prefill.argtypes = [C.c_void_p, C.c_int, P32, C.c_int]
+        L.t4q_batch_clone.argtypes = [C.c_void_p, C.c_int, C.c_int]
+        L.t4q_batch_set_token.argtypes = [C.c_void_p, C.c_int, C.c_int]
+        L.t4q_batch_pos.argtypes = [C.c_void_p, C.c_int]
+        L.t4q_batch_step.argtypes = [C.c_void_p, C.c_int, P32, P32]
+        L.t4q_batch_logits.argtypes = [C.c_void_p, C.c_int, C.POINTER(C.c_float)]
+        L.t4q_batch_free.argtypes = [C.c_void_p]
         p = Params(2, tp, max_ctx, 0, 0, 0, verbose)
         self.ctx = L.t4q_load(gguf.encode(), C.byref(p))
         if not self.ctx:
@@ -126,6 +135,41 @@ class T4Q:
         self.lib.t4q_stats(self.ctx, buf, 65536)
         return json.loads(buf.value.decode())
 
+    # ---- batched decode (TP engine): slots of independent sequences, one greedy token per slot per step
+    def batch_init(self, n_slots, slot_ctx, state_f16=0):
+        self._err(self.lib.t4q_batch_init(self.ctx, int(n_slots), int(slot_ctx), int(state_f16)), "t4q_batch_init")
+        self.n_slots, self.slot_ctx = int(n_slots), int(slot_ctx)
+
+    def batch_free(self):
+        self.lib.t4q_batch_free(self.ctx)
+
+    def batch_prefill(self, slot, ids):
+        ids = np.ascontiguousarray(ids, dtype=np.int32)
+        return self._err(self.lib.t4q_batch_prefill(self.ctx, int(slot), ids.ctypes.data_as(C.POINTER(C.c_int32)),
+                                                    len(ids)), "t4q_batch_prefill")
+
+    def batch_clone(self, src, dst):
+        self._err(self.lib.t4q_batch_clone(self.ctx, int(src), int(dst)), "t4q_batch_clone")
+
+    def batch_set_token(self, slot, tok):
+        self._err(self.lib.t4q_batch_set_token(self.ctx, int(slot), int(tok)), "t4q_batch_set_token")
+
+    def batch_pos(self, slot):
+        return self._err(self.lib.t4q_batch_pos(self.ctx, int(slot)), "t4q_batch_pos")
+
+    def batch_step(self, slots):
+        sl = np.ascontiguousarray(slots, dtype=np.int32)
+        out = np.zeros(len(sl), dtype=np.int32)
+        self._err(self.lib.t4q_batch_step(self.ctx, len(sl), sl.ctypes.data_as(C.POINTER(C.c_int32)),
+                                          out.ctypes.data_as(C.POINTER(C.c_int32))), "t4q_batch_step")
+        return out
+
+    def batch_logits(self, row):
+        out = np.empty(self.n_vocab, dtype=np.float32)
+        self._err(self.lib.t4q_batch_logits(self.ctx, int(row), out.ctypes.data_as(C.POINTER(C.c_float))),
+                  "t4q_batch_logits")
+        return out
+
     def close(self):
         if self.ctx:
             self.lib.t4q_free(self.ctx)
@@ -148,13 +192,17 @@ class Tokenizer:
             self.kind = f"tokenizers ({e.__class__.__name__})"
 
     def chat_text(self, user):
+        return self.chat_messages([{"role": "user", "content": user}])
+
+    def chat_messages(self, messages):
         if self.kind == "transformers":
             try:
-                return self.tok.apply_chat_template([{"role": "user", "content": user}], tokenize=False,
-                                                    add_generation_prompt=True, enable_thinking=False)
+                return self.tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True,
+                                                    enable_thinking=False)
             except Exception:  # noqa: BLE001
                 pass
-        return f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        s = "".join(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n" for m in messages)
+        return s + "<|im_start|>assistant\n<think>\n\n</think>\n\n"
 
     def encode(self, text):
         if self.kind == "transformers":
