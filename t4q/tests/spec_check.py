@@ -49,6 +49,7 @@ def main():
     ap.add_argument("--trace_ks", default="3")
     ap.add_argument("--ngs", default="0", help="prompt-lookup thresholds to run for each k (0 = MTP only)")
     ap.add_argument("--gate_prompts", default="P0,P1")
+    ap.add_argument("--extra", default="", help="';'-separated extra option sets, e.g. spec_k=3,spec_rb=0")
     a = ap.parse_args()
     secs = set(a.sections.split(","))
 
@@ -149,20 +150,27 @@ def main():
         ks = [int(x) for x in a.ks.split(",") if x]
         cfgs = []
         ngs = [int(x) for x in a.ngs.split(",") if x]
+        base = {"spec_rb": 1, "spec_sqt": 256}
         for dvh in [int(x) for x in a.dvs.split(",")]:
             for k in ks:
                 for ng in ngs:
-                    cfgs.append((k, dvh, ng))
+                    cfgs.append((f"k{k}_dv{dvh}" + (f"_ng{ng}" if ng else ""),
+                                 dict(base, spec_k=k, spec_dv=dvh, spec_ng=ng)))
         for k in [int(x) for x in a.dv0_ks.split(",") if x]:
-            if (k, 0, 0) not in cfgs:
-                cfgs.append((k, 0, 0))
+            cfgs.append((f"k{k}_dv0", dict(base, spec_k=k, spec_dv=0, spec_ng=0)))
+        for ex in [x for x in a.extra.split(";") if x]:  # e.g. "spec_k=3,spec_rb=0"
+            o = dict(base, spec_dv=1, spec_ng=0)
+            for kv in ex.split(","):
+                kk, vv = kv.split("=")
+                o[kk] = int(vv)
+            cfgs.append(("x_" + ex.replace("spec_", "").replace(",", "_").replace("=", ""), o))
         for rnd in range(a.rounds):
-            for k, dvh, ng in cfgs:
-                name = f"k{k}_dv{dvh}" + (f"_ng{ng}" if ng else "") + (f"_r{rnd}" if rnd else "")
+            for cname, opts in cfgs:
+                name = cname + (f"_r{rnd}" if rnd else "")
                 res = {}
                 try:
                     for p in ids:
-                        out, t0, t1 = run(p, a.gen, {"spec_k": k, "spec_dv": dvh, "spec_ng": ng})
+                        out, t0, t1 = run(p, a.gen, opts)
                         s = eng.stats().get("spec", {}).get("last", {})
                         rp = ref[p]
                         nmin = min(len(out), len(rp))

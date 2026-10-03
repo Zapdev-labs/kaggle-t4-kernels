@@ -368,6 +368,9 @@ struct State {
     int spec_ahead = 4;   // spec iterations enqueued before the host reads the token ring
     int spec_ng = 0;      // prompt lookup: matches of >= spec_ng tokens (incl. the pending one) replace the MTP drafts (0 = off)
     int spec_ngmax = 8;   // longest suffix compared
+    int spec_rb = 1;      // DeltaNet rollback: 1 = replay from a per-token stash after partial acceptance, 0 = a state
+                          //    snapshot after every verify token (k + 2 buffers)
+    int spec_sqt = 256;   // gate|up silu-quant GEMV block size in the spec graphs (128 or 256)
     int spec_trace = 0;   // > 0: CUPTI timeline of that many spec iterations at the start of t4q_generate (stats spec_trace)
     std::string spec_json;
 };

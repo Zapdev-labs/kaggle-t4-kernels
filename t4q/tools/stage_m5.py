@@ -35,8 +35,9 @@ RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
 GGUF = "Qwen3.8-27B-Q4_0.gguf"
-SPEC_ARGS = ["--gen", "512", "--ks", "3,4", "--dvs", "1", "--dv0_ks", "", "--sections", "ref,v4,v5,trace",
-             "--trace_ks", "3", "--prompts", "P0,P1,P2", "--ngs", "0,3,5"]
+SPEC_ARGS = ["--gen", "512", "--ks", "3,4,5", "--dvs", "1", "--dv0_ks", "", "--sections", "ref,v4,v5,trace",
+             "--trace_ks", "3", "--prompts", "P0,P1,P2", "--ngs", "0",
+             "--extra", "spec_k=3,spec_rb=0;spec_k=3,spec_sqt=128;spec_k=4,spec_sqt=128;spec_k=6"]
 NOP2P_ARGS = ["--gen", "256", "--ks", "3", "--dvs", "1", "--dv0_ks", "", "--sections", "ref,v4,v5"]
 RUN_NOP2P = False
 # extra processes (env at load time): (name, env, args)

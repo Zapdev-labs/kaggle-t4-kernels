@@ -38,6 +38,7 @@ constexpr int DM = 5120;
 constexpr size_t SZS = (size_t)24 * 128 * 128;          // DeltaNet state floats per layer per GPU
 constexpr int WSZ = 2 * tp::NSPLIT * 6 * 258;            // attention split workspace floats per column
 constexpr int AMB = 2 * tp::MMAX;                         // argmax mailbox floats per slot
+constexpr size_t RBS = (size_t)tp::MMAX * 24 * 128;      // replay stash floats per layer
 
 // ------------------------------------------------------------------------------------------------ kernels
 
@@ -70,13 +71,16 @@ __global__ void __launch_bounds__(256) k_ar_norm_m(const float* h, float* h_out,
     const size_t ro = (size_t)row * DM;
     const unsigned ep = epoch_of(st, idx);
     const float wv = w[e];
-    if (pub_peer_flag) {
-        pub_peer_rx[ro + e] = own[ro + e];
+    if (pub_peer_flag && blockIdx.x == 0) {  // one publisher block per row: coalesced 20 KB copy, one system fence
+        const float4* src = (const float4*)(own + ro);
+        float4* dst = (float4*)(pub_peer_rx + ro);
+#pragma unroll
+        for (int k = 0; k < 5; k++) dst[tid + 256 * k] = src[tid + 256 * k];
         __syncthreads();
         if (tid == 0) {
             __threadfence_system();
             const unsigned old = atomicAdd(cnt, 1u);
-            if (old == gridDim.x * gridDim.y - 1) {
+            if (old == gridDim.y - 1) {
                 atomicExch(cnt, 0u);
                 __threadfence_system();
                 st_vol_u32(pub_peer_flag, ep);
@@ -163,12 +167,15 @@ __global__ void __launch_bounds__(640) k_pull_m(const unsigned* hflag, const flo
 // pos - j comes from column t - j of y (same values the single-token kernel stores in its ring) or, before the first
 // column, from the CR-slot ring. The state after token t goes to snapshot buffer (sidx + 1 + t) % ns. The last block of
 // each head then applies the gated RMSNorm + q8 for every column (k_gdn_gn arithmetic).
+// RB (rollback by replay, option spec_rb): only the state after the last token goes to buffer sidx ^ 1, and per token
+// the k row, the v conv output and decay / beta are stashed (rb_k / rb_d [M][24][128], rb_g [M][24]) for k_gdn_replay
+template <bool RB>
 __global__ void __launch_bounds__(256) k_gdn_m(const float* __restrict__ y, int ldy, const float* __restrict__ yab,
                                                float* ring, const float* __restrict__ cw,
                                                const float* __restrict__ ssm_a, const float* __restrict__ ssm_dt,
                                                float* Sl, size_t bstride, int ns, float* o, const StepState* st,
                                                int M, unsigned* cnt, const float* __restrict__ gw, int8_t* xq,
-                                               int2* xm) {
+                                               int2* xm, float* rb_k, float* rb_d, float* rb_g) {
     __shared__ float sq[128], sk[128], sv[32], red[8];
     const int vl = blockIdx.x >> 2, sl = blockIdx.x & 3, kl = vl & 7, tid = threadIdx.x;
     const int lane = tid & 31, warp = tid >> 5;
@@ -239,7 +246,11 @@ __global__ void __launch_bounds__(256) k_gdn_m(const float* __restrict__ y, int 
         float kr[4], qr[4];
 #pragma unroll
         for (int r = 0; r < 4; r++) { kr[r] = sk[r * 32 + lane]; qr[r] = sq[r * 32 + lane]; }
-        float* Sout = Sl + (size_t)((sidx + 1 + t) % ns) * bstride;
+        float* Sout = Sl + (size_t)(RB ? (sidx ^ 1) : (sidx + 1 + t) % ns) * bstride;
+        if (RB) {
+            if (sl == 0 && tid < 128) rb_k[((size_t)t * 24 + vl) * 128 + tid] = sk[tid];
+            if (sl == 0 && tid == 0) { rb_g[(t * 24 + vl) * 2] = gv; rb_g[(t * 24 + vl) * 2 + 1] = beta; }
+        }
 #pragma unroll
         for (int cc = 0; cc < 4; cc++) {
             const int col = sl * 32 + warp * 4 + cc;
@@ -255,8 +266,9 @@ __global__ void __launch_bounds__(256) k_gdn_m(const float* __restrict__ y, int 
                 const float sn = gv * s[cc][r] + kr[r] * delta;
                 a += sn * qr[r];
                 s[cc][r] = sn;
-                Sp[r * 32 + lane] = sn;
+                if (!RB || t == M - 1) Sp[r * 32 + lane] = sn;
             }
+            if (RB && lane == 0) rb_d[((size_t)t * 24 + vl) * 128 + col] = sv[warp * 4 + cc];
             a = warp_sum(a);
             if (lane == 0) o[(size_t)t * 3072 + vl * 128 + col] = a * (1.0f / sqrtf(128.0f));
         }
@@ -284,6 +296,59 @@ __global__ void __launch_bounds__(256) k_gdn_m(const float* __restrict__ y, int 
             const float val = ((x * scale) * gwv) * (zz / (1.0f + expf(-zz)));
             quant_warp(val, xq + (size_t)t * 3072 + vl * 128 + tid, xm + (size_t)t * 96 + vl * 4 + (tid >> 5));
         }
+    }
+}
+
+// rollback by replay: after a partial acceptance (nacc < k) rebuild the state after token nacc from the verify's input
+// state (buffer sidx ^ 1, sidx already flipped by the accept) and the stash, with the k_gdn_m update arithmetic.
+// (kv and delta are recomputed per lane exactly as in k_gdn_m; the stash holds k, the v conv output, decay and beta)
+// grid (96, 48 layers) x 256
+__global__ void __launch_bounds__(256) k_gdn_replay(float* Sb, size_t bstride, const StepState* st, int k,
+                                                    const float* rbk, const float* rbd, const float* rbg,
+                                                    size_t rbstride) {
+    const int n = st->nacc;
+    if (n >= k) return;
+    const int sidx = st->sidx, li = blockIdx.y;
+    const int vl = blockIdx.x >> 2, sl = blockIdx.x & 3, tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const float* Sin = Sb + (size_t)(sidx ^ 1) * bstride + (size_t)li * SZS;
+    float* Sout = Sb + (size_t)sidx * bstride + (size_t)li * SZS;
+    const float* rb_k = rbk + (size_t)li * rbstride;
+    const float* rb_d = rbd + (size_t)li * rbstride;
+    const float* rb_g = rbg + (size_t)li * MMAX * 48;
+    float s[4][4];
+#pragma unroll
+    for (int cc = 0; cc < 4; cc++) {
+        const int col = sl * 32 + warp * 4 + cc;
+        const float* Sp = Sin + ((size_t)vl * 128 + col) * 128;
+#pragma unroll
+        for (int r = 0; r < 4; r++) s[cc][r] = Sp[r * 32 + lane];
+    }
+    for (int t = 0; t <= n; t++) {
+        const float gv = rb_g[(t * 24 + vl) * 2], beta = rb_g[(t * 24 + vl) * 2 + 1];
+        float kr[4];
+#pragma unroll
+        for (int r = 0; r < 4; r++) kr[r] = rb_k[((size_t)t * 24 + vl) * 128 + r * 32 + lane];
+#pragma unroll
+        for (int cc = 0; cc < 4; cc++) {
+            const int col = sl * 32 + warp * 4 + cc;
+            float kv = 0.f;
+#pragma unroll
+            for (int r = 0; r < 4; r++) kv += s[cc][r] * kr[r];
+            kv = warp_sum(kv);
+            const float delta = (rb_d[((size_t)t * 24 + vl) * 128 + col] - gv * kv) * beta;
+#pragma unroll
+            for (int r = 0; r < 4; r++) {
+                const float sn = gv * s[cc][r] + kr[r] * delta;
+                s[cc][r] = sn;
+            }
+        }
+    }
+#pragma unroll
+    for (int cc = 0; cc < 4; cc++) {
+        const int col = sl * 32 + warp * 4 + cc;
+        float* Sp = Sout + ((size_t)vl * 128 + col) * 128;
+#pragma unroll
+        for (int r = 0; r < 4; r++) Sp[r * 32 + lane] = s[cc][r];
     }
 }
 
@@ -322,7 +387,7 @@ struct XArgs {
     unsigned* peer_aflag;
     StepState* st;
     int idx;                // epoch index (slot = idx & 1)
-    int k, ns, di;
+    int k, ns, di, rb;
     int* vt;                // verify input tokens [MMAX]
     int* yv;                // verify argmax per column [MMAX]
     int* ring;              // host-mapped token ring (GPU0) or nullptr
@@ -388,7 +453,7 @@ __global__ void k_argmax_x(const XArgs a) {
     st->vpos = p;
     st->nacc = n;
     st->pos = p + n + 1;
-    st->sidx = (st->sidx + n + 1) % a.ns;
+    st->sidx = a.rb ? (st->sidx ^ 1) : (st->sidx + n + 1) % a.ns;
     st->token = s_y[n];
     st->last_tok = s_y[n];
     for (int i = 0; i <= n; i++)
@@ -538,6 +603,7 @@ struct SG {  // per GPU
     float* apart = nullptr;    // [MMAX][2 * NBA]
     int *vt = nullptr, *yv = nullptr, *hist = nullptr, *pscr = nullptr;
     float* Sb = nullptr;       // [NSNAP][48][SZS] DeltaNet state snapshots
+    float *rbk = nullptr, *rbd = nullptr, *rbg = nullptr;  // replay stash [48][MMAX][24][128] (rbg [48][MMAX][24])
     float* ring = nullptr;     // [48][CR][5120]
     float* hpr = nullptr;      // prompt catch-up h rows
     size_t hpr_n = 0;
@@ -546,7 +612,8 @@ struct SG {  // per GPU
 };
 struct Spec {
     SG G[2];
-    int k = 0, dv = -1, force = 0, ng = 0, ngmax = 0;  // configuration of the captured graphs
+    int k = 0, dv = -1, force = 0, ng = 0, ngmax = 0, rb = -1, sqt = 0;  // configuration of the captured graphs
+    bool rb_cfg = false;
     int* h_cnt = nullptr;           // host-mapped emitted-token counter (GPU0 writes)
     int* d_cnt = nullptr;
     bool active = false;            // spec state (snapshots / ring / MTP KV) is in sync with the engine
@@ -629,6 +696,9 @@ Spec* spec_get(t4q_ctx* c) {
         B.hist = dz<int>(2 * (MMAX + 1));
         B.pscr = dz<int>(4);
         B.Sb = dz<float>((size_t)NSNAP * 48 * SZS);
+        B.rbk = dz<float>((size_t)48 * RBS);
+        B.rbd = dz<float>((size_t)48 * RBS);
+        B.rbg = dz<float>((size_t)48 * MMAX * 48);
         B.ring = dz<float>((size_t)48 * CR * 5120);
         CK(cudaEventCreate(&B.e0));
         CK(cudaEventCreate(&B.e1));
@@ -712,7 +782,7 @@ struct SEnq {
         gemv_m(M, L.down, B.xq2, B.xm2, part(idx_out), s);
     }
     // ---- verify graph: M = k + 1 tokens vt at positions st->pos ..
-    void verify(int k) {
+    void verify(int k, bool rb) {
         mb = 0;
         const int M = k + 1;
         k_embed_m<<<dim3(20, M), 256, 0, s>>>(G.embd, B.vt, B.hb[0]);
@@ -730,9 +800,16 @@ struct SEnq {
                 sg.w = L.ab; sg.x = B.xn; sg.y = B.yab; sg.nrows = 48;
                 gemv_m(M, L.qkvz, B.xq, B.xm, B.y, s, &sg);
                 const int li = il - il / 4;
-                k_gdn_m<<<96, 256, 0, s>>>(B.y, L.qkvz.L.N, B.yab, B.ring + (size_t)li * CR * 5120, L.conv_w, L.ssm_a,
-                                           L.ssm_dt, B.Sb + (size_t)li * SZS, bstride, ns, B.o, G.st, M, B.gcnt,
-                                           L.ssm_norm, B.xq, B.xm);
+                const size_t ro = (size_t)li * RBS;
+                if (rb)
+                    k_gdn_m<true><<<96, 256, 0, s>>>(B.y, L.qkvz.L.N, B.yab, B.ring + (size_t)li * CR * 5120, L.conv_w,
+                                                     L.ssm_a, L.ssm_dt, B.Sb + (size_t)li * SZS, bstride, ns, B.o, G.st,
+                                                     M, B.gcnt, L.ssm_norm, B.xq, B.xm, B.rbk + ro, B.rbd + ro,
+                                                     B.rbg + (size_t)li * MMAX * 48);
+                else
+                    k_gdn_m<false><<<96, 256, 0, s>>>(B.y, L.qkvz.L.N, B.yab, B.ring + (size_t)li * CR * 5120, L.conv_w,
+                                                      L.ssm_a, L.ssm_dt, B.Sb + (size_t)li * SZS, bstride, ns, B.o, G.st,
+                                                      M, B.gcnt, L.ssm_norm, B.xq, B.xm, nullptr, nullptr, nullptr);
                 chk("gdn_m");
                 gemv_m(M, L.ssm_out, B.xq, B.xm, part(idx), s);
             } else {
@@ -748,7 +825,7 @@ struct SEnq {
         XArgs a;
         a.apart = B.apart; a.M = M; a.row0 = 124160 * g;
         a.amb = B.amb[0]; a.aflag = B.aflag[0]; a.peer_amb = B.peer_amb[0]; a.peer_aflag = B.peer_aflag[0];
-        a.st = G.st; a.idx = 250; a.k = k; a.ns = ns; a.di = 0;
+        a.st = G.st; a.idx = 250; a.k = k; a.ns = ns; a.di = 0; a.rb = rb;
         a.vt = B.vt; a.yv = B.yv;
         a.ring = g == 0 ? S.d_ring : nullptr;
         a.hcnt = g == 0 ? P->d_cnt : nullptr;
@@ -786,7 +863,7 @@ struct SEnq {
         XArgs a;
         a.apart = B.apart; a.M = 1; a.row0 = rows * g;
         a.amb = B.amb[1]; a.aflag = B.aflag[1]; a.peer_amb = B.peer_amb[1]; a.peer_aflag = B.peer_aflag[1];
-        a.st = G.st; a.idx = 200 + di; a.k = k; a.ns = k + 2; a.di = di;
+        a.st = G.st; a.idx = 200 + di; a.k = k; a.ns = k + 2; a.di = di; a.rb = 0;
         a.vt = B.vt; a.yv = B.yv; a.ring = nullptr; a.hcnt = nullptr; a.hist = nullptr; a.htok = nullptr;
         a.max_ctx = S.max_ctx;
         k_argmax_x<1><<<1, 32, 0, s>>>(a);
@@ -794,6 +871,10 @@ struct SEnq {
     }
     // ---- draft graph: catch-up (k + 1 rows) + first draft, then k - 1 chained drafts
     void draft(int k, bool dvh, bool force, int ng, int ngmax) {
+        if (P->rb_cfg) {
+            k_gdn_replay<<<dim3(96, 48), 256, 0, s>>>(B.Sb, (size_t)48 * SZS, G.st, k, B.rbk, B.rbd, B.rbg, RBS);
+            chk("gdn_replay");
+        }
         mtp_pass(k + 1, B.yv, B.hf, &G.st->vpos, 1, 0, B.hp, B.xq, B.xm);
         k_select<<<20, 256, 0, s>>>(B.hp, B.xq, B.xm, G.st, B.hs, B.xqd, B.xmd, B.yv, B.vt);
         chk("select");
@@ -850,7 +931,7 @@ void capture(t4q_ctx* c, Spec* P, int k, bool dvh, bool force) {
             CK(cudaStreamBeginCapture(G.s, cudaStreamCaptureModeThreadLocal));
             SEnq q(c, P, g);
             try {
-                if (which == 0) q.verify(k);
+                if (which == 0) q.verify(k, P->rb_cfg);
                 else q.draft(k, dvh, force, c->tps->spec_ng, c->tps->spec_ngmax);
             } catch (...) {
                 cudaStreamEndCapture(G.s, &gr);
@@ -866,6 +947,8 @@ void capture(t4q_ctx* c, Spec* P, int k, bool dvh, bool force) {
     P->force = force;
     P->ng = c->tps->spec_ng;
     P->ngmax = c->tps->spec_ngmax;
+    P->rb = c->tps->spec_rb;
+    P->sqt = c->tps->spec_sqt;
 }
 
 // enter spec mode: DeltaNet state -> snapshot 0, conv ring -> CR slots, MTP KV catch-up over the prompt rows,
@@ -967,6 +1050,14 @@ void spec_enter(t4q_ctx* c, Spec* P) {
 void spec_leave(t4q_ctx* c, Spec* P) {
     tp::State& S = *c->tps;
     sync2(c);
+    if (P->rb_cfg)  // the last verify's partial acceptance has not been replayed yet (the next draft graph would)
+        for (int g = 0; g < 2; g++) {
+            SG& B = P->G[g];
+            CK(cudaSetDevice(g));
+            k_gdn_replay<<<dim3(96, 48), 256, 0, S.G[g].s>>>(B.Sb, (size_t)48 * SZS, S.G[g].st, P->k, B.rbk, B.rbd,
+                                                              B.rbg, RBS);
+            CK(cudaStreamSynchronize(S.G[g].s));
+        }
     tp::StepState st;
     CK(cudaSetDevice(0));
     CK(cudaMemcpy(&st, S.G[0].st, sizeof st, cudaMemcpyDeviceToHost));
@@ -1021,7 +1112,9 @@ int tp_spec_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop,
     const bool dvh = S.spec_dv && S.G[0].mtp.dv > 0;
     const bool force = S.spec_force != 0;
     if (!P->G[0].ev || P->k != k || P->dv != (int)dvh || P->force != (int)force || P->ng != S.spec_ng ||
-        P->ngmax != S.spec_ngmax) {
+        P->ngmax != S.spec_ngmax || P->rb != S.spec_rb || P->sqt != S.spec_sqt) {
+        P->rb_cfg = S.spec_rb != 0;
+        tp::g_sq_threads = S.spec_sqt == 128 ? 128 : 256;
         sync2(c);
         capture(c, P, k, dvh, force);
     }

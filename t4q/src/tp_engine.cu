@@ -1324,6 +1324,8 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     if (k == "spec_dbg") { S.spec_dbg = v; return 0; }
     if (k == "spec_prof") { S.spec_prof = v; return 0; }
     if (k == "spec_trace") { S.spec_trace = v; return 0; }
+    if (k == "spec_rb") { S.spec_rb = v; return 0; }
+    if (k == "spec_sqt") { if (v != 128 && v != 256) throw std::runtime_error("spec_sqt must be 128 or 256"); S.spec_sqt = v; return 0; }
     if (k == "spec_ng") { if (v < 0 || v > 64) throw std::runtime_error("spec_ng must be 0..64"); S.spec_ng = v; return 0; }
     if (k == "spec_ngmax") { if (v < 1 || v > 64) throw std::runtime_error("spec_ngmax must be 1..64"); S.spec_ngmax = v; return 0; }
     if (k == "spec_ahead") { if (v < 1 || v > 64) throw std::runtime_error("spec_ahead must be 1..64"); S.spec_ahead = v; return 0; }
