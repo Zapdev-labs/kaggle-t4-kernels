@@ -139,6 +139,7 @@ v17 correctness for the default config:
 | gemm12 2 blocks/SM (128 thr) | 20.5-24.4 | 651-813 | 750-785 | |
 | gemm13 CUTLASS-style, per token (probe) | 37.9-40.0 | 927-994 | 1006-1021 | inaccurate (GA0) |
 | gemm14 GA64 on the CUTLASS pipeline | 15.7-15.9 | | 413-426 | spills 640 B |
+| gemm15 GA64, quarter tiles (pg v8) | 27.2 / 28.4 | 999 / 1055 | 673-681 | correct, about 12 B spill; slower than gemm9 (30.7 / 32.3 in the same run) |
 
 gemm9 ablations (v11, timing only, GA64 unless noted):
 

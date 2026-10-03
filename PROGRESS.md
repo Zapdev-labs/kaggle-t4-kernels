@@ -472,12 +472,12 @@ All tok/s are graph-mode decode of 256 tokens after the P0/P1 chat prompts, max_
 - **Box variance is ±7%.** One GPU often runs 15-20% slower (hotter). The fixed TP split then turns into AR wait on the faster GPU (370-400 ms in v13-v15).
 - `k_pf_ab` still takes about 50 ms, 3-4x more than its FLOPs need, and I don't know why yet.
 - `k_pf_gdnc` uses only 24 blocks (one per head) and a sequential 64-step T solve. There is room left (78 ms).
-- gemm14 (accurate GA 64 on the CUTLASS pipeline) is correct but spills 640 B. It needs fewer live registers: read dx per half, move the bias subtraction before the barrier, use quarter tiles.
+- gemm14 (accurate GA 64 on the CUTLASS pipeline) is correct but spills 640 B. gemm15 makes the same pipeline fit in registers: quarter tiles, dx read per pass, bias subtracted before the barrier, loads issued mid-stage, about 12 B of spill. It is correct but sustains only 27-28 TOPS against 31-32 for gemm9 (pg v8), because the extra A-fragment reloads cost more than the pipeline saves.
 - No decode numbers were measured this round. The decode engine is untouched apart from shared headers.
 
 ### Next steps
 1. **GEMM**, the only lever big enough for 1400.
-   - Get gemm14 to stop spilling. The per-token probe on the same pipeline ran at 1010 vs 775 ops/clk.
+   - The CUTLASS-style pipeline with per-64 activation scales is now measured both ways: gemm14 spills and gemm15 is slower. A more promising route is a different activation format that removes the per-group FFMA, so the per-token pipeline speed (1010 ops/clk, 38-40 TOPS) can be kept.
    - Or try LLM.int8-style outlier extraction: a per-token int8 main GEMM through the CUTLASS-like gemm13 path (38-40 TOPS), plus a small dense fp16 side GEMM over the union of outlier channels per ubatch. Check it with the KL suite; GA 0 alone fails.
 2. **Non-GEMM**, now about 340 ms:
    - more blocks for `k_pf_gdnc` (split value columns, blocked T inverse);
