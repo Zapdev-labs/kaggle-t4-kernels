@@ -33,7 +33,8 @@ WORK.mkdir(exist_ok=True)
 ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "pg"
-SECTIONS = ["gemm"]
+SECTIONS = ["g16", "ref"]
+REF_ONLY = "cut_i8_128x256"
 PF_CONFIGS = "pf_g8=1,pf_ga=64,pf_fuse=1;pf_g8=1,pf_ga=32,pf_fuse=1"
 RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
@@ -323,6 +324,30 @@ def gemm_section(t4q):
         result("gemm_sustain", {"build": f"u{best}", "per_dev": summ})
 
 
+def g16_section(t4q):
+    """gemm16 (plain int8, per-token x per-row) vs gemm9 / gemm13: burst + checks on dev0, sustained on both GPUs"""
+    bdir = W / "g16"
+    bdir.mkdir(exist_ok=True)
+    exe = str(bdir / "gemm16_bench")
+    rc, o = sh([NVCC, "-O3", "-std=c++17", "-arch=sm_75", "-lineinfo", "-Xptxas", "-v",
+                str(t4q / "tools" / "gemm16_bench.cu"), "-o", exe, "-ldl", "-lpthread"], timeout=900,
+               logname="build_g16.txt")
+    result("g16_build", {"ok": rc == 0, "secs": el(), "tail": o[-3000:] if rc else ""})
+    if rc:
+        return
+    rc, o = stream([exe, "--dev", "0"], "g16_burst_dev0.txt", timeout=1200)
+    result("g16_checks", [json.loads(l[6:]) for l in o.splitlines() if l.startswith("CHECK ")])
+    result("g16_burst", [json.loads(l[2:]) for l in o.splitlines() if l.startswith("R ")])
+    procs = [subprocess.Popen([exe, "--dev", str(d), "--sustain", str(G16_SUSTAIN), "--variants", G16_SVARS],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) for d in (0, 1)]
+    S = []
+    for d, p in enumerate(procs):
+        o, _ = p.communicate(timeout=1500)
+        (LOGS / f"g16_sustain_dev{d}.txt").write_text(o)
+        S += [json.loads(l[2:]) for l in o.splitlines() if l.startswith("S ")]
+    result("g16_sustain", summarize_sustain(S))
+
+
 def ref_section(t4q):
     """cuBLAS / CUTLASS reference GEMMs (tools/ref_bench.cu): burst on dev0, then sustained on both GPUs at once."""
     bdir = W / "rb"
@@ -348,9 +373,7 @@ def ref_section(t4q):
     if not built:
         return
     exe = str(bdir / ("ref_cut" if "cut" in built else "ref_blas"))
-    rc, o = stream([exe, "--dev", "0"], "ref_burst_dev0.txt", timeout=600)
-    result("ref_burst", [json.loads(l[2:]) for l in o.splitlines() if l.startswith("B ")])
-    procs = [subprocess.Popen([exe, "--dev", str(d), "--sustain", str(REF_SUSTAIN)], stdout=subprocess.PIPE,
+    procs = [subprocess.Popen([exe, "--dev", str(d), "--sustain", str(REF_SUSTAIN), "--variants", REF_ONLY], stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True) for d in (0, 1)]
     S = []
     for d, p in enumerate(procs):
@@ -367,12 +390,15 @@ def summarize_sustain(S):
             continue
         agg.setdefault(f'{s.get("variant")}_dev{s["dev"]}', []).append((s["TOPS"], s["sm_mhz"], s["power_w"], s["temp"]))
     return {d: {"windows": len(v), "TOPS_mean": round(sum(x[0] for x in v) / len(v), 2),
+                "ops_clk_sm": round(sum(x[0] for x in v) * 1e6 / max(1, sum(x[1] for x in v)) / 40.0),
                 "TOPS_min": round(min(x[0] for x in v), 2), "sm_mhz_mean": round(sum(x[1] for x in v) / len(v)),
                 "sm_mhz_min": min(x[1] for x in v), "power_w_mean": round(sum(x[2] for x in v) / len(v), 1),
                 "temp_max": max(x[3] for x in v)} for d, v in agg.items() if v}
 
 
 REF_SUSTAIN = 8
+G16_SUSTAIN = 8
+G16_SVARS = "8,10,11,13,12,0,10"
 GEMM_KBU = [2]
 GEMM_TABLE = True
 GEMM_SASS = ["_ZN3t4q5gemm815gemm15_kernelILi0ELi4EEEvNS0_4ArgsE"]
@@ -398,6 +424,8 @@ def main():
                 rc, o = sh(c, timeout=60)
                 outs[c] = {"rc": rc, "out": o[-1500:]}
             result("clk_probe", outs)
+        if "g16" in SECTIONS:
+            g16_section(t4q)
         if "ref" in SECTIONS:
             ref_section(t4q)
         if "gemm" in SECTIONS:

@@ -72,6 +72,7 @@ def main():
     ap.add_argument("--prompts", default="P0,P1,W,L")
     ap.add_argument("--gen", type=int, default=32)
     ap.add_argument("--sections", default="correct,bench")
+    ap.add_argument("--keep_h", type=int, default=0)
     a = ap.parse_args()
     secs = set(a.sections.split(","))
     cfgs = [c for c in a.configs.split(";")]
@@ -88,6 +89,8 @@ def main():
     R["selftest_worst"] = (st.get("selftest") or {}).get("worst")
     log("load", R["load_s"], "s, p2p", R["p2p"])
     eng.set_option("graphs", 1)
+    if a.keep_h:
+        eng.set_option("pf_keep_h", 1)
     save()
 
     def run(ids, pf, opts, cont):
@@ -97,6 +100,8 @@ def main():
         t0 = time.time()
         eng.prefill(ids)
         dt = time.time() - t0
+        fqs = eng.stats().get("pf_fq") if pf else None
+        hid = eng.dump("pf_h") if (pf and a.keep_h) else None
         last = eng.last_logits().copy()
         gen = eng.generate(a.gen)
         cl = np.zeros((0, V), np.float32)
@@ -104,7 +109,7 @@ def main():
             eng.reset()
             eng.prefill(ids)
             cl = eng.logits(cont)
-        return {"last": last, "gen": gen, "cont": cl, "secs": dt}
+        return {"last": last, "gen": gen, "cont": cl, "secs": dt, "fq": fqs, "h": hid}
 
     if "correct" in secs:
         C = R.setdefault("correct", {})
@@ -130,11 +135,23 @@ def main():
                 if olast is not None:
                     res["kl_oracle_vs_pf0"] = kl(olast, A["last"])
                     res["oracle_top2_gap"] = top2gap(olast)
+                href = None
                 for ci, cfg in enumerate(cfgs):
                     B = run(ids, 1, cfg, cont)
                     r = {"kl_pf0_vs_pf1": kl(A["last"], B["last"]),
                          "top1_equal": bool(int(np.argmax(A["last"])) == int(np.argmax(B["last"]))),
                          "pf0_top2_gap": top2gap(A["last"]), "prefill_s": round(B["secs"], 3)}
+                    if B.get("fq"):
+                        r["fq"] = B["fq"]
+                    if B.get("h") is not None:
+                        hb = B["h"].reshape(-1, 5120).astype(np.float64)
+                        if ci == 0:
+                            href = hb
+                        elif href is not None and href.shape == hb.shape:
+                            e = np.linalg.norm(hb - href, axis=1) / np.maximum(np.linalg.norm(href, axis=1), 1e-30)
+                            r["h_rel"] = {"mean": float(e.mean()), "med": float(np.median(e)),
+                                          "p99": float(np.quantile(e, 0.99)), "max": float(e.max()),
+                                          "argmax": int(e.argmax())}
                     if olast is not None:
                         r["kl_oracle_vs_pf1"] = kl(olast, B["last"])
                         r["top1_equal_oracle"] = bool(int(np.argmax(olast)) == int(np.argmax(B["last"])))

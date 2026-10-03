@@ -14,6 +14,8 @@
 
 #include "kernels/gemm.cuh"
 #include "kernels/gemm8.cuh"
+#include "kernels/gemm16.cuh"
+#include "kernels/rot.cuh"
 #include "model.h"
 #include "tp.h"
 #include "tp_api.h"
@@ -1123,13 +1125,210 @@ struct PfGpu {
     float* dx = nullptr;  // gemm8 activation block scales
     int8_t* xq2 = nullptr;  // fused gate|up silu epilogue output (down GEMM input)
     float* dx2 = nullptr;
+    int8_t* dsh = nullptr;  // gemm17 GSH shift deltas [K/64][Tp] (permuted token order)
+    int8_t* w8r[4] = {nullptr, nullptr, nullptr, nullptr};  // R512 rotated int8 weights: qkvz|qkv_a, ssm_out|wo, gateup, down
+    float* dxt = nullptr;   // gemm17 per-token final factor [Tp]
     cudaStream_t sc = nullptr;              // copy stream (AR payloads)
     cudaEvent_t part_ev[NSUB] = {};         // compute stream: partial rows of sub s written
     cudaEvent_t sent[NSUB][2] = {};         // copy stream: sub s rows of AR slot copied to the peer
 };
+// ------------------------------------------------------------------------------------------------ activation-format study
+// (option pf_fq) Emulates an alternative GEMM activation format on the GA64 int8 input, in place: x^ = xq * dx is
+// re-quantized with the studied format, the result re-quantized to GA64 (so the error is the studied format's plus a
+// second GA64 rounding: a conservative emulation). Stats per GEMM type: [calls, tokens, residual entries, sum of the
+// per-call union of channels that needed an exact path, max union]; top-n channel picks are counted in the union too.
+constexpr int FQ_KMAX = 8704;
+struct FqBufs {
+    float* camax = nullptr;            // [FQ_KMAX] per-channel amax over the call's tokens (float bits, atomicMax)
+    unsigned char* sel = nullptr;      // [FQ_KMAX] top-n exact channels
+    unsigned char* uni = nullptr;      // [FQ_KMAX] channels with an exact residual entry in this call
+    unsigned long long* st = nullptr;  // [6][5]
+};
+__global__ void k_fq_amax(const int8_t* __restrict__ xq, const float* __restrict__ dx, int K, int Tp, float* camax) {
+    const int t = blockIdx.x;
+    for (int k = threadIdx.x; k < K; k += blockDim.x) {
+        const float v = fabsf((float)xq[(size_t)t * K + k] * dx[(size_t)(k >> 6) * Tp + t]);
+        atomicMax((unsigned*)&camax[k], __float_as_uint(v));
+    }
+}
+// n iterations of a block argmax over the not-yet-selected channels (1 block x 1024)
+__global__ void k_fq_topn(const float* __restrict__ camax, int K, int n, unsigned char* sel) {
+    __shared__ float bv[32];
+    __shared__ int bi[32];
+    for (int k = threadIdx.x; k < K; k += blockDim.x) sel[k] = 0;
+    __syncthreads();
+    for (int it = 0; it < n; it++) {
+        float v = -1.f;
+        int idx = 0;
+        for (int k = threadIdx.x; k < K; k += blockDim.x)
+            if (!sel[k] && camax[k] > v) { v = camax[k]; idx = k; }
+        for (int o = 16; o > 0; o >>= 1) {
+            const float v2 = __shfl_xor_sync(0xffffffffu, v, o);
+            const int i2 = __shfl_xor_sync(0xffffffffu, idx, o);
+            if (v2 > v || (v2 == v && i2 < idx)) { v = v2; idx = i2; }
+        }
+        if ((threadIdx.x & 31) == 0) { bv[threadIdx.x >> 5] = v; bi[threadIdx.x >> 5] = idx; }
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            float m = bv[0];
+            int mi = bi[0];
+            for (int w = 1; w < (int)(blockDim.x >> 5); w++)
+                if (bv[w] > m || (bv[w] == m && bi[w] < mi)) { m = bv[w]; mi = bi[w]; }
+            sel[mi] = 1;
+        }
+        __syncthreads();
+    }
+}
+// grid Ts x 256, dynamic smem K floats
+__global__ void __launch_bounds__(256) k_fq_apply(int8_t* xq, float* dx, int K, int Tp, int mode, float alpha, int G,
+                                                  const unsigned char* __restrict__ sel, unsigned char* uni,
+                                                  unsigned long long* st) {
+    extern __shared__ float xs[];
+    __shared__ float red[8];
+    __shared__ float redm[8];
+    const int t = blockIdx.x, tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    for (int k = tid; k < K; k += 256) xs[k] = (float)xq[(size_t)t * K + k] * dx[(size_t)(k >> 6) * Tp + t];
+    __syncthreads();
+    unsigned cnt = 0;
+    // mode 6: random signs + block Walsh-Hadamard (size G) before the per-token quantization, inverse after;
+    // mode 8: per-channel smoothing x / s_k, s_k = sqrt(ubatch channel amax) (camax passed through sel's slot)
+    auto fwht = [&]() {
+        const float nrm = rsqrtf((float)G);
+        for (int k = tid; k < K; k += 256) xs[k] *= ((k * 2654435761u) & 0x80000000u) ? -nrm : nrm;
+        __syncthreads();
+        for (int h = 1; h < G; h <<= 1) {
+            for (int idx = tid; idx < K / 2; idx += 256) {
+                const int blk = idx / (G / 2), j = idx % (G / 2);
+                const int i = blk * G + (j / h) * 2 * h + (j % h);
+                const float a = xs[i], b = xs[i + h];
+                xs[i] = a + b; xs[i + h] = a - b;
+            }
+            __syncthreads();
+        }
+    };
+    auto ifwht = [&]() {
+        for (int h = 1; h < G; h <<= 1) {
+            for (int idx = tid; idx < K / 2; idx += 256) {
+                const int blk = idx / (G / 2), j = idx % (G / 2);
+                const int i = blk * G + (j / h) * 2 * h + (j % h);
+                const float a = xs[i], b = xs[i + h];
+                xs[i] = a + b; xs[i + h] = a - b;
+            }
+            __syncthreads();
+        }
+        const float nrm = rsqrtf((float)G);
+        for (int k = tid; k < K; k += 256) xs[k] *= ((k * 2654435761u) & 0x80000000u) ? -nrm : nrm;
+        __syncthreads();
+    };
+    const float* smooth = mode == 8 ? (const float*)sel : nullptr;
+    if (mode == 8) sel = nullptr;
+    if (mode == 6) fwht();
+    if (mode == 8) {
+        for (int k = tid; k < K; k += 256) xs[k] /= smooth[k];
+        __syncthreads();
+    }
+    if (mode == 9) {  // per-token scale D times a power of two per G-group: step = D 2^-e / 127, e <= Emax (alpha)
+        float am = 0.f;
+        for (int k = tid; k < K; k += 256) am = fmaxf(am, fabsf(xs[k]));
+        for (int o = 16; o > 0; o >>= 1) am = fmaxf(am, __shfl_xor_sync(0xffffffffu, am, o));
+        if (lane == 0) redm[warp] = am;
+        __syncthreads();
+        float D = 0.f;
+        for (int w = 0; w < 8; w++) D = fmaxf(D, redm[w]);
+        const int emax = (int)(alpha * 10.f + 0.5f);
+        for (int g = warp; g < K / G; g += 8) {
+            float m = 0.f;
+            for (int k = lane; k < G; k += 32) m = fmaxf(m, fabsf(xs[g * G + k]));
+            for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+            int e = emax;
+            if (m > 0.f) e = min(emax, (int)floorf(log2f(D / m)));
+            const float d = ldexpf(D, -e) / 127.f;
+            if (D > 0.f)
+                for (int k = lane; k < G; k += 32) xs[g * G + k] = d * rintf(xs[g * G + k] / d);
+        }
+    } else if (mode == 5) {
+        for (int g = warp; g < K / G; g += 8) {
+            float m = 0.f;
+            for (int k = lane; k < G; k += 32) m = fmaxf(m, fabsf(xs[g * G + k]));
+            for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+            const float d = m / 127.f;
+            if (m > 0.f)
+                for (int k = lane; k < G; k += 32) xs[g * G + k] = d * rintf(xs[g * G + k] / d);
+        }
+    } else {
+        float ss = 0.f, am = 0.f, nc = 0.f;
+        for (int k = tid; k < K; k += 256) {
+            if (sel && sel[k]) continue;
+            ss += xs[k] * xs[k];
+            am = fmaxf(am, fabsf(xs[k]));
+            nc += 1.f;
+        }
+        for (int o = 16; o > 0; o >>= 1) {
+            ss += __shfl_xor_sync(0xffffffffu, ss, o);
+            nc += __shfl_xor_sync(0xffffffffu, nc, o);
+            am = fmaxf(am, __shfl_xor_sync(0xffffffffu, am, o));
+        }
+        __shared__ float rn[8];
+        if (lane == 0) { red[warp] = ss; redm[warp] = am; rn[warp] = nc; }
+        __syncthreads();
+        ss = 0.f; am = 0.f; nc = 0.f;
+        for (int w = 0; w < 8; w++) { ss += red[w]; am = fmaxf(am, redm[w]); nc += rn[w]; }
+        const float rms = sqrtf(ss / fmaxf(nc, 1.f));
+        const float c = (mode == 2 || mode == 4 || (mode == 6 && alpha > 0.f)) ? fminf(am, alpha * rms) : am;
+        const float d = c / 127.f;
+        for (int k = tid; k < K; k += 256) {
+            if (sel && sel[k]) continue;
+            const float v = xs[k];
+            if (fabsf(v) > c) { cnt++; uni[k] = 1; continue; }
+            if (d > 0.f) xs[k] = d * rintf(v / d);
+        }
+    }
+    __syncthreads();
+    if (mode == 6) ifwht();
+    if (mode == 8) {
+        for (int k = tid; k < K; k += 256) xs[k] *= smooth[k];
+        __syncthreads();
+    }
+    // back to GA64: one warp per 64-group
+    for (int g = warp; g < K / 64; g += 8) {
+        const float a0 = xs[g * 64 + lane], a1 = xs[g * 64 + 32 + lane];
+        float m = fmaxf(fabsf(a0), fabsf(a1));
+        for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+        const float d = m / 127.f;
+        xq[(size_t)t * K + g * 64 + lane] = (int8_t)(m > 0.f ? __float2int_rn(a0 / d) : 0);
+        xq[(size_t)t * K + g * 64 + 32 + lane] = (int8_t)(m > 0.f ? __float2int_rn(a1 / d) : 0);
+        if (lane == 0) dx[(size_t)g * Tp + t] = d;
+    }
+    for (int o = 16; o > 0; o >>= 1) cnt += __shfl_xor_sync(0xffffffffu, cnt, o);
+    if (lane == 0 && cnt) atomicAdd(&st[2], (unsigned long long)cnt);
+}
+// s_k = sqrt(camax_k) (floored) in place
+__global__ void k_fq_smooth(float* camax, int K) {
+    const int k = blockIdx.x * 256 + threadIdx.x;
+    if (k < K) camax[k] = sqrtf(fmaxf(camax[k], 1e-6f));
+}
+__global__ void k_fq_uni(unsigned char* uni, const unsigned char* sel, int K, int T, unsigned long long* st) {
+    __shared__ unsigned red[8];
+    unsigned c = 0;
+    for (int k = threadIdx.x; k < K; k += 256) {
+        c += (uni[k] || (sel && sel[k])) ? 1u : 0u;
+        uni[k] = 0;
+    }
+    for (int o = 16; o > 0; o >>= 1) c += __shfl_xor_sync(0xffffffffu, c, o);
+    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = c;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        unsigned s = 0;
+        for (int w = 0; w < 8; w++) s += red[w];
+        st[0] += 1; st[1] += T; st[3] += s;
+        if (s > st[4]) st[4] = s;
+    }
+}
+
 struct Pf {
     int cap = 0;  // allocated ubatch capacity (tokens)
     PfGpu G[2];
+    FqBufs fq[2];
 };
 
 template <class T>
@@ -1140,6 +1339,7 @@ T* dalloc(size_t n) {
     return p;
 }
 
+void pf_rot_prep(t4q_ctx* c);
 Pf* pf_get(t4q_ctx* c) {
     tp::State& S = *c->tps;
     const int ub = S.pf_ub;
@@ -1152,7 +1352,8 @@ Pf* pf_get(t4q_ctx* c) {
             PfGpu& B = P->G[g];
             for (void* p : {(void*)B.ids, (void*)B.h, (void*)B.xn, (void*)B.y, (void*)B.part, (void*)B.rx[0],
                             (void*)B.rx[1], (void*)B.yab, (void*)B.qkv, (void*)B.o, (void*)B.g32, (void*)B.qa,
-                            (void*)B.xq, (void*)B.xs, (void*)B.xsum, (void*)B.dx, (void*)B.xq2, (void*)B.dx2})
+                            (void*)B.xq, (void*)B.xs, (void*)B.xsum, (void*)B.dx, (void*)B.xq2, (void*)B.dx2,
+                            (void*)B.dsh, (void*)B.dxt})
                 cudaFree(p);
             for (auto e : B.part_ev) cudaEventDestroy(e);
             for (auto& r : B.sent) for (auto e : r) cudaEventDestroy(e);
@@ -1184,6 +1385,8 @@ Pf* pf_get(t4q_ctx* c) {
         B.dx = dalloc<float>(Up * (8704 / 32));
         B.xq2 = dalloc<int8_t>(Up * 8704);
         B.dx2 = dalloc<float>(Up * (8704 / 32));
+        B.dsh = dalloc<int8_t>(Up * (8704 / 64));
+        B.dxt = dalloc<float>(Up);
         CK(cudaStreamCreateWithFlags(&B.sc, cudaStreamNonBlocking));
         for (auto& e : B.part_ev) CK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming));
         for (auto& r : B.sent) for (auto& e : r) CK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming));
@@ -1209,6 +1412,31 @@ Pf* pf_get(t4q_ctx* c) {
     return P;
 }
 
+// R512: rotated-row scales (once per context) and the per-GEMM-type int8 scratch
+void pf_rot_prep(t4q_ctx* c) {
+    tp::State& S = *c->tps;
+    Pf* P = (Pf*)S.pf;
+    if (!S.pf_rot || !P) return;
+    for (int g = 0; g < 2; g++) {
+        CK(cudaSetDevice(g));
+        tp::Gpu& G = S.G[g];
+        PfGpu& B = P->G[g];
+        const size_t sz[4] = {(size_t)8192 * 5120, (size_t)5120 * 3072, (size_t)17408 * 5120, (size_t)5120 * 8704};
+        for (int i = 0; i < 4; i++)
+            if (!B.w8r[i]) CK(cudaMalloc(&B.w8r[i], sz[i]));
+        for (int il = 0; il < 64; il++) {
+            tp::Layer& L = G.L[il];
+            for (tp::FW* W : {&L.qkvz, &L.ssm_out, &L.qkv_a, &L.wo, &L.gateup, &L.down}) {
+                if (!W->ok() || W->invr) continue;
+                CK(cudaMalloc(&W->invr, (size_t)W->L.N * 4));
+                gemm8::Args a = gemm8::make_args(W->L, W->base, nullptr, nullptr, nullptr, nullptr, 0, 0, 0);
+                CK(rot::invr(W->L.fmt, W->L.rpl, a, W->invr, G.s));
+            }
+        }
+        CK(cudaStreamSynchronize(G.s));
+    }
+}
+
 void ck_launch(const char* w) {
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) throw std::runtime_error(std::string("prefill launch failed: ") + w + ": " + cudaGetErrorString(e));
@@ -1225,6 +1453,9 @@ struct PfRun {
     int chk_done[2] = {0, 0};
     bool ar16 = false;  // pf_ar16: K-split GEMMs write fp16 partials, the all-reduce copies fp16
     int ga = 32;      // gemm8 activation scale group (pf_ga)
+    bool g17 = false; // gemm17 shift-folded 64-groups (pf_g17): unfused producers + quant_gsh
+    bool rot = false; // R512 (pf_rot): rotated per-token activations x rotated int8 weights (gemm17 per-token)
+    int emax = 7;
     int tpad(int Ts) const { return g8 ? (Ts + 255) / 256 * 256 : (Ts + 127) / 128 * 128; }
     // profiling (option pf_prof): events on GPU0's stream after each op group, named by the op that just ended
     std::vector<cudaEvent_t>* ev = nullptr;
@@ -1245,7 +1476,9 @@ struct PfRun {
         const int Ts = sT[s], Tps = tpad(Ts);
         const int n = Tps * (K >> 5);
         const float* xs0 = x + (size_t)st0[s] * K;
-        if (g8) gemm8::quant8(xs0, K, Ts, Tps, K, B.xq, B.dx, G.s, ga);
+        if (rot) rot::quant_rot<float>(xs0, K, Ts, Tps, K, B.xq, B.dxt, G.s);
+        else if (g17) g16::quant_gsh_kernel<float><<<Tps, 256, 0, G.s>>>(xs0, K, Ts, K, emax, B.xq, B.dsh, B.dxt, Tps);
+        else if (g8) gemm8::quant8(xs0, K, Ts, Tps, K, B.xq, B.dx, G.s, ga);
         else if (i4) gemm::quant_rows_i4_kernel<<<(n + 127) / 128, 128, 0, G.s>>>(xs0, K, Ts, Tps, K, B.xq, B.xs, B.xsum);
         else gemm::quant_rows_kernel<<<(n + 127) / 128, 128, 0, G.s>>>(xs0, K, Ts, Tps, K, B.xq, B.xs, B.xsum);
         ck_launch("quant");
@@ -1258,7 +1491,29 @@ struct PfRun {
         const int Ts = sT[s], Tps = tpad(Ts);
         cudaError_t e;
         gemm::GemmArgs a = gemm::make_args(W.L, W.base, B.xq, B.xs, B.xsum, y + (size_t)st0[s] * ldy, ldy, Ts, Tps);
-        if (g8 && silu) {
+        if (g8 && !g17 && !rot && c->tps->pf_fq) fq(g, s, W, in2);
+        if (rot) {
+            const int slot = (W.L.N == 8192 || W.L.N == 7168) ? 0 : W.L.N == 17408 ? 2 : W.L.K == 8704 ? 3 : 1;
+            gemm8::Args q = gemm8::make_args(W.L, W.base, nullptr, nullptr, nullptr, nullptr, 0, 0, 0);
+            if (s == 0) {  // both sub-batches use the same converted weights
+                CK(rot::convert(W.L.fmt, W.L.rpl, q, W.invr, B.w8r[slot], G.s));
+                mark(g, "rot_convert");
+            }
+            g16::Args a7;
+            a7.w8 = B.w8r[slot]; a7.invs = W.invr; a7.xq = B.xq; a7.dx = B.dxt;
+            a7.y = y + (size_t)st0[s] * ldy; a7.ldy = ldy;
+            if (ar16 && y == B.part) { a7.yh = (__half*)B.part + (size_t)st0[s] * ldy; a7.y = nullptr; }
+            a7.N = W.L.N; a7.K = W.L.K; a7.T = Ts; a7.Tp = Tps;
+            e = a7.yh ? g16::launch17_t<0, gemv::FAST_P4, 4, 1, 0>(a7, G.s) : g16::launch17_t<0, gemv::FAST_P4, 4, 0, 0>(a7, G.s);
+        } else if (g17) {
+            g16::Args a7;
+            a7.q = gemm8::make_args(W.L, W.base, W.invs, nullptr, nullptr, nullptr, 0, 0, 0);
+            a7.invs = W.invs; a7.xq = B.xq; a7.dx = B.dxt; a7.dsh = B.dsh;
+            a7.y = y + (size_t)st0[s] * ldy; a7.ldy = ldy;
+            if (ar16 && y == B.part) { a7.yh = (__half*)B.part + (size_t)st0[s] * ldy; a7.y = nullptr; }
+            a7.N = W.L.N; a7.K = W.L.K; a7.T = Ts; a7.Tp = Tps;
+            e = g16::launch17(W.L.fmt, W.L.rpl, 1, a7, G.s);
+        } else if (g8 && silu) {
             gemm8::Args a8 = gemm8::make_args(W.L, W.base, W.invs, B.xq, B.dx, nullptr, 0, Ts, Tps);
             a8.oq = B.xq2; a8.odx = B.dx2;
             e = gemm8::launch9_silu(W.L.fmt, W.L.rpl, a8, G.s);
@@ -1281,6 +1536,45 @@ struct PfRun {
         mark(g, W.L.N == 8192 ? "gemm_qkvz" : W.L.N == 7168 ? "gemm_attn_qkv" : W.L.N == 17408 ? "gemm_gateup"
                 : W.L.K == 8704 ? "gemm_down" : W.L.fmt == gemv::FAST_K5 ? "gemm_ssm_out" : "gemm_attn_out");
     }
+    // activation-format study (pf_fq) on this GEMM's GA64 input
+    void fq(int g, int s, const tp::FW& W, bool in2) {
+        tp::State& S = *c->tps;
+        const int type = W.L.N == 8192 ? 0 : W.L.N == 7168 ? 1 : W.L.N == 17408 ? 2 : W.L.K == 8704 ? 3
+                         : W.L.fmt == gemv::FAST_K5 ? 4 : 5;
+        if (ga != 64 || !((S.pf_fq_mask >> type) & 1)) return;
+        tp::Gpu& G = S.G[g];
+        PfGpu& B = P->G[g];
+        FqBufs& F = P->fq[g];
+        if (!F.camax) {
+            CK(cudaMalloc(&F.camax, FQ_KMAX * 4));
+            CK(cudaMalloc(&F.sel, FQ_KMAX));
+            CK(cudaMalloc(&F.uni, FQ_KMAX));
+            CK(cudaMalloc(&F.st, 6 * 5 * 8));
+            CK(cudaMemsetAsync(F.sel, 0, FQ_KMAX, G.s));
+            CK(cudaMemsetAsync(F.uni, 0, FQ_KMAX, G.s));
+            CK(cudaMemsetAsync(F.st, 0, 6 * 5 * 8, G.s));
+        }
+        int8_t* xq = in2 ? B.xq2 : B.xq;
+        float* dx = in2 ? B.dx2 : B.dx;
+        const int K = W.L.K, Ts = sT[s], Tps = tpad(Ts), mode = S.pf_fq;
+        const unsigned char* sel = nullptr;
+        if (mode == 3 || mode == 4) {
+            CK(cudaMemsetAsync(F.camax, 0, FQ_KMAX * 4, G.s));
+            k_fq_amax<<<Ts, 256, 0, G.s>>>(xq, dx, K, Tps, F.camax);
+            k_fq_topn<<<1, 1024, 0, G.s>>>(F.camax, K, S.pf_fq_n, F.sel);
+            sel = F.sel;
+        }
+        if (mode == 8) {
+            CK(cudaMemsetAsync(F.camax, 0, FQ_KMAX * 4, G.s));
+            k_fq_amax<<<Ts, 256, 0, G.s>>>(xq, dx, K, Tps, F.camax);
+            k_fq_smooth<<<(K + 255) / 256, 256, 0, G.s>>>(F.camax, K);
+            sel = (const unsigned char*)F.camax;
+        }
+        if ((mode == 5 || mode == 6 || mode == 9) && (S.pf_fq_n < 32 || K % S.pf_fq_n)) throw std::runtime_error("pf_fq_n must divide K");
+        k_fq_apply<<<Ts, 256, K * 4, G.s>>>(xq, dx, K, Tps, mode, S.pf_fq_a / 10.f, S.pf_fq_n, sel, F.uni, F.st + type * 5);
+        k_fq_uni<<<1, 256, 0, G.s>>>(F.uni, mode == 8 ? nullptr : sel, K, Ts, F.st + type * 5);
+        ck_launch("fq");
+    }
     Q8Out q8out(int g, int s, int K) {
         PfGpu& B = P->G[g];
         Q8Out q;
@@ -1290,7 +1584,7 @@ struct PfRun {
         return q;
     }
     // fused producers write 32-element q8 groups (gemm.cuh layout or gemm8 GA 32); other GA use the quant kernels
-    bool fused() const { return c->tps->pf_fuse && !i4 && (!g8 || ga == 32 || ga == 64); }
+    bool fused() const { return c->tps->pf_fuse && !i4 && !g17 && !rot && (!g8 || ga == 32 || ga == 64); }
     // K5 GEMMs need int8 activations even in i4 mode
     void qg(int g, int s, const tp::FW& W, const float* x, int K, float* y, int ldy) {
         const bool save = i4;
@@ -1521,6 +1815,7 @@ int tp_prefill_batched(t4q_ctx* c, const int32_t* ids, int n, void (*run_last_st
     tp::State& S = *c->tps;
     if (c->pos + n > S.max_ctx) throw std::runtime_error("context full");
     Pf* P = pf_get(c);
+    pf_rot_prep(c);
     auto t0 = Clock::now();
     const int nb = n - 1;  // the last token goes through the decode step
     std::vector<cudaEvent_t> ev;
@@ -1531,6 +1826,9 @@ int tp_prefill_batched(t4q_ctx* c, const int32_t* ids, int n, void (*run_last_st
             if (p.first == k) { p.second.first += ms; p.second.second++; return; }
         prof.push_back({k, {ms, 1}});
     };
+    S.pf_fq_json.clear();
+    for (int g = 0; g < 2; g++)
+        if (P->fq[g].st) { CK(cudaSetDevice(g)); CK(cudaMemsetAsync(P->fq[g].st, 0, 6 * 5 * 8, S.G[g].s)); }
     for (int b0 = 0; b0 < nb; b0 += S.pf_ub) {
         PfRun R{c, P};
         R.T = std::min(S.pf_ub, nb - b0);
@@ -1538,9 +1836,20 @@ int tp_prefill_batched(t4q_ctx* c, const int32_t* ids, int n, void (*run_last_st
         R.g8 = S.pf_g8 != 0;
         R.ar16 = R.g8 && S.pf_ar16;
         R.ga = S.pf_ga;
+        R.g17 = R.g8 && S.pf_g17;
+        R.rot = R.g8 && S.pf_rot;
+        R.emax = S.pf_emax;
         R.i4 = S.pf_i4 != 0 && !R.g8;
         if (S.pf_prof) { R.ev = &ev; R.evn = &evn; }
         R.run(ids + b0);
+        if (S.pf_keep_h) {
+            std::vector<float>& hv = c->dumps["pf_h"];
+            if (b0 == 0) hv.clear();
+            hv.resize((size_t)(b0 + R.T) * D);
+            CK(cudaSetDevice(0));
+            CK(cudaStreamSynchronize(S.G[0].s));
+            CK(cudaMemcpy(hv.data() + (size_t)b0 * D, P->G[0].h, (size_t)R.T * D * 4, cudaMemcpyDeviceToHost));
+        }
         if (S.pf_prof) {
             CK(cudaSetDevice(0));
             CK(cudaStreamSynchronize(S.G[0].s));
@@ -1569,6 +1878,22 @@ int tp_prefill_batched(t4q_ctx* c, const int32_t* ids, int n, void (*run_last_st
         CK(cudaStreamSynchronize(S.G[g].s));
     }
     const double t_batch = secs(t0);
+    if (S.pf_fq && P->fq[0].st) {
+        unsigned long long h[30];
+        CK(cudaSetDevice(0));
+        CK(cudaMemcpy(h, P->fq[0].st, sizeof h, cudaMemcpyDeviceToHost));
+        static const char* nm[6] = {"qkvz", "attn_qkv", "gateup", "down", "ssm_out", "attn_out"};
+        std::string js = "{";
+        char b[200];
+        for (int i = 0; i < 6; i++) {
+            if (!h[i * 5]) continue;
+            snprintf(b, sizeof b, "%s\"%s\": {\"calls\": %llu, \"tokens\": %llu, \"resid\": %llu, \"union_mean\": %.1f, \"union_max\": %llu}",
+                     js.size() > 1 ? ", " : "", nm[i], h[i * 5], h[i * 5 + 1], h[i * 5 + 2],
+                     (double)h[i * 5 + 3] / h[i * 5], h[i * 5 + 4]);
+            js += b;
+        }
+        S.pf_fq_json = js + "}";
+    }
     // decode step for the last token at position c->pos + n - 1
     const int pos_last = c->pos + nb;
     for (int g = 0; g < 2; g++) {

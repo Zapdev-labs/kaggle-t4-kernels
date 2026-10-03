@@ -32,6 +32,7 @@ struct FW {  // fast packed weight on one GPU
     t4q::gemv::Layout L;
     uint8_t* base = nullptr;
     float* invs = nullptr;  // prefill gemm8: per-row 127 / max|w| (computed on first batched prefill)
+    float* invr = nullptr;  // prefill R512: per-row 127 / max|T(w)| of the rotated row (kernels/rot.cuh)
     bool ok() const { return base != nullptr; }
 };
 
@@ -289,6 +290,19 @@ struct State {
     int pf_bn = 0;        // gemm8 token tile: 128 / 256, 0 = auto (256 when the sub-batch has >= 512 padded tokens)
     int pf_prof = 0;      // 1: per-op event profile of GPU0 (ms per op class) in stats "pf_profile"
     std::string pf_json;
+    // activation-format accuracy study (tp_prefill.cu k_fq_*): emulate a GEMM input format on the GA64 int8 input
+    int pf_rot = 0;       // 1: R512 path: block-Hadamard rotated per-token activations x rotated int8 weights (gemm17)
+    int pf_g17 = 0;       // 1: gemm17 (CUTLASS-style int8 pipeline, shift-folded per-64 activation groups, unfused producers)
+    int pf_emax = 7;      // gemm17: max group exponent (group step = D_t 2^-e / 127)
+    int pf_fq = 0;        // 0 off; 1 per-token; 2 per-token clip a*rms + exact residual; 3 top-n channels exact + per-token;
+                          // 4 = 3 + clip; 5 per-group of pf_fq_n elements; 6 random signs + block Hadamard of
+                          // pf_fq_n, then per-token (clip if pf_fq_a); 8 per-channel smoothing (sqrt amax) + per-token;
+                          // 9 per-token scale x 2^-e per pf_fq_n group, e <= pf_fq_a (shift-foldable)
+    int pf_fq_a = 0;      // clip multiple of the token rms, in tenths (mode 2/4)
+    int pf_fq_n = 0;      // top-n channels (mode 3/4) or group size (mode 5)
+    int pf_fq_mask = 63;  // GEMM types: 1 qkvz, 2 attn_qkv, 4 gateup, 8 down, 16 ssm_out, 32 attn_out
+    int pf_keep_h = 0;    // 1: copy GPU0's final residual of every batch token into dumps["pf_h"] (accuracy studies)
+    std::string pf_fq_json;
     double pf_last_batch_s = 0, pf_last_total_s = 0;
     int pf_last_n = 0;
 };

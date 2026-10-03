@@ -1275,6 +1275,14 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     if (k == "pf_ar16") { S.pf_ar16 = v; return 0; }
     if (k == "pf_gdnc_chk") { S.pf_gdnc_chk = v; return 0; }
     if (k == "pf_ga") { if (v != 0 && v != 32 && v != 64) throw std::runtime_error("pf_ga must be 0, 32 or 64"); S.pf_ga = v; return 0; }
+    if (k == "pf_fq") { S.pf_fq = v; return 0; }
+    if (k == "pf_g17") { S.pf_g17 = v; return 0; }
+    if (k == "pf_rot") { S.pf_rot = v; return 0; }
+    if (k == "pf_emax") { if (v < 0 || v > 7) throw std::runtime_error("pf_emax must be 0..7"); S.pf_emax = v; return 0; }
+    if (k == "pf_fq_a") { S.pf_fq_a = v; return 0; }
+    if (k == "pf_fq_n") { S.pf_fq_n = v; return 0; }
+    if (k == "pf_fq_mask") { S.pf_fq_mask = v; return 0; }
+    if (k == "pf_keep_h") { S.pf_keep_h = v; return 0; }
     if (k == "pf_bn") { if (v != 0 && v != 128 && v != 256) throw std::runtime_error("pf_bn must be 0, 128 or 256"); S.pf_bn = v; return 0; }
     if (k == "spin_ns") {
         S.spin_ns = v;
@@ -1473,6 +1481,7 @@ std::string tp_stats_json(t4q_ctx* c) {
     if (!S.prof_json.empty()) s += ", \"profile\": " + S.prof_json;
     if (!S.pf_json.empty()) s += ", \"pf_profile\": " + S.pf_json;
     if (!S.pf_gdnc_json.empty()) s += ", \"pf_gdnc_check\": [" + S.pf_gdnc_json + "]";
+    if (!S.pf_fq_json.empty()) s += ", \"pf_fq\": " + S.pf_fq_json;
     if (!S.trace_json.empty()) s += ", \"trace\": " + S.trace_json;
     if (!S.dbg_json.empty()) s += ", \"dbgts\": " + S.dbg_json;
     return s;
