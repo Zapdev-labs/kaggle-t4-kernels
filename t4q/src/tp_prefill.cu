@@ -2479,7 +2479,15 @@ int tp_prefill_batched(t4q_ctx* c, const int32_t* ids, int n, void (*run_last_st
     S.pf_last_batch_s = t_batch;
     S.pf_last_total_s = secs(t0);
     S.pf_last_n = n;
+    S.pf_h_pos0 = pos_last - (n - 1) + last_b0;  // P->G[g].h rows: final residuals of positions pos0 .. pos0 + nrows - 1
+    S.pf_h_n = nb - last_b0;
     return 0;
+}
+
+// final residual rows of the last batched-prefill ubatch on GPU g (speculative decoding's MTP prompt catch-up)
+const float* tp_prefill_hrows(t4q_ctx* c, int g) {
+    Pf* P = (Pf*)c->tps->pf;
+    return P ? P->G[g].h : nullptr;
 }
 
 #include "tp_batch.cuh"

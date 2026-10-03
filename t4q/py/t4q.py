@@ -51,6 +51,7 @@ class T4Q:
         L.t4q_batch_step.argtypes = [C.c_void_p, C.c_int, P32, P32]
         L.t4q_batch_logits.argtypes = [C.c_void_p, C.c_int, C.POINTER(C.c_float)]
         L.t4q_batch_free.argtypes = [C.c_void_p]
+        L.t4q_spec_force.argtypes = [C.c_void_p, P32, C.c_int]
         p = Params(2, tp, max_ctx, 0, 0, 0, verbose)
         self.ctx = L.t4q_load(gguf.encode(), C.byref(p))
         if not self.ctx:
@@ -92,6 +93,12 @@ class T4Q:
         n = self._err(self.lib.t4q_generate(self.ctx, out.ctypes.data_as(C.POINTER(C.c_int32)), max_new, C.byref(smp),
                                             st.ctypes.data_as(C.POINTER(C.c_int32)), len(stop)), "t4q_generate")
         return out[:n]
+
+    def spec_force(self, ids):
+        """debug: with option spec_force 1, drafts are ids[i] for position pos + i (ids[0] = the pending token)"""
+        ids = np.ascontiguousarray(ids, dtype=np.int32)
+        self._err(self.lib.t4q_spec_force(self.ctx, ids.ctypes.data_as(C.POINTER(C.c_int32)), len(ids)),
+                  "t4q_spec_force")
 
     def layer_forward(self, il, pos, h):
         h = np.ascontiguousarray(h, dtype=np.float32)

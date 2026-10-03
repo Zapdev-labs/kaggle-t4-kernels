@@ -240,6 +240,56 @@ void load_gpu_layer(t4q_ctx* c, Stage& sg, int g, int il) {
     }
 }
 
+// MTP block (blk.64) for speculative decoding: attention + FFN sharded like a trunk attention layer, eh_proj K-split by
+// input half (GPU0: the enorm(embed) columns, GPU1: the hnorm(h) columns), and a draft lm_head over the first dv ids.
+void load_mtp(t4q_ctx* c, Stage& sg, int g) {
+    tp::Mtp& M = c->tps->G[g].mtp;
+    tp::Layer& L = M.L;
+    const std::string p = "blk.64.";
+    if (!c->f.find(p + "nextn.eh_proj.weight")) return;  // no MTP block in this file
+    L.attn = true;
+    L.attn_norm = upload_f32(c, g, p + "attn_norm.weight");
+    L.post_norm = upload_f32(c, g, p + "post_attention_norm.weight");
+    build_fw(c, sg, g, L.qkv_a,
+             {{need(c, p + "attn_q.weight"), 6144 * g, 6144},
+              {need(c, p + "attn_k.weight"), 512 * g, 512},
+              {need(c, p + "attn_v.weight"), 512 * g, 512}},
+             {{0, 5120}}, 4, (p + "qkv_a").c_str());
+    build_fw(c, sg, g, L.wo, {{need(c, p + "attn_output.weight"), 0, 5120}}, {{3072 * g, 3072}}, 4,
+             (p + "attn_output").c_str());
+    L.q_norm = upload_f32(c, g, p + "attn_q_norm.weight");
+    L.k_norm = upload_f32(c, g, p + "attn_k_norm.weight");
+    CK(cudaSetDevice(g));
+    L.kc = dmalloc<uint16_t>((size_t)2 * c->tps->max_ctx * 256);
+    L.vc = dmalloc<uint16_t>((size_t)2 * c->tps->max_ctx * 256);
+    build_fw(c, sg, g, L.gateup,
+             {{need(c, p + "ffn_gate.weight"), 8704 * g, 8704}, {need(c, p + "ffn_up.weight"), 8704 * g, 8704}},
+             {{0, 5120}}, 4, (p + "gateup").c_str(), 4);
+    build_fw(c, sg, g, L.down, {{need(c, p + "ffn_down.weight"), 0, 5120}}, {{8704 * g, 8704}}, 4,
+             (p + "ffn_down").c_str());
+    build_fw(c, sg, g, M.eh, {{need(c, p + "nextn.eh_proj.weight"), 0, 5120}}, {{5120 * g, 5120}}, 2,
+             (p + "eh_proj").c_str());
+    M.enorm = upload_f32(c, g, p + "nextn.enorm.weight");
+    M.hnorm = upload_f32(c, g, p + "nextn.hnorm.weight");
+    M.shnorm = upload_f32(c, g, p + "nextn.shared_head_norm.weight");
+    int dv = getenv("T4Q_DV") ? atoi(getenv("T4Q_DV")) : 32768;
+    dv = std::max(0, std::min(dv, 248320)) & ~15;
+    M.dv = dv;
+    if (dv) build_fw(c, sg, g, M.lmd, {{need(c, "output.weight"), (int64_t)(dv / 2) * g, dv / 2}}, {{0, 5120}}, 2,
+                     "lm_draft");
+    // only the first GPU's MTP weights stay in the self-test list (eh_proj Q8 and the draft head)
+    if (g == 1) {
+        auto& sp = c->tps->specs;
+        auto& sf = c->tps->spec_fw;
+        for (size_t k = sp.size(); k-- > 0;)
+            if (sp[k].first == 1 && sp[k].second.what.find("blk.64.") == 0 &&
+                sp[k].second.what.find("eh_proj") == std::string::npos) {
+                sp.erase(sp.begin() + k);
+                sf.erase(sf.begin() + k);
+            }
+    }
+}
+
 // GEMV self-test against the CPU ggml dequant (fp64 dot with the same q8 activations)
 void selftest(t4q_ctx* c) {
     tp::State& S = *c->tps;
@@ -1085,6 +1135,8 @@ void tp_load(t4q_ctx* c, const char* path) {
         S.G[g].output_norm = upload_f32(c, g, "output_norm.weight");
         build_fw(c, sg, g, S.G[g].lm, {{need(c, "output.weight"), 124160 * g, 124160}}, {{0, 5120}}, 2, "lm_head");
     }
+    if (!getenv("T4Q_NO_MTP"))
+        for (int g = 0; g < 2; g++) load_mtp(c, sg, g);
     for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); CK(cudaFree(sg.dev[g])); }
     CK(cudaFreeHost(sg.pin));
     selftest(c);
@@ -1159,10 +1211,13 @@ void tp_reset(t4q_ctx* c) {
     }
     c->pos = 0;
     c->have_logits = false;
+    S.pf_h_n = 0;
+    tp_spec_reset(c);
 }
 
 int tp_logits(t4q_ctx* c, const int32_t* ids, int n, float* out) {
     tp::State& S = *c->tps;
+    S.pf_h_n = 0;
     set_prompt(c, ids, n);
     for (int i = 0; i < n; i++) {
         auto t0 = Clock::now();
@@ -1203,6 +1258,7 @@ int tp_prefill(t4q_ctx* c, const int32_t* ids, int n) {
         return 0;
     }
     auto t0 = Clock::now();
+    c->tps->pf_h_n = 0;  // no batched residual rows for the MTP prompt catch-up
     for (int i = 0; i < n; i++) run_step(c);
     sync_both(c);
     c->step_s += secs(t0);
@@ -1224,6 +1280,7 @@ int tp_last_logits(t4q_ctx* c, float* out) {
 int tp_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop, int n_stop) {
     tp::State& S = *c->tps;
     if (!c->have_logits) throw std::runtime_error("generate needs a prefill first");
+    if (S.spec_k > 0) return tp_spec_generate(c, out, max_new, stop, n_stop);
     auto t0 = Clock::now();
     tp::StepState st;
     CK(cudaSetDevice(0));
@@ -1261,6 +1318,12 @@ int tp_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop, int 
 int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     tp::State& S = *c->tps;
     if (k == "graphs") { S.graphs = v != 0; return 0; }
+    if (k == "spec_k") { if (v < 0 || v > tp::MMAX - 1) throw std::runtime_error("spec_k must be 0..6"); S.spec_k = v; return 0; }
+    if (k == "spec_dv") { S.spec_dv = v; return 0; }
+    if (k == "spec_force") { S.spec_force = v; return 0; }
+    if (k == "spec_dbg") { S.spec_dbg = v; return 0; }
+    if (k == "spec_prof") { S.spec_prof = v; return 0; }
+    if (k == "spec_ahead") { if (v < 1 || v > 64) throw std::runtime_error("spec_ahead must be 1..64"); S.spec_ahead = v; return 0; }
     if (k == "pf") { S.pf_on = v; return 0; }
     if (k == "pf_ub") { if (v < 1 || v > 4096) throw std::runtime_error("pf_ub out of range"); S.pf_ub = v; return 0; }
     if (k == "pf_i4") { S.pf_i4 = v; return 0; }
@@ -1506,5 +1569,10 @@ std::string tp_stats_json(t4q_ctx* c) {
     if (!S.trace_json.empty()) s += ", \"trace\": " + S.trace_json;
     if (!S.dbg_json.empty()) s += ", \"dbgts\": " + S.dbg_json;
     s += tp_batch_stats(c);
+    s += tp_spec_stats(c);
+    char mb[160];
+    snprintf(mb, sizeof mb, ", \"mtp\": {\"loaded\": %d, \"dv\": %d, \"spec_k\": %d, \"spec_dv\": %d}",
+             (int)S.G[0].mtp.eh.ok(), S.G[0].mtp.dv, S.spec_k, S.spec_dv);
+    s += mb;
     return s;
 }

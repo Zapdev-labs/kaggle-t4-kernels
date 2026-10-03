@@ -12,6 +12,12 @@ int tp_last_logits(t4q_ctx* c, float* out);
 int tp_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop, int n_stop);
 int tp_set_option(t4q_ctx* c, const std::string& key, int value);  // -1: unknown key
 std::string tp_stats_json(t4q_ctx* c);
+const float* tp_prefill_hrows(t4q_ctx* c, int g);
+// speculative decoding (tp_spec.cu)
+int tp_spec_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop, int n_stop);
+int tp_spec_force(t4q_ctx* c, const int32_t* ids, int n);  // debug: drafts = ids (the expected continuation)
+void tp_spec_reset(t4q_ctx* c);  // invalidates spec state (after a reset / new prompt)
+std::string tp_spec_stats(t4q_ctx* c);
 // batched decode (tp_batch.cuh, compiled into tp_prefill.cu)
 int tp_batch_init(t4q_ctx* c, int n_slots, int slot_ctx, int sf16);
 void tp_batch_free(t4q_ctx* c);

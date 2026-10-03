@@ -15,6 +15,9 @@ namespace tp {
 constexpr int NAR = 256;     // epoch stride per step (2 ARs per layer = 128 used)
 constexpr int NSPLIT = 40;   // attention split-K blocks per kv head (2 x 40 = one wave at 2 blocks/SM)
 constexpr int RING = 4096;   // host-mapped token ring
+constexpr int MMAX = 7;      // spec: max verify columns (k <= 6 drafts)
+constexpr int NSNAP = MMAX + 1;  // spec: DeltaNet state snapshot buffers
+constexpr int CR = 16;       // spec: conv ring slots (positions pos-3 .. pos+MMAX-1 must not alias)
 
 // device step state (one per GPU, identical contents on both)
 struct StepState {
@@ -26,6 +29,12 @@ struct StepState {
     int last_tok;   // argmax of this step
     float last_val;
     int pad;
+    // speculative decoding (tp_spec.cu)
+    int vpos;       // position of the first token of the last verify
+    int nacc;       // drafts accepted by the last verify (0..k)
+    int sidx;       // DeltaNet snapshot buffer holding the state after the accepted tokens
+    int nemit;      // tokens emitted by spec steps (GPU0 also mirrors it to host memory)
+    int pad2[4];
 };
 
 struct FW {  // fast packed weight on one GPU
@@ -181,12 +190,21 @@ struct Layer {
     FW gateup, down;
 };
 
+struct Mtp {  // MTP block (blk.64 of the main GGUF) sharded like a full-attention layer, plus the draft lm_head
+    Layer L;      // attn_norm, post_norm, qkv_a, wo, q_norm, k_norm, kc/vc (MTP KV cache), gateup, down
+    FW eh;        // nextn.eh_proj K-split: GPU g multiplies its 5120 input columns (GPU0: enorm(embed), GPU1: hnorm(h))
+    float *enorm = nullptr, *hnorm = nullptr, *shnorm = nullptr;
+    FW lmd;       // draft head: output.weight rows [dv/2 * g, +dv/2) (the first dv token ids)
+    int dv = 0;   // draft vocab (0: draft with the full lm_head)
+};
+
 struct Gpu {
     int g = 0;
     cudaStream_t s = nullptr;
     Layer L[64];
     float* output_norm = nullptr;
     FW lm;
+    Mtp mtp;
     uint8_t* embd = nullptr;  // raw Q4_0 token_embd rows
     // activations
     float* hb[2];  // residual double buffer: after AR idx the residual is in hb[(idx + 1) & 1]
@@ -323,6 +341,7 @@ struct State {
     int pf_keep_h = 0;    // 1: copy GPU0's final residual of every batch token into dumps["pf_h"] (accuracy studies)
     std::string pf_fq_json;
     double pf_last_batch_s = 0, pf_last_total_s = 0;
+    int pf_h_pos0 = 0, pf_h_n = 0;  // rows of the last prefill ubatch's final residuals (tp_prefill_hrows)
     int pf_last_n = 0;
     // batched decode (milestone B, tp_batch.cuh): B concurrent sequences in slots, each with its own DeltaNet state,
     // conv ring and KV cache; GEMMs at m = B through gemm9 (64-token tile up to B = 64)
@@ -337,6 +356,15 @@ struct State {
     int bd_p2p = 0;       // 1: K-split GEMM epilogues store the fp16 all-reduce partials into the peer's mailbox (P2P)
                           //    instead of a copy-engine transfer after the GEMM (needs P2P)
     std::string bd_json;
+    // speculative decoding (milestone M5, tp_spec.cu)
+    void* spec = nullptr; // buffers / graphs (spec_init)
+    int spec_k = 0;       // drafts per step (0: plain decode in t4q_generate; 1..MMAX-1)
+    int spec_dv = 1;      // 1: drafts use the truncated head (Mtp::lmd), 0: the full lm_head
+    int spec_force = 0;   // debug: drafts are the continuation set with t4q_spec_force (acceptance 100% if correct)
+    int spec_dbg = 0;     // debug: copy the accepted verify columns' logits to dumps["spec_logits"] every step
+    int spec_prof = 0;    // 1: one iteration in flight, per-graph GPU0 event times (stats spec.ms_draft / ms_verify)
+    int spec_ahead = 4;   // spec iterations enqueued before the host reads the token ring
+    std::string spec_json;
 };
 
 }  // namespace tp

@@ -4,7 +4,7 @@ ARCH ?= sm_75
 NVFLAGS = -O3 -std=c++17 -arch=$(ARCH) -lineinfo -Xcompiler -fPIC -Xcompiler -ffp-contract=off -Iinclude
 BUILD = build
 
-CU_SRCS = src/loader.cu src/repack.cu src/engine.cu src/kernels/gemv_ref.cu src/kernels/misc.cu src/kernels/gdn.cu src/kernels/attn.cu src/tp_engine.cu src/tp_prefill.cu src/kernels/tp_kernels.cu
+CU_SRCS = src/loader.cu src/repack.cu src/engine.cu src/kernels/gemv_ref.cu src/kernels/misc.cu src/kernels/gdn.cu src/kernels/attn.cu src/tp_engine.cu src/tp_prefill.cu src/tp_spec.cu src/kernels/tp_kernels.cu
 CPP_SRCS = src/gguf.cpp src/quant_cpu.cpp src/api.cpp src/cupti_trace.cpp
 OBJS = $(patsubst %.cu,$(BUILD)/%.o,$(CU_SRCS)) $(patsubst %.cpp,$(BUILD)/%.o,$(CPP_SRCS))
 

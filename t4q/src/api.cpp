@@ -182,6 +182,7 @@ void t4q_free(t4q_ctx* c) {
     if (!c->tps) throw std::runtime_error("batched decode needs the TP engine"); \
     return expr;                                                             \
     API_CATCH(-1)
+int t4q_spec_force(t4q_ctx* c, const int32_t* ids, int n) { BD_CALL(tp_spec_force(c, ids, n)) }
 int t4q_batch_init(t4q_ctx* c, int n_slots, int slot_ctx, int state_f16) { BD_CALL(tp_batch_init(c, n_slots, slot_ctx, state_f16)) }
 int t4q_batch_prefill(t4q_ctx* c, int slot, const int32_t* ids, int n) { BD_CALL(tp_batch_prefill(c, slot, ids, n)) }
 int t4q_batch_clone(t4q_ctx* c, int src, int dst) { BD_CALL(tp_batch_clone(c, src, dst)) }

@@ -46,6 +46,9 @@ int  t4q_batch_pos(t4q_ctx*, int slot);
 int  t4q_batch_step(t4q_ctx*, int n, const int32_t* slots, int32_t* out);
 int  t4q_batch_logits(t4q_ctx*, int row, float* out);
 void t4q_batch_free(t4q_ctx*);
+/* speculative decoding (TP engine, option "spec_k" > 0 makes t4q_generate use MTP drafts + batched verify).
+   debug: with option "spec_force" 1 the drafts are ids[i] for position t4q_pos() + i (ids[0] = the pending token). */
+int  t4q_spec_force(t4q_ctx*, const int32_t* ids, int n);
 void t4q_reset(t4q_ctx*);
 void t4q_free(t4q_ctx*);
 
