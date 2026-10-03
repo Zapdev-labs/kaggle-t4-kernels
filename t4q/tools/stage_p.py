@@ -34,8 +34,10 @@ ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "p"
 SECTIONS = ["engine"]
-# config 0 = production default (GA64, must pass); config 1 = R512 fast mode (opt-in, fails the L KL check)
-FQ = ['pf_ga=64,pf_rot=0,pf_nsub=2', 'pf_ga=64,pf_rot=1,pf_rot_mask=63,pf_wcache=4500,pf_abq=1,pf_rcf=1,pf_rgb=0,pf_h16=1,pf_nsub=2']
+# config 0 = candidate default (GA64 + pf_head: last token in the batch, decode-style head only); 1 = round-3 default
+# (last token through a full decode step); 2 = config 0 with one sub-batch; 3 = GA32 (exact q8 blocks, accuracy reference)
+FQ = ['pf_ga=64,pf_rot=0,pf_nsub=2,pf_head=1', 'pf_ga=64,pf_rot=0,pf_nsub=2,pf_head=0', 'pf_ga=64,pf_rot=0,pf_nsub=1,pf_head=1',
+      'pf_ga=32,pf_rot=0,pf_nsub=2,pf_head=1']
 PF_CONFIGS = ";".join(FQ)
 PF_SECTIONS = "correct,bench"
 PF_PROMPTS = "P0,P1,W,L"

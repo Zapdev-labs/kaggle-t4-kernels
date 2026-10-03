@@ -33,7 +33,7 @@ WORK.mkdir(exist_ok=True)
 ORC = W / "oracle"
 ORC.mkdir(exist_ok=True)
 STAGE = "pg"
-SECTIONS = ["g16"]
+SECTIONS = ["g20"]
 REF_ONLY = "cut_i8_128x256"
 PF_CONFIGS = "pf_g8=1,pf_ga=64,pf_fuse=1;pf_g8=1,pf_ga=32,pf_fuse=1"
 RESULTS = {"stage": STAGE}
@@ -348,6 +348,36 @@ def g16_section(t4q):
     result("g16_sustain", summarize_sustain(S))
 
 
+def g20_section(t4q):
+    """gemm20 (W4A8 on int4 tensor cores, exact Q4_0 x GA64) vs gemm9 / gemm17: checks + burst on dev0, sustained on both"""
+    bdir = W / "g20"
+    bdir.mkdir(exist_ok=True)
+    exe = str(bdir / "gemm20_bench")
+    rc, o = sh([NVCC, "-O3", "-std=c++17", "-arch=sm_75", "-lineinfo", "-Xptxas", "-v",
+                str(t4q / "tools" / "gemm20_bench.cu"), "-o", exe, "-ldl", "-lpthread"], timeout=900,
+               logname="build_g20.txt")
+    lines = o.splitlines()
+    ptx = []
+    for i, l in enumerate(lines):
+        if "Compiling entry function" in l and "g20" in l:
+            ptx.append(" | ".join(x.strip() for x in lines[i:i + 4]))
+    result("g20_build", {"ok": rc == 0, "secs": el(), "ptxas": ptx[:12], "tail": o[-3000:] if rc else ""})
+    if rc:
+        return
+    rc, o = stream([exe, "--dev", "0"], "g20_burst_dev0.txt", timeout=1500)
+    result("g20_checks", [json.loads(l[6:]) for l in o.splitlines() if l.startswith("CHECK ")])
+    result("g20_burst", [json.loads(l[2:]) for l in o.splitlines() if l.startswith("R ")])
+    result("g20_summary", [l for l in o.splitlines() if l.startswith("SUMMARY") or l.startswith("FATAL")])
+    procs = [subprocess.Popen([exe, "--dev", str(d), "--sustain", str(G20_SUSTAIN), "--variants", G20_SVARS],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) for d in (0, 1)]
+    S = []
+    for d, p in enumerate(procs):
+        o, _ = p.communicate(timeout=1500)
+        (LOGS / f"g20_sustain_dev{d}.txt").write_text(o)
+        S += [json.loads(l[2:]) for l in o.splitlines() if l.startswith("S ")]
+    result("g20_sustain", summarize_sustain(S))
+
+
 def ref_section(t4q):
     """cuBLAS / CUTLASS reference GEMMs (tools/ref_bench.cu): burst on dev0, then sustained on both GPUs at once."""
     bdir = W / "rb"
@@ -399,6 +429,8 @@ def summarize_sustain(S):
 REF_SUSTAIN = 8
 G16_SUSTAIN = 8
 G16_SVARS = "14,20,14,20"
+G20_SUSTAIN = 8
+G20_SVARS = "0,1,2,3,4,0,2"
 GEMM_KBU = [2]
 GEMM_TABLE = True
 GEMM_SASS = ["_ZN3t4q5gemm815gemm15_kernelILi0ELi4EEEvNS0_4ArgsE"]
@@ -426,6 +458,8 @@ def main():
             result("clk_probe", outs)
         if "g16" in SECTIONS:
             g16_section(t4q)
+        if "g20" in SECTIONS:
+            g20_section(t4q)
         if "ref" in SECTIONS:
             ref_section(t4q)
         if "gemm" in SECTIONS:

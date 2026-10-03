@@ -314,6 +314,8 @@ struct State {
     int pf_fq_a = 0;      // clip multiple of the token rms, in tenths (mode 2/4)
     int pf_fq_n = 0;      // top-n channels (mode 3/4) or group size (mode 5)
     int pf_fq_mask = 63;  // GEMM types: 1 qkvz, 2 attn_qkv, 4 gateup, 8 down, 16 ssm_out, 32 attn_out
+    int pf_head = 0;      // 1: the last prompt token also goes through the batch path; only the head (norm, lm_head,
+                          //    argmax) runs decode-style afterwards (0: the last token runs a full decode step)
     int pf_keep_h = 0;    // 1: copy GPU0's final residual of every batch token into dumps["pf_h"] (accuracy studies)
     std::string pf_fq_json;
     double pf_last_batch_s = 0, pf_last_total_s = 0;

@@ -16,6 +16,7 @@
 #include "kernels/gemm8.cuh"
 #include "kernels/gemm16.cuh"
 #include "kernels/rot.cuh"
+#include "kernels/tp_kernels.h"
 #include "model.h"
 #include "tp.h"
 #include "tp_api.h"
@@ -312,53 +313,72 @@ __global__ void __launch_bounds__(128) k_pf_gnorm_q8(const float* __restrict__ o
     warp_q8(v, q, t, vl * 128 + i);
 }
 
-// yab[kz][t][i] = xn[t][kz-th quarter of K] . ab[i][same] (48 fp32 rows: 24 alpha then 24 beta); the consumer (k_pf_gdn)
-// sums the AB_KS = 4 slices in a fixed order. grid (ceil(T/128), AB_KS), 256 threads: thread = 8 tokens (tg = tid & 15)
-// x 3 rows (rg, rg + 16, rg + 32; rg = tid >> 4). K in tiles of 32 staged k-major in smem (x [k][128 tok], ab [k][48]):
-// two LDS.128 + 3 LDS per 24 FMA, and the 983 KB ab matrix is read once per 128 tokens.
-constexpr int AB_KS = 4;
-__global__ void __launch_bounds__(256) k_pf_ab(const float* __restrict__ xn, const float* __restrict__ ab, int T,
+// yab[kz][t][i] = xn[t][kz-th K slice] . ab[i][same] (48 fp32 rows: 24 alpha then 24 beta); the consumers (k_pf_gdn,
+// k_pf_gdnc) sum the AB_KS slices in a fixed order. grid (ceil(T/128), AB_KS), 128 threads: thread = 8 tokens
+// (tg = tid & 15) x 6 rows (og = tid >> 4). K in tiles of 32 staged k-major in smem (x [k][128 tok], ab [k][48]) from
+// registers loaded one tile ahead: two LDS.128 + three LDS.64 per 48 FMA. Per-thread summation order over k is the
+// same as the round-3 kernel (sequential within the slice).
+constexpr int AB_KS = 16;  // round 4: 4 -> 16 K slices (64 -> 256 blocks at T = 2048)
+__global__ void __launch_bounds__(128) k_pf_ab(const float* __restrict__ xn, const float* __restrict__ ab, int T,
                                                float* yab, int sstride) {
     __shared__ __align__(16) float xs[32][132];
     __shared__ __align__(16) float as[32][52];
-    const int tid = threadIdx.x, tg = tid & 15, rg = tid >> 4, t0 = blockIdx.x * 128;
-    float acc[8][3];
+    const int tid = threadIdx.x, tg = tid & 15, og = tid >> 4, t0 = blockIdx.x * 128;
+    float acc[8][6];
 #pragma unroll
     for (int a = 0; a < 8; a++)
 #pragma unroll
-        for (int j = 0; j < 3; j++) acc[a][j] = 0.f;
-    const int kbeg = blockIdx.y * (D / AB_KS);
+        for (int j = 0; j < 6; j++) acc[a][j] = 0.f;
+    const int kbeg = blockIdx.y * (D / AB_KS), kend = kbeg + D / AB_KS;
     yab += (size_t)blockIdx.y * sstride;
-    for (int k0 = kbeg; k0 < kbeg + D / AB_KS; k0 += 32) {
-        __syncthreads();
-        for (int i = tid; i < 128 * 8; i += 256) {  // x: 128 tokens x 8 float4
-            const int r = i >> 3, k = (i & 7) * 4;
-            const float4 v = (t0 + r < T) ? *(const float4*)(xn + (size_t)(t0 + r) * D + k0 + k) : make_float4(0.f, 0.f, 0.f, 0.f);
-            xs[k][r] = v.x; xs[k + 1][r] = v.y; xs[k + 2][r] = v.z; xs[k + 3][r] = v.w;
+    float4 rx[8], ra[3];
+    const bool okx = t0 + tid < T;
+    const float* xrow = xn + (size_t)(okx ? t0 + tid : 0) * D;
+    auto load = [&](int k0) {
+#pragma unroll
+        for (int j = 0; j < 8; j++) rx[j] = okx ? *(const float4*)(xrow + k0 + 4 * j) : make_float4(0.f, 0.f, 0.f, 0.f);
+#pragma unroll
+        for (int j = 0; j < 3; j++) {
+            const int i = tid + 128 * j, r = i >> 3, k = (i & 7) * 4;
+            ra[j] = __ldg((const float4*)(ab + (size_t)r * D + k0 + k));
         }
-        for (int i = tid; i < 48 * 8; i += 256) {  // ab: 48 rows x 8 float4
-            const int r = i >> 3, k = (i & 7) * 4;
-            const float4 v = __ldg((const float4*)(ab + (size_t)r * D + k0 + k));
-            as[k][r] = v.x; as[k + 1][r] = v.y; as[k + 2][r] = v.z; as[k + 3][r] = v.w;
+    };
+    load(kbeg);
+    for (int k0 = kbeg; k0 < kend; k0 += 32) {
+        __syncthreads();
+#pragma unroll
+        for (int j = 0; j < 8; j++) {
+            xs[4 * j][tid] = rx[j].x; xs[4 * j + 1][tid] = rx[j].y; xs[4 * j + 2][tid] = rx[j].z; xs[4 * j + 3][tid] = rx[j].w;
+        }
+#pragma unroll
+        for (int j = 0; j < 3; j++) {
+            const int i = tid + 128 * j, r = i >> 3, k = (i & 7) * 4;
+            as[k][r] = ra[j].x; as[k + 1][r] = ra[j].y; as[k + 2][r] = ra[j].z; as[k + 3][r] = ra[j].w;
         }
         __syncthreads();
+        if (k0 + 32 < kend) load(k0 + 32);
 #pragma unroll 4
         for (int k = 0; k < 32; k++) {
             const float4 x0 = *(const float4*)&xs[k][tg * 8], x1 = *(const float4*)&xs[k][tg * 8 + 4];
-            const float a0 = as[k][rg], a1 = as[k][rg + 16], a2 = as[k][rg + 32];
+            const float2 a01 = *(const float2*)&as[k][og * 6], a23 = *(const float2*)&as[k][og * 6 + 2],
+                         a45 = *(const float2*)&as[k][og * 6 + 4];
             const float xv[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
+            const float av[6] = {a01.x, a01.y, a23.x, a23.y, a45.x, a45.y};
 #pragma unroll
-            for (int t = 0; t < 8; t++) {
-                acc[t][0] += xv[t] * a0; acc[t][1] += xv[t] * a1; acc[t][2] += xv[t] * a2;
-            }
+            for (int t = 0; t < 8; t++)
+#pragma unroll
+                for (int j = 0; j < 6; j++) acc[t][j] += xv[t] * av[j];
         }
     }
 #pragma unroll
     for (int a = 0; a < 8; a++) {
         const int t = t0 + tg * 8 + a;
-        if (t < T)
-#pragma unroll
-            for (int j = 0; j < 3; j++) yab[(size_t)t * 48 + rg + 16 * j] = acc[a][j];
+        if (t < T) {
+            float* yp = yab + (size_t)t * 48 + og * 6;
+            *(float2*)yp = make_float2(acc[a][0], acc[a][1]);
+            *(float2*)(yp + 2) = make_float2(acc[a][2], acc[a][3]);
+            *(float2*)(yp + 4) = make_float2(acc[a][4], acc[a][5]);
+        }
     }
 }
 
@@ -1552,6 +1572,8 @@ void pf_rot_prep(t4q_ctx* c) {
                 tp::Layer& L0 = S.G[0].L[il];
                 tp::FW* W0 = wi == 0 ? &L0.gateup : wi == 1 ? &L0.down : wi == 2 ? &L0.qkvz : wi == 3 ? &L0.qkv_a : wi == 4 ? &L0.ssm_out : &L0.wo;
                 if (!W0->ok() || W0->w8c) continue;
+                static const int wbits[6] = {4, 8, 1, 2, 16, 32};  // gateup, down, qkvz, qkv_a, ssm_out, wo
+                if (!(S.pf_rot_mask & wbits[wi])) continue;       // only cache GEMM types that run on R512
                 const bool abr = wi == 2 && L0.ab8r;
                 const size_t rows = abr ? 8448 : W0->L.N, bytes = rows * W0->L.K;
                 if (bytes > budget) continue;
@@ -1871,7 +1893,7 @@ struct PfRun {
                     CK((g16::launch17_t<0, gemv::FAST_P4, 4, 0, 0, 1>(aa, G.s)));
                 }
             } else {
-                k_pf_ab<<<dim3((Ts + 127) / 128, AB_KS), 256, 0, G.s>>>(B.xn + (size_t)t0 * D, L.ab, Ts, B.yab + (size_t)t0 * 48,
+                k_pf_ab<<<dim3((Ts + 127) / 128, AB_KS), 128, 0, G.s>>>(B.xn + (size_t)t0 * D, L.ab, Ts, B.yab + (size_t)t0 * 48,
                                                                        P->cap * 48);
             }
             mark(g, "ab");
@@ -2063,7 +2085,9 @@ int tp_prefill_batched(t4q_ctx* c, const int32_t* ids, int n, void (*run_last_st
     Pf* P = pf_get(c);
     pf_rot_prep(c);
     auto t0 = Clock::now();
-    const int nb = n - 1;  // the last token goes through the decode step
+    const bool head = S.pf_head != 0;
+    const int nb = head ? n : n - 1;  // pf_head 0: the last token goes through the decode step
+    int last_b0 = 0;
     std::vector<cudaEvent_t> ev;
     std::vector<const char*> evn;
     std::vector<std::pair<std::string, std::pair<double, int>>> prof;
@@ -2078,6 +2102,7 @@ int tp_prefill_batched(t4q_ctx* c, const int32_t* ids, int n, void (*run_last_st
     for (int b0 = 0; b0 < nb; b0 += S.pf_ub) {
         PfRun R{c, P};
         R.T = std::min(S.pf_ub, nb - b0);
+        last_b0 = b0;
         R.p0 = c->pos + b0;
         R.g8 = S.pf_g8 != 0;
         R.ar16 = R.g8 && S.pf_ar16;
@@ -2142,14 +2167,34 @@ int tp_prefill_batched(t4q_ctx* c, const int32_t* ids, int n, void (*run_last_st
         }
         S.pf_fq_json = js + "}";
     }
-    // decode step for the last token at position c->pos + n - 1
-    const int pos_last = c->pos + nb;
+    // decode step (or only its head) for the last token at position c->pos + n - 1
+    const int pos_last = c->pos + n - 1;
     for (int g = 0; g < 2; g++) {
         CK(cudaSetDevice(g));
         CK(cudaMemcpy(&S.G[g].st->pos, &pos_last, 4, cudaMemcpyHostToDevice));
     }
-    c->pos = pos_last;
-    run_last_step(c);
+    if (head) {
+        // the batch already wrote KV / conv ring / DeltaNet state for every prompt token and left the final residual
+        // of the last token in row (n - 1 - last_b0) of h: output norm + q8 (decode format), lm_head shard, argmax
+        // exchange (advances StepState pos / step / token and the ring exactly like a decode step's head)
+        const size_t lrow = (size_t)(n - 1 - last_b0);
+        for (int g = 0; g < 2; g++) {
+            CK(cudaSetDevice(g));
+            tp::Gpu& G = S.G[g];
+            tp::ar_norm(P->G[g].h + lrow * D, G.hb[1], nullptr, nullptr, nullptr, G.st, 127, G.output_norm, G.xn,
+                        G.xq, G.xm, G.s);
+            tp::gemv(G.lm, G.xq, G.xm, G.logits, G.s);
+            tp::argmax_step(G.logits, 124160, 124160 * g, G.apart, S.p2p ? G.amb : G.hamb,
+                            S.p2p ? G.flag + 2 : G.hflag + 2, G.peer_amb, G.peer_flag + 2, G.st,
+                            g == 0 ? S.d_ring : nullptr, G.s);
+            ck_launch("pf_head");
+        }
+        c->pos = pos_last + 1;
+        c->steps++;
+    } else {
+        c->pos = pos_last;
+        run_last_step(c);
+    }
     for (int g = 0; g < 2; g++) {
         CK(cudaSetDevice(g));
         CK(cudaStreamSynchronize(S.G[g].s));
