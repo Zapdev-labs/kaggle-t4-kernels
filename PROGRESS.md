@@ -913,3 +913,48 @@ is the follow-up. Kaggle v6 through v16; final state v16 + v17 (gate fix).
    tok/s lever (M5 r1 k=3 baseline 66-70 tok/s -> target 100-160).
 2. The TC perf restructure above, then re-evaluate spec_tc defaults for k >= 6.
 3. L3: the low-bit UD-Q2_K_XL / IQ3 fast modes with the KL gate.
+
+## 2026-10-04 - M5 round 3: TC r3 restructure lands correct (all gates green), TC perf still behind dp4a
+
+**Gate: PASS.** v24: bench `fails:0` on all 8 cases x M=2/4/7/8, `V4_pass`, `tc_pass`, `V5_pass`, `gate_60` all true
+(best k4_dv1 66.24 tok/s; k3 spec 0.68 accept, 3.85 tok/step). `spec_tc` defaults stay OFF: dp4a verify remains.
+
+### The r3 rewrite (parked plan from r2, done)
+`tp_gemv_tc.cuh` fully restructured: `NW = BR/16` warps of 32 lanes, each warp owns exactly WN=16 weight rows
+(2 mma n-tiles) end to end. Warp-private smem W slices (codes + d, 768 B/warp/stage, 2-deep), so the k-loop needs
+only `__syncwarp`; one `__syncthreads` pair remains in the SQ epilogue. Direct-A fragments: each lane builds its
+mma A-fragments in-register from 2 L2-hot u32 loads of the token's q8 (the fragment nibble at (byte m, half h) is
+the digit of k = bb*32 + t4*4 + m + 16h, the same GGUF interleave the staged W codes carry) - the X smem stage and
+X ldsm are gone. L2 prefetch kept ~12 stages ahead. ptxas: 63-66 regs, 0 spills.
+
+### The 75%-unwritten bug (v18..v23) and how the bench caught it
+- v18 claimed "TC now fast, 267 GB/s" but many outputs read 0. v19's NaN-fill + census showed the written values
+  were ULP-correct (2e-6..6e-6) yet EXACTLY 75% of every window was never written (nnan = 0.75*M*N, all shapes),
+  and the old N=8 micro check was vacuous (ncmp=0, nothing compared).
+- v21's non-vacuous bench (N=64 micro cases, gate over ALL rows + nnan==0) showed nnan = 96 per block regardless
+  of M: 48 rows per BR=64 block. Kernel-side printf (v22): only warp 0 ever reached the epilogue.
+- Root cause, one line: `static constexpr int NW = BR / 64;` instead of `BR / WN` = 1 warp per 64-row block.
+  Each warp computed its 16 rows correctly; the other 48 rows never had an owner. v18's "267 GB/s" was inflated
+  ~4x because 3 of 4 warps' worth of weight traffic never happened.
+- Follow-on: `Cfg`'s `NW = BR / WN` referenced `WN` one line before its declaration; nvcc's frontend rejects that
+  in the tp_spec.cu TU only (the bench TU compiled) - v23 failed at build; fixed by declaring WN first. v20's push
+  also slipped past a broken local compile (duplicate y_a, gate after use) - the tail-cleanup edit; fixed, and the
+  tp_spec TU is now part of the local compile check before every push.
+
+### Honest perf verdict
+- Correct r3 TC (v24, GB/s of packed weight bytes, M=2 / M=8) vs dp4a:
+  qkvz 86/85 vs 251/79, attn_qkv 75/59 vs 236/80, gateup 91/65 vs 250/94, down 110/110 vs 254/123,
+  out 95/94 vs 233/177, clamp 86/56 vs 256/79.
+- TC is ~2-3x behind at M=2 and roughly ties or trails at M=8. TC's M-scaling is flat (latency-bound small
+  chunks); dp4a collapses with M but stays faster everywhere. Value correctness is exact-class: maxd <= 6e-6 vs
+  the host model over all rows, SQ tips only in gateup's requant chain, engine argmax 32/32 and 35/35.
+- Verdict: keep dp4a as the verify/draft engine; the TC path stays wired, gated and correct, but spec_tc defaults
+  remain 0. Perf debt is now isolated to memory-system efficiency (RPL=2 64-token chunks, 256 B contiguous loads
+  per warp-chunk, grid of N/64 blocks vs dp4a's 512-token persistent chunks), not to staging or sync structure.
+
+### Next steps
+1. L2 (PLAN_500): tree drafts / TPD=16 on the dp4a path - unchanged as the biggest tok/s lever.
+2. TC perf, if pursued: merge the RPL chunks (fewer, larger K-chunks; RPL=4 128-token chunks), consider a
+   persistent block per 64 rows with a K-loop grid-stride, and nch-style chunking like the dp4a's. Only worth it
+   if the projected M>=7 win clears the added complexity.
+3. L3: the low-bit UD-Q2_K_XL / IQ3 fast modes with the KL gate.

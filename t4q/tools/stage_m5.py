@@ -368,7 +368,7 @@ def main():
                       f"{t4q}/tools/tc_bench.cu -o {W / 'tc_bench'}", timeout=900, logname="tc_bench_build.txt")
         if tbr == 0:
             parts = []
-            for ci in range(7):
+            for ci in range(8):
                 crc, cout = sh(f"{W / 'tc_bench'} --case {ci} --reps 100", timeout=600,
                                logname=f"tc_bench_{ci}.txt", cwd=str(W))
                 tail = (OUT / "logs" / f"tc_bench_{ci}.txt")
