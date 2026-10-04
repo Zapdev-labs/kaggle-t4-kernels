@@ -1,8 +1,8 @@
 # t4q independent verification (2026-10-03)
 
-One fresh Kaggle run, `otdoges/t4q-verify` **v1** (2x T4, P2P box, both GPUs PHB). t4q was built from the tree at commit
+One fresh Kaggle run, `t4q-verify` **v1** (2x T4, P2P box, both GPUs PHB). t4q was built from the tree at commit
 `407f0ee` (the last engine commit) plus my audit scripts (`a300824`: `t4q/tests/verify_check.py`, `t4q/tools/stage_verify.py`).
-llama.cpp is master `a4cb4c61` (the sm_75 binaries from kernel output `otdoges/t4-qwen38-baseline`), run in the **same
+llama.cpp is master `a4cb4c61` (the sm_75 binaries from kernel output `t4-qwen38-baseline`), run in the **same
 session** after t4q. Both use the same Q4_0 GGUF (`unsloth/Qwen3.8-27B-GGUF`, 16.06 GB) and the same token ids
 (HF chat template, `enable_thinking=False`; llama-server got raw token arrays through `/completion`). Raw output is in
 `kaggle/verify/out/` (`results.json`, `verify_single.json`, `verify_batch.json`, `logs/`, including a 1 Hz clock log).

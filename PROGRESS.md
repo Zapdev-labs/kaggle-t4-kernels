@@ -4,7 +4,7 @@ Handoff log for agents working on t4q. Append a dated section per session, newes
 
 ## 2026-10-02 - M0-probe (round 1), GEMV fast path + box probe
 
-**Gate: PASS (burst).** Measured on Kaggle `otdoges/t4q-m0` v1, v2 and v3. Full tables are in `research/m0_results.md`.
+**Gate: PASS (burst).** Measured on Kaggle `t4q-m0` v1, v2 and v3. Full tables are in `research/m0_results.md`.
 
 Built (I own these; the M1 agent owns the rest of `t4q/`):
 - `t4q/src/kernels/gemv.cuh` (namespace `t4q::gemv`, enum `FAST_P4/FAST_Q8/FAST_K6`, which does not clash with `packed.h`'s `FMT_*`):
@@ -60,7 +60,7 @@ Next steps:
 
 ## 2026-10-02 - M1-correct (round 1), correct engine + llama.cpp oracle
 
-**Gate: PASS, with the V1/V2 criteria made noise-floor aware (details below).** Measured on Kaggle `otdoges/t4q-m1` v7 (final full run). v1 failed to build (missing `<cstdint>`), v2/v3/v4 were full runs, v5/v6 were teacher-forced debug runs.
+**Gate: PASS, with the V1/V2 criteria made noise-floor aware (details below).** Measured on Kaggle `t4q-m1` v7 (final full run). v1 failed to build (missing `<cstdint>`), v2/v3/v4 were full runs, v5/v6 were teacher-forced debug runs.
 
 Built (all under `t4q/`, everything except the M0 agent's `gemv.cuh`, `gemv_bench.cu`, `probe.cu`, `nvml_lite.h`, `gemv_layout_check.cpp`, `mkkernel.py`, `stage_m0.py`):
 - `include/t4q.h` C ABI from DESIGN s11 plus `t4q_set_dump`, `t4q_dump_keys`, `t4q_set_option("act_q8")`, `t4q_layer_forward` (run one layer on a given residual, for teacher-forced checks), `t4q_last_error`.
@@ -71,7 +71,7 @@ Built (all under `t4q/`, everything except the M0 agent's `gemv.cuh`, `gemv_benc
 - `src/engine.cu` decode step + `dump()` of llama-named intermediates (`attn_norm-N`, `linear_attn_qkv_mixed-N`, ..., `l_out-N`, `result_norm`). `src/api.cpp` greedy-only `t4q_generate` (sampling params ignored in M1).
 - `act_q8` option: GEMVs on quantized weights take llama.cpp-style q8_1 activations (per 32: d = amax/127 and sum(x), both rounded to fp16; formulas copied from ggml `vec_dot_q4_0/q4_1/q5_K/q6_K_q8_1`, including Q4_1's `__hmul` half products). Verified bit-exact against llama.cpp: with identical inputs (layer 0, position 0) every layer-0 intermediate matches to < 5e-7. Default is fp32 activations (more accurate than llama.cpp; V0 shows ~1e-7 vs fp64).
 - `py/t4q.py` ctypes driver + HF tokenizer (`Qwen/Qwen3.8-27B`, chat template with `enable_thinking=False`); `py/gguf_np.py` independent numpy GGUF reader/dequant.
-- `tools/oracle_dump.cpp` against the sm_75 libllama from kernel_sources `otdoges/t4-qwen38-baseline` (headers vendored in `tools/oracle_include/` from llama.cpp a4cb4c61, the build commit). Jobs: `seq` (all-position logits as one batch AND token by token), `gen` (greedy + top-2 gap), `dump` (cb_eval intermediates token by token at positions 0, 1, n-1, all 64 layers, whitelisted names), `dumpb` (same, one batch), `tok` (llama_tokenize vs HF ids).
+- `tools/oracle_dump.cpp` against the sm_75 libllama from kernel_sources `t4-qwen38-baseline` (headers vendored in `tools/oracle_include/` from llama.cpp a4cb4c61, the build commit). Jobs: `seq` (all-position logits as one batch AND token by token), `gen` (greedy + top-2 gap), `dump` (cb_eval intermediates token by token at positions 0, 1, n-1, all 64 layers, whitelisted names), `dumpb` (same, one batch), `tok` (llama_tokenize vs HF ids).
 - `tests/validate.py` V0-V3 in two numeric modes (`q8`, `fp32`); `tools/stage_m1.py` Kaggle driver (build, download, oracle, validate, RESULTS block; `SECTIONS` cuts a debug run down).
 - Local checks without nvcc: clang 22 CUDA mode against a fake CUDA root built from pip wheels (`nvidia-cuda-{nvcc,runtime,cccl}-cu12==12.8`, `nvidia-curand-cu12`) in my scratchpad: `clang++ -x cuda --cuda-gpu-arch=sm_75 --cuda-path=<root> --cuda-device-only|--cuda-host-only -c`. It missed one nvcc-only error (implicit `<cstdint>`); the M0 agent's podman nvcc 12.8 container is the better check. A sparse partial GGUF (header + a few tensor ranges via HTTP Range) made the CPU dequant, numpy dequant and gguf-py agree bit for bit on Q4_0/Q4_1/Q5_K/Q6_K/Q8_0/F32.
 
@@ -103,7 +103,7 @@ Next steps:
 
 ## 2026-10-02 - M2-M4 (round 1), TP=2 fast decode engine
 
-**Gate (single-stream decode >= 30 tok/s on Q4_0 at 4k, matching the oracle): NOT passed.** Best verified: **29.24 tok/s** (`otdoges/t4q-m4` v11, CUDA graphs, prompt P1, 256 tokens, P2P box) and 29.22 (v7). At 3.6k context the best is **28.55** (v11). Every correctness check passes on every version since m2 v1. For reference, llama.cpp `-sm tensor` on Q4_0 does 21.11.
+**Gate (single-stream decode >= 30 tok/s on Q4_0 at 4k, matching the oracle): NOT passed.** Best verified: **29.24 tok/s** (`t4q-m4` v11, CUDA graphs, prompt P1, 256 tokens, P2P box) and 29.22 (v7). At 3.6k context the best is **28.55** (v11). Every correctness check passes on every version since m2 v1. For reference, llama.cpp `-sm tensor` on Q4_0 does 21.11.
 
 I went straight to TP=2 rather than measuring layer-split M2/M3 gates, because the 30 tok/s gate needs TP. Graphs, device StepState and the async host loop (the M3 items) were in the first TP run, so `t4q-m2` holds the first two engine versions and `t4q-m4` holds everything after. There is no separate `t4q-m3` kernel.
 
@@ -211,7 +211,7 @@ The SM clock under the 70 W cap varies from 555 to 1270 MHz between boxes and ov
 ## 2026-10-02 - M2-M4 (round 2), graph-mode profiling, AR and small-kernel work
 
 **Gate (single-stream decode >= 30 tok/s on Q4_0, outputs matching the oracle): PASS on P2P boxes, marginal.**
-- `otdoges/t4q-m4` v24: default config **30.04** tok/s (P1), `pf_kb=1536` config **30.07 / 30.05**, `tp_check` `gate_30: true`, every correctness check passing (selftest, V1 floor, TP residual identical, V2 and V3 in eager and graphs, V4 bit-identical).
+- `t4q-m4` v24: default config **30.04** tok/s (P1), `pf_kb=1536` config **30.07 / 30.05**, `tp_check` `gate_30: true`, every correctness check passing (selftest, V1 floor, TP residual identical, V2 and V3 in eager and graphs, V4 bit-identical).
 - v26, same code path (the option that differed only acts without P2P): **30.15 / 30.17**, V1-V4 passing. A later config in that run crashed the bench loop (arpub 4, see below), so v26 has no gate summary.
 - At 3.6k context the best is **29.33** (v24); the depth gate in `tp_check` (`gate_30_depth`) is not met.
 - Box lottery matters more than anything I changed this round. Over v14-v27 I saw three kinds of box: fast P2P (rows to the peer cost ~3 us per K-split GEMV), slow P2P (the same rows cost 16-31 us) and no P2P (host-mapped mailbox). With the final defaults: slow-P2P boxes give 29.9-30.2, no-P2P boxes 28.3-29.4 (v23, v25, v27). I did not get a fast-P2P box after v16.
@@ -287,7 +287,7 @@ All tok/s are graph-mode decode of 256 tokens after the P0/P1 chat prompts, max_
 
 ## 2026-10-02 - P-prefill (round 1), W4A8 tensor-core GEMM + batched TP prefill
 
-**Gate (pp2048 >= 1400 and pp512 >= 1200 tok/s, correctness preserved): NOT passed.** Best verified: **pp512 583.5, pp2048 633.8 tok/s** (`otdoges/t4q-p` v5, P2P box), with correctness passing on every configuration. llama.cpp `-sm tensor` on Q4_0 does pp512 516. Full tables are in `research/p_results.md`.
+**Gate (pp2048 >= 1400 and pp512 >= 1200 tok/s, correctness preserved): NOT passed.** Best verified: **pp512 583.5, pp2048 633.8 tok/s** (`t4q-p` v5, P2P box), with correctness passing on every configuration. llama.cpp `-sm tensor` on Q4_0 does pp512 516. Full tables are in `research/p_results.md`.
 
 ### What I built (all under `t4q/`)
 - `src/kernels/gemm.cuh`: W4A8 GEMM on int8 tensor cores (`mma.m8n8k16.u8.s8`).
@@ -375,7 +375,7 @@ All tok/s are graph-mode decode of 256 tokens after the P0/P1 chat prompts, max_
 
 ## 2026-10-02 - P-prefill (round 2), in-kernel W4->int8 GEMM, chunked DeltaNet, fused silu, fp16 AR
 
-**Gate (pp2048 >= 1400 and pp512 >= 1200 tok/s, correctness preserved): NOT passed.** Best verified: **pp2048 988.6, pp512 855.4 tok/s** (`otdoges/t4q-p` v17, P2P box, both GPUs at 960-1050 MHz), correctness passing on every prompt. Round 1 best was 633.8 / 583.5, so this is +56% / +47%. Full tables: `research/p_results.md` (round 2 section).
+**Gate (pp2048 >= 1400 and pp512 >= 1200 tok/s, correctness preserved): NOT passed.** Best verified: **pp2048 988.6, pp512 855.4 tok/s** (`t4q-p` v17, P2P box, both GPUs at 960-1050 MHz), correctness passing on every prompt. Round 1 best was 633.8 / 583.5, so this is +56% / +47%. Full tables: `research/p_results.md` (round 2 section).
 
 ### What I built
 - **`t4q/src/kernels/gemm8.cuh`**, the new prefill GEMM family.
@@ -405,7 +405,7 @@ All tok/s are graph-mode decode of 256 tokens after the P0/P1 chat prompts, max_
 - Tools:
   - `t4q/tools/ref_bench.cu`: cuBLAS, cuBLASLt and CUTLASS v3.5.1 (cloned at run time) int8/int4/fp16 references.
   - `gemm_bench.cu`: gemm8-14 variants, a host mirror check for the requant GEMMs, ablation and data-toggle probes.
-  - `stage_pg.py`: GEMM-only runs on a second kernel id (`otdoges/t4q-pg`), so they can run beside engine runs.
+  - `stage_pg.py`: GEMM-only runs on a second kernel id (`t4q-pg`), so they can run beside engine runs.
 
 ### Verified (all on Kaggle)
 - **Engine speed by version** (correctness passing on all of them):
@@ -489,7 +489,7 @@ All tok/s are graph-mode decode of 256 tokens after the P0/P1 chat prompts, max_
 ## 2026-10-03 - P-prefill (round 3): plain-int8 GEMM pipeline, rotated per-token path (R512), activation-format study
 
 **Gate (pp2048 >= 1400 and pp512 >= 1200 tok/s, correctness preserved): NOT passed.**
-- Correct (default GA64 path, every check passes): best pp2048 **1006.1**, pp512 **870.5** (`otdoges/t4q-p` v31). Other boxes: 960.0 / 828.5 (v30) and 978.4 / 859.7 (v34). This is the round-2 path; within box variance it is unchanged (round 2: 988.6 / 855.4).
+- Correct (default GA64 path, every check passes): best pp2048 **1006.1**, pp512 **870.5** (`t4q-p` v31). Other boxes: 960.0 / 828.5 (v30) and 978.4 / 859.7 (v34). This is the round-2 path; within box variance it is unchanged (round 2: 988.6 / 855.4).
 - Fast but **not correct enough** (opt-in R512 mode): pp2048 **1213.2** (v31) and pp512 **955.9** (v31, `pf_nsub=1`). It fails the long-prompt check: last-token KL 7.1e-3 against a limit of 2e-3 (2 x llama.cpp's own spread on L, 8.2e-4). Teacher-forced continuation KL reaches max 2e-2 to 6e-1, against 6.7e-3 for GA64. Top-1 and greedy 32 tokens match everywhere.
 - No decode numbers were measured this round.
 
@@ -578,7 +578,7 @@ Full tables: `research/p_results.md` (round 3 section). Raw outputs: `kaggle/p/o
 ## 2026-10-03 - P-prefill (round 4): pf_head, faster alpha/beta, int4 and CUTLASS-orientation GEMM probes (negative)
 
 **Gate (pp2048 >= 1400 and pp512 >= 1200 tok/s, correctness preserved): NOT passed.**
-- Best on the correct default path: **pp2048 1032.6** (`otdoges/t4q-p` v36, config `pf_head=1`, nsub 2) and **pp512
+- Best on the correct default path: **pp2048 1032.6** (`t4q-p` v36, config `pf_head=1`, nsub 2) and **pp512
   962.4** (v36, `pf_head=1`, nsub 1; both are what the new defaults pick for those sizes). Round 3 best was 1006.1 /
   870.5 (v31). Other boxes with the final defaults: 1013.2 / 906.2 (v37), 988.5 / 923.2 (v38; GPU1 ~7% slower).
 - Every prompt passes in v36-v38 (top-1 equal, greedy 32 identical to the decode path, W diverging only at its known
@@ -638,7 +638,7 @@ Full tables: `research/p_results.md` (round 4 section). Raw: `kaggle/p/out_v35..
 ## 2026-10-03 - B-batched (round 1): batched / continuous decode, scheduler, OpenAI server
 
 **Gate (aggregate decode >= 200 tok/s at some B, outputs correct): PASS.** Stretch (400) reached at 1k context on P2P
-boxes. All numbers are Kaggle `otdoges/t4q-b`, Q4_0 GGUF, greedy, both T4s (TP=2), aggregate = B / step time.
+boxes. All numbers are Kaggle `t4q-b`, Q4_0 GGUF, greedy, both T4s (TP=2), aggregate = B / step time.
 
 | version | box | 1k ctx B=64 | B=48 | B=32 | B=16 | B=8 | B=1 | 4k ctx B=32 | B=24 | B=16 |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -734,7 +734,7 @@ At 4k / B=32 attention is 25.4 ms (KV 4 GiB per GPU per step).
 ## 2026-10-03 - M5-MTP (round 1): MTP speculative decoding, byte-identical to plain greedy
 
 **Gate (>= 60 tok/s single-stream on P0/P1 greedy, Q4_0, spec output byte-identical to t4q non-spec greedy): PASS.**
-All numbers are Kaggle `otdoges/t4q-m5`, Q4_0 GGUF (MTP = its own `blk.64`), TP=2, CUDA graphs, greedy, 512 generated
+All numbers are Kaggle `t4q-m5`, Q4_0 GGUF (MTP = its own `blk.64`), TP=2, CUDA graphs, greedy, 512 generated
 tokens after the chat-templated prompt, stop on EOS (none hit), wall time of `t4q_generate`.
 
 | version | config | P0 tok/s | P1 tok/s | P2 (edit prompt) | plain decode same box P0 / P1 | GPU MHz (0 / 1) |
@@ -819,7 +819,7 @@ tokens after the chat-templated prompt, stop on EOS (none hit), wall time of `t4
 
 ## 2026-10-03 - Independent verification audit (stage verify)
 
-**Verdict: the headline claims reproduce.** I measured everything in one fresh run, `otdoges/t4q-verify` **v1**, on a
+**Verdict: the headline claims reproduce.** I measured everything in one fresh run, `t4q-verify` **v1**, on a
 P2P box, with llama.cpp a4cb4c61 in the same session on the same Q4_0 GGUF and the same token ids. The engine is
 unchanged at `407f0ee`; the audit harness is new: `t4q/tests/verify_check.py` and `t4q/tools/stage_verify.py`.
 Full table and caveats: `research/VERIFY.md`. Raw JSON and llama logs: `research/verify_v1/`.

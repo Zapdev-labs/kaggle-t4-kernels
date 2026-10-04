@@ -369,7 +369,7 @@ def main():
         if tbr == 0:
             parts = []
             for ci in range(8):
-                crc, cout = sh(f"{W / 'tc_bench'} --case {ci} --reps 100", timeout=600,
+                crc, cout = sh(f"{W / 'tc_bench'} --case {ci} --reps 100 --variants 1,4,5,6,7,8,9", timeout=900,
                                logname=f"tc_bench_{ci}.txt", cwd=str(W))
                 tail = (OUT / "logs" / f"tc_bench_{ci}.txt")
                 txt = tail.read_text()[-1400:] if tail.exists() else cout[-800:]
@@ -377,6 +377,32 @@ def main():
             result("tc_bench", {"rc": 0, "out": ("\n").join(parts)[-5000:]})
         else:
             result("tc_bench", {"rc": tbr, "out": tbo[-3000:]})
+        # ncu stall-reason profile (gemv_tc_kernel vs dp4a's k_gemv, the 250 GB/s reference on the same weight
+        # stream): the r5/r6 variant matrix plateaued at ~120 GB/s regardless of ring depth / occupancy / BR,
+        # so the warp-stall mix is the next datum. Two shapes (down_tp K 8704, qkvz_tp K 5120 BR 128), one M,
+        # few reps, boost clocks kept (--clock-control none); ncu flushes caches between replay passes.
+        ncu = shutil.which("ncu") or ""
+        if not ncu:
+            for c in ("/usr/local/cuda/bin/ncu", "/usr/local/cuda/nsight-compute/ncu",
+                      "/opt/nvidia/nsight-compute/ncu"):
+                if os.path.exists(c):
+                    ncu = c
+                    break
+        if ncu and (W / "tc_bench").exists():
+            for ci, vs in ((5, "1,6,7,8"), (2, "1,7,8")):
+                nrc, nout = sh(
+                    f"{ncu} --clock-control none --kernel-name-base function "
+                    f"--kernel-name 'regex:gemv_tc_kernel|k_gemv' --csv "
+                    f"--section SpeedOfLight --section WarpStateStats --section SchedulerStats "
+                    f"--section MemoryWorkloadAnalysis "
+                    f"{W / 'tc_bench'} --case {ci} --reps 3 --mfilter 2 --variants {vs}",
+                    timeout=2400, logname=f"ncu_{ci}.csv", cwd=str(W))
+                key = [l for l in (nout or "").splitlines()
+                       if any(k in l for k in ("Throughput", "Stall", "Occupancy", "Duration",
+                                               "Issued Warp", "Warp Cycles", "Elapsed"))]
+                result(f"ncu_{ci}", {"rc": nrc, "found": ncu, "key": ("\n").join(key)[-4000:]})
+        else:
+            result("ncu", {"found": ncu or None})
         prepare_prompts(t4q)
         th.join(timeout=1800)
         model = DL.get("path")

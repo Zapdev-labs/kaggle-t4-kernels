@@ -21,7 +21,7 @@ $(BUILD)/%.o: %.cpp src/*.h include/t4q.h
 $(BUILD)/libt4q.so: $(OBJS)
 	$(NVCC) -shared -arch=$(ARCH) -o $@ $(OBJS) -lcudart -ldl
 
-# oracle: links against the sm_75 libllama from kernel output otdoges/t4-qwen38-baseline
+# oracle: links against the sm_75 libllama from kernel output t4-qwen38-baseline
 LLAMA_LIB ?= /tmp/llb
 $(BUILD)/oracle_dump: tools/oracle_dump.cpp
 	@mkdir -p $(BUILD)

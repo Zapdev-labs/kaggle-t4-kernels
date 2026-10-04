@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pack t4q/ into a Kaggle script kernel: kaggle/<stage>/t4q-<stage>.py + kernel-metadata.json.
 
-Usage: python3 t4q/tools/mkkernel.py <stage> [--sources otdoges/t4-qwen38-baseline ...] [--no-sources]
+Usage: python3 t4q/tools/mkkernel.py <stage> [--sources t4-qwen38-baseline ...] [--no-sources]
 The stage driver is t4q/tools/stage_<stage>.py; it must contain the placeholder __T4Q_TGZ_B64__ (a base64 tar.gz of
 t4q/, minus build outputs), which it unpacks to /tmp/t4q/src at runtime. No secrets are ever packed.
 """
@@ -36,7 +36,7 @@ def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     stage = sys.argv[1]
-    sources = ["otdoges/t4-qwen38-baseline"]
+    sources = ["t4-qwen38-baseline"]
     if "--no-sources" in sys.argv:
         sources = []
     if "--sources" in sys.argv:
@@ -51,7 +51,7 @@ def main():
     code = f"t4q-{stage}.py"
     (out / code).write_text(text.replace("__T4Q_TGZ_B64__", b64))
     meta = {
-        "id": f"otdoges/t4q-{stage}", "title": f"t4q-{stage}", "code_file": code, "language": "python",
+        "id": f"t4q-{stage}", "title": f"t4q-{stage}", "code_file": code, "language": "python",
         "kernel_type": "script", "is_private": True, "enable_gpu": True, "enable_tpu": False, "enable_internet": True,
         "keywords": [], "dataset_sources": [], "kernel_sources": sources, "competition_sources": [],
         "model_sources": [], "docker_image": DOCKER, "machine_shape": "NvidiaTeslaT4",

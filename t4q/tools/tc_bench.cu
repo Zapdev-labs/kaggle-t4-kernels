@@ -170,19 +170,60 @@ static void dispatch_dp4a(const Case& C, const tp::FW& W, const int8_t* d_xq, co
     }
 }
 
-static void dispatch_tc(const Case& C, const t4q::gtc::TcArgs& A, cudaStream_t s, int rpl, bool sq) {
-    CK(t4q::gtc::gemv_tc_launch(rpl, sq, A, s));
-    (void)C;
+static void dispatch_tc(const t4q::gtc::TcArgs& A, cudaStream_t s, int rpl, bool sq, int vreg, int vsmem, int hoist,
+                        int bat, bool br64) {
+    CK(t4q::gtc::gemv_tc_launch_v(rpl, sq, vreg, vsmem, hoist, bat, br64, A, s));
 }
+
+// ring variants A/B'd per shape (the r6 matrix): v = <RREG, RSMEM, HOIST, BAT, force BR 64>. HOIST pins the
+// group's A-side global loads up front; BAT turns the per-step 4x LDG.128 W batch into an 8/16-wide burst.
+struct VInfo {
+    int v, vreg, vsmem, hoist, bat;
+    bool br64;
+};
+static const VInfo VS[] = {
+    {1, 2, 1, 0, 0, false},  // v26 best control: per-step issue, per-stage A (16 warps/SM)
+    {4, 2, 1, 0, 0, true},   // the same with BR 64 forced for big N (v26's gateup winner)
+    {5, 2, 1, 1, 0, false},  // HOIST: the group's 16 q8 + 4 xms loads issue up front, pinned volatile
+    {6, 4, 2, 1, 1, false},  // HOIST + burst-2: 8 LDG.128 back-to-back per pair (8 warps/SM)
+    {7, 2, 2, 1, 1, false},  // HOIST + burst-2 at the 2-group ring (12 warps/SM at BR 64)
+    {8, 4, 2, 1, 2, false},  // HOIST + burst-4: 16 LDG.128 back-to-back per quad (~9.2 KB/warp in flight)
+    {9, 2, 1, 1, 0, true},   // V5 with BR 64 forced for big N (hoist at 12 warps/SM)
+};
 
 int main(int argc, char** argv) {
     setbuf(stdout, nullptr);  // unbuffered: a crash still leaves everything printed so far in the log
     int dev = 0, reps = 50, only = -1;
+    int vrun[8], nvr = 0, mflt[8], nmf = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--dev") dev = atoi(argv[++i]);
         else if (a == "--reps") reps = atoi(argv[++i]);
         else if (a == "--case") only = atoi(argv[++i]);  // run one case (the stage loops cases as separate processes)
+        else if (a == "--variants") {  // comma list of variant ids (default 0)
+            std::string s = argv[++i];
+            size_t pos = 0;
+            while (pos < s.size() && nvr < 8) {
+                size_t c = s.find(',', pos);
+                vrun[nvr++] = atoi(s.substr(pos, c == std::string::npos ? std::string::npos : c - pos).c_str());
+                pos = (c == std::string::npos) ? s.size() : c + 1;
+            }
+        } else if (a == "--mfilter") {  // comma list of M values (default 2,4,7,8; ncu runs pin one)
+            std::string s = argv[++i];
+            size_t pos = 0;
+            while (pos < s.size() && nmf < 8) {
+                size_t c = s.find(',', pos);
+                mflt[nmf++] = atoi(s.substr(pos, c == std::string::npos ? std::string::npos : c - pos).c_str());
+                pos = (c == std::string::npos) ? s.size() : c + 1;
+            }
+        }
+    }
+    if (nvr == 0) vrun[nvr++] = 0;
+    int mlist[8], nml = 0;  // the M sweep, optionally filtered
+    for (int M : {2, 4, 7, 8}) {
+        bool want = nmf == 0;
+        for (int i = 0; i < nmf; ++i) want = want || mflt[i] == M;
+        if (want) mlist[nml++] = M;
     }
     fprintf(stderr, "bench: init dev %d\n", dev);
     CK(cudaSetDevice(dev));
@@ -232,7 +273,7 @@ int main(int argc, char** argv) {
         CK(cudaStreamCreate(&s));
         tp::FW W{L, d_w};
 
-        for (int M : {2, 4, 7, 8}) {
+        for (int M : mlist) {
             std::vector<float> y_a((size_t)M * N), y_b((size_t)M * N), y_h((size_t)M * N);
             std::vector<int8_t> sq_a, sq_b;
             std::vector<int2> sqm_a, sqm_b;
@@ -279,19 +320,6 @@ int main(int argc, char** argv) {
                 A.sq_xq = d_sq;
                 A.sq_xm = d_sqm;
             }
-            CK(cudaMemset(d_y, 0xFF, (size_t)MM * N * 4));  // NaN fill: an unwritten output shows as NaN, not 0
-            if (C.sq) {
-                CK(cudaMemset(d_sq, 0, (size_t)MM * (N / 2)));
-                CK(cudaMemset(d_sqm, 0, (size_t)MM * (N / 64) * 8));
-            }
-            dispatch_tc(C, A, s, C.rpl, C.sq);
-            CK(cudaStreamSynchronize(s));
-            CK(cudaMemcpy(y_b.data(), d_y, y_b.size() * 4, cudaMemcpyDeviceToHost));
-            if (C.sq) {
-                CK(cudaMemcpy(sq_b.data(), d_sq, sq_b.size(), cudaMemcpyDeviceToHost));
-                CK(cudaMemcpy(sqm_b.data(), d_sqm, sqm_b.size() * 8, cudaMemcpyDeviceToHost));
-            }
-
             // dp4a tiles truncate N to the row multiple (persistent grid); compare the covered prefix only
             const int ncmp = (N / 64) * 64;
             bool host_a = true;
@@ -299,18 +327,9 @@ int main(int argc, char** argv) {
                 for (int col = 0; col < M; ++col)
                     if (memcmp(y_a.data() + (size_t)col * N, y_h.data() + (size_t)col * N, ncmp * 4) != 0)
                         host_a = false;
-            // the primary gate: tc vs the HOST MODEL (the same flat ascending summation order; only the device FMA
-            // contraction differs -> ULP). nnan > 0 = an unwritten output = a coverage bug.
-            float maxd = 0;
-            int nnan = 0;
-            for (int col = 0; col < M; ++col)
-                for (int r = 0; r < N; ++r) {
-                    const float kv = y_b[(size_t)col * N + r];
-                    if (std::isnan(kv)) nnan++;
-                    maxd = fmaxf(maxd, fabsf(kv - y_h[(size_t)col * N + r]));
-                }
-            const bool ok = maxd < 1e-4f && nnan == 0;
-            auto diff_report = [&](const char* tag, const std::vector<float>& ya, const std::vector<float>& yb) {
+            int cur_br = N >= 56 * 128 ? 128 : 64;  // the running variant's BR (diff_report's decomposition)
+            auto diff_report = [&](const char* tag, int vid, const std::vector<float>& ya,
+                                   const std::vector<float>& yb) {
                 float maxd = 0; int mr = -1, mc = -1;
                 int nzero = 0, nnan = 0;
                 int zx[3][2]; int nz = 0;
@@ -325,11 +344,12 @@ int main(int argc, char** argv) {
                         float d = fabsf(kv - yb[(size_t)col * N + r]);
                         if (!std::isnan(d) && d > maxd) { maxd = d; mr = r; mc = col; }
                     }
-                printf("DIFF {\"pair\":\"%s\",\"case\":\"%s\",\"M\":%d,\"max_abs_diff\":%.7g,\"nzero\":%d,\"nnan\":%d",
-                       tag, C.name, M, maxd, nz, nnan);
+                printf("DIFF {\"pair\":\"%s\",\"case\":\"%s\",\"M\":%d,\"v\":%d,\"max_abs_diff\":%.7g,"
+                       "\"nzero\":%d,\"nnan\":%d",
+                       tag, C.name, M, vid, maxd, nz, nnan);
                 for (int i = 0; i < (nz < 3 ? nz : 3); ++i) {
                     const int r = zx[i][1];
-                    const int br = N >= 56 * 128 ? 128 : 64;  // the launch's BR pick
+                    const int br = cur_br;
                     // decomposition: col, row, blockIdx.y, warp (16-row group), 8-row tile, row in tile
                     printf(",\"z%d\":[%d,%d,%d,%d,%d,%d]", i, zx[i][0], r, r / br, (r % br) / 16, (r % 16) / 8,
                            r & 7);
@@ -342,27 +362,59 @@ int main(int argc, char** argv) {
                 }
                 printf("}\n");
             };
-            if (!ok) diff_report("tc_vs_host", y_b, y_h);
-            if (C.dp4a && !host_a) diff_report("dp4a_vs_host", y_a, y_h);
-            if (C.dp4a) {  // tc vs dp4a: different summation order (shfl tree vs flat) -> ULP reports, not a gate
-                float dx = 0;
-                for (int col = 0; col < M; ++col)
-                    for (int r = 0; r < ncmp; ++r) dx = fmaxf(dx, fabsf(y_a[(size_t)col * N + r] - y_b[(size_t)col * N + r]));
-                printf("DP4A_DIFF {\"case\":\"%s\",\"M\":%d,\"max_abs_diff\":%.7g}\n", C.name, M, dx);
-            }
+            if (C.dp4a && !host_a) diff_report("dp4a_vs_host", -1, y_a, y_h);
 
             const float ms_a = C.dp4a ? time_burst([&] { dispatch_dp4a(C, W, d_xq, d_xm, d_y, s, M, d_sq, d_sqm); }, reps) : 0.f;
-            const float ms_b = time_burst([&] { dispatch_tc(C, A, s, C.rpl, C.sq); }, reps);
-            const double gba = C.dp4a ? L.bytes / (ms_a * 1e-3) / 1e9 : 0.0,
-                         gbb = L.bytes / (ms_b * 1e-3) / 1e9;
-            const bool sq_eq = !C.sq || (memcmp(sq_a.data(), sq_b.data(), sq_a.size()) == 0 &&
-                                         memcmp(sqm_a.data(), sqm_b.data(), sqm_b.size() * 8) == 0);
-            printf("CHECK {\"case\":\"%s\",\"M\":%d,\"ok\":%s,\"max_abs_diff\":%.7g,\"nnan\":%d,\"sq_eq\":%s,"
-                   "\"dp4a_gbps\":%.1f,\"tc_gbps\":%.1f,\"dp4a_us\":%.1f,\"tc_us\":%.1f}\n",
-                   C.name, M, ok ? "true" : "false", maxd, nnan, C.dp4a ? (sq_eq ? "true" : "false") : "na",
-                   gba, gbb, ms_a * 1e3, ms_b * 1e3);
-            fflush(stdout);
-            if (!ok) fails++;
+            const double gba = C.dp4a ? L.bytes / (ms_a * 1e-3) / 1e9 : 0.0;
+
+            // one run per ring variant: the numeric path is identical across variants (only the ring
+            // scheduling and the smem buffer count differ), so the same gates bind each
+            for (int vi = 0; vi < nvr; ++vi) {
+                if (vrun[vi] < 0 || vrun[vi] >= (int)(sizeof(VS) / sizeof(VS[0]))) continue;
+                const VInfo V = VS[vrun[vi]];
+                if (V.br64 && N < 56 * 128) continue;  // duplicate of V1 for the BR-64 shapes
+                cur_br = V.br64 ? 64 : (N >= 56 * 128 ? 128 : 64);
+                CK(cudaMemset(d_y, 0xFF, (size_t)MM * N * 4));  // NaN fill: an unwritten output shows as NaN, not 0
+                if (C.sq) {
+                    CK(cudaMemset(d_sq, 0, (size_t)MM * (N / 2)));
+                    CK(cudaMemset(d_sqm, 0, (size_t)MM * (N / 64) * 8));
+                }
+                dispatch_tc(A, s, C.rpl, C.sq, V.vreg, V.vsmem, V.hoist, V.bat, V.br64);
+                CK(cudaStreamSynchronize(s));
+                CK(cudaMemcpy(y_b.data(), d_y, y_b.size() * 4, cudaMemcpyDeviceToHost));
+                if (C.sq) {
+                    CK(cudaMemcpy(sq_b.data(), d_sq, sq_b.size(), cudaMemcpyDeviceToHost));
+                    CK(cudaMemcpy(sqm_b.data(), d_sqm, sqm_b.size() * 8, cudaMemcpyDeviceToHost));
+                }
+                // the primary gate: tc vs the HOST MODEL (the same flat ascending summation order; only the
+                // device FMA contraction differs -> ULP). nnan > 0 = an unwritten output = a coverage bug.
+                float maxd = 0;
+                int nnan = 0;
+                for (int col = 0; col < M; ++col)
+                    for (int r = 0; r < N; ++r) {
+                        const float kv = y_b[(size_t)col * N + r];
+                        if (std::isnan(kv)) nnan++;
+                        maxd = fmaxf(maxd, fabsf(kv - y_h[(size_t)col * N + r]));
+                    }
+                const bool ok = maxd < 1e-4f && nnan == 0;
+                if (!ok) diff_report("tc_vs_host", V.v, y_b, y_h);
+                if (C.dp4a && vi == 0) {  // tc vs dp4a: summation order differs (shfl tree vs flat) -> ULP, not a gate
+                    float dx = 0;
+                    for (int col = 0; col < M; ++col)
+                        for (int r = 0; r < ncmp; ++r) dx = fmaxf(dx, fabsf(y_a[(size_t)col * N + r] - y_b[(size_t)col * N + r]));
+                    printf("DP4A_DIFF {\"case\":\"%s\",\"M\":%d,\"max_abs_diff\":%.7g}\n", C.name, M, dx);
+                }
+                const float ms_b = time_burst([&] { dispatch_tc(A, s, C.rpl, C.sq, V.vreg, V.vsmem, V.hoist, V.bat, V.br64); }, reps);
+                const double gbb = L.bytes / (ms_b * 1e-3) / 1e9;
+                const bool sq_eq = !C.sq || (memcmp(sq_a.data(), sq_b.data(), sq_a.size()) == 0 &&
+                                             memcmp(sqm_a.data(), sqm_b.data(), sqm_b.size() * 8) == 0);
+                printf("CHECK {\"case\":\"%s\",\"M\":%d,\"v\":%d,\"ok\":%s,\"max_abs_diff\":%.7g,\"nnan\":%d,"
+                       "\"sq_eq\":%s,\"dp4a_gbps\":%.1f,\"tc_gbps\":%.1f,\"dp4a_us\":%.1f,\"tc_us\":%.1f}\n",
+                       C.name, M, V.v, ok ? "true" : "false", maxd, nnan, C.dp4a ? (sq_eq ? "true" : "false") : "na",
+                       gba, gbb, ms_a * 1e3, ms_b * 1e3);
+                fflush(stdout);
+                if (!ok) fails++;
+            }
         }
         CK(cudaStreamDestroy(s));
         cudaFree(d_w);

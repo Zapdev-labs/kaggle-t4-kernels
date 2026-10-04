@@ -1,4 +1,21 @@
-kaggle/*/out*/
+# Outputs / build artifacts
+kaggle/**/out*/
 *.gguf
 *.tgz
+*.bin
+*.safetensors
+
+# Python
 __pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# CUDA / C++ build artifacts
+*.o
+*.so
+*.exe
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

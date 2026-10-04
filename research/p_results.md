@@ -1,6 +1,6 @@
 # Milestone P (prefill) results, round 1
 
-Every number below was measured on Kaggle (`otdoges/t4q-p`, versions 1-6, 2026-10-02). Raw outputs are in `kaggle/p/out` (v2; v1 was overwritten by v2), `kaggle/p/out_v3` ... `kaggle/p/out_v6`, each with `results.json`, `results_pf.json` (engine runs) and `logs/` (`gemm_u*_dev0.txt`, `gemm_sustain_dev*.txt`, `prefill_check.log`, `clocks.csv`).
+Every number below was measured on Kaggle (`t4q-p`, versions 1-6, 2026-10-02). Raw outputs are in `kaggle/p/out` (v2; v1 was overwritten by v2), `kaggle/p/out_v3` ... `kaggle/p/out_v6`, each with `results.json`, `results_pf.json` (engine runs) and `logs/` (`gemm_u*_dev0.txt`, `gemm_sustain_dev*.txt`, `prefill_check.log`, `clocks.csv`).
 
 ## Gate: NOT passed
 
@@ -94,7 +94,7 @@ A/B results:
 - **Flash attention** against the SIMT kernel: 634/604 against 555 at pp2048.
 - **Fused q8 producers**: 597 against 594 (v6, within noise; GPU0 was throttled).
 
-# Round 2 (2026-10-02, `otdoges/t4q-p` v7-v17, `otdoges/t4q-pg` v1-v7)
+# Round 2 (2026-10-02, `t4q-p` v7-v17, `t4q-pg` v1-v7)
 
 Raw outputs: `kaggle/p/out_v7` ... `kaggle/p/out_v17` and `kaggle/pg/out*`. They are git-ignored but kept on disk.
 
@@ -189,7 +189,7 @@ In the kernels, gemm9's rel L2 against the host mirror is 1.0e-4 to 2.3e-4 (fp32
   - `-ac` with a 405 MHz memory clock is "not supported" (the only memory application clock is 5001 MHz).
 - So the 70 W cap and the memory clock are fixed.
 
-# Round 3 (2026-10-02/03, `otdoges/t4q-p` v18-v34, `otdoges/t4q-pg` v9-v13)
+# Round 3 (2026-10-02/03, `t4q-p` v18-v34, `t4q-pg` v9-v13)
 
 Raw outputs: `kaggle/p/out_v18` ... `kaggle/p/out_v34`, `kaggle/pg/out9` ... `kaggle/pg/out13` (git-ignored, kept on disk).
 
@@ -281,7 +281,7 @@ GA64. The rotated int8 GEMM does about 1.75x the ops per clock of gemm9, so per-
 the clock drops. On boxes where one GPU is less efficient it runs at about 700 MHz while the other idles 20-35% in
 the all-reduce wait.
 
-# Round 4 (2026-10-02/03, `otdoges/t4q-p` v35-v38, `otdoges/t4q-pg` v14-v16)
+# Round 4 (2026-10-02/03, `t4q-p` v35-v38, `t4q-pg` v14-v16)
 
 Raw outputs: `kaggle/p/out_v35` ... `kaggle/p/out_v38`, `kaggle/pg/out14` ... `kaggle/pg/out16` (git-ignored).
 

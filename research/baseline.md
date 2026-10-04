@@ -1,15 +1,15 @@
 # Kaggle 2x T4 baseline: upstream llama.cpp + Qwen3.8-27B
 
-Kernel `otdoges/t4-qwen38-baseline` (private). v1 (2026-10-02 09:27 UTC) measured the box and microbenchmarks but the
+Kernel `t4-qwen38-baseline` (private). v1 (2026-10-02 09:27 UTC) measured the box and microbenchmarks but the
 llama.cpp CUDA configure failed (fix below). v2 (09:59 UTC, 2806 s wall) built llama.cpp master from source for sm_75
 and ran every benchmark. v2 push first bounced for ~15 min with "Maximum batch GPU session count of 2 reached" because
-`otdoges/cyber-frost-t4-fast` and `otdoges/cyber-frost-t4-ub4k` were RUNNING; the account allows 2 concurrent GPU sessions.
+`cyber-frost-t4-fast` and `cyber-frost-t4-ub4k` were RUNNING; the account allows 2 concurrent GPU sessions.
 
 Files:
 - Kernel dir: `/home/dih/kaggle-custom-kernals/kaggle/baseline/` (`t4-qwen38-baseline.py` is generated from `template.py` + `bw.cu`; `kernel-metadata.json`)
 - v2 output: `/home/dih/kaggle-custom-kernals/kaggle/baseline/out/` (`results.json`, `logs/` with every llama-bench/server log and output samples, `bw.cu`)
 - Reusable binaries: `out/llama-bin-sm75/` and `out/llama-bin-sm75.tgz` (137 MB, llama-bench/server/cli/speculative-simple/batched-bench + shared libs, sm_75, CUDA 12.8, NCCL on).
-  On Kaggle attach with `"kernel_sources": ["otdoges/t4-qwen38-baseline"]` and they appear under `/kaggle/input/t4-qwen38-baseline/`; set `LD_LIBRARY_PATH` to that dir.
+  On Kaggle attach with `"kernel_sources": ["t4-qwen38-baseline"]` and they appear under `/kaggle/input/t4-qwen38-baseline/`; set `LD_LIBRARY_PATH` to that dir.
 - v1 output: `/home/dih/kaggle-custom-kernals/kaggle/baseline/out_v1/`
 
 ## Headline

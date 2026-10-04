@@ -1,4 +1,4 @@
-// oracle_dump: llama.cpp (a4cb4c61, sm_75 libllama from otdoges/t4-qwen38-baseline) reference for t4q validation.
+// oracle_dump: llama.cpp (a4cb4c61, sm_75 libllama from t4-qwen38-baseline) reference for t4q validation.
 //
 // usage: oracle_dump <model.gguf> <jobs.txt> <outdir> [layer|tensor]
 // jobs.txt lines (token-id files are raw little-endian int32):

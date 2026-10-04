@@ -1,6 +1,6 @@
 # M0 results: GEMV bench and box probe (Kaggle 2x T4)
 
-Kernel `otdoges/t4q-m0` (private), three versions run on 2026-10-02:
+Kernel `t4q-m0` (private), three versions run on 2026-10-02:
 - v1 at 11:34 UTC: first sweep, probe and NCCL.
 - v2 at 11:46 UTC: added RPL=4, the CVT variant, and rotated sustained A/B runs.
 - v3 at 11:55 UTC: per-shape RPL A/B under sustained load and the two-level-flag AR probe.

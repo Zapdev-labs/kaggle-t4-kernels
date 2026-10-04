@@ -4,7 +4,7 @@ SECTIONS selects what runs: "gemm" (no model download), "engine" (download, orac
 
 Generated into kaggle/<stage>/t4q-<stage>.py by t4q/tools/mkkernel.py. No secrets; every download is public.
 Flow: unpack -> (download Q4_0 GGUF in a thread) build libt4q + oracle_dump -> tokenize prompts -> oracle (llama.cpp
-a4cb4c61 sm_75 libllama from kernel_sources otdoges/t4-qwen38-baseline) -> tests/tp_check.py -> RESULTS block.
+a4cb4c61 sm_75 libllama from kernel_sources t4-qwen38-baseline) -> tests/tp_check.py -> RESULTS block.
 """
 import base64
 import glob

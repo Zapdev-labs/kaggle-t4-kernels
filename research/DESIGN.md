@@ -36,7 +36,7 @@ t4q milestone gates (same prompts, greedy, 4k context):
 | sampling | On the GPU. Argmax or top-k is fused into the lm_head epilogue. |
 | MTP | k = 3 drafts by default (sweep 2-5). The catch-up and the first draft are fused into one batched MTP pass. Rollback uses replay, not per-token snapshots. M5b adds a truncated 32k-vocab draft head. |
 | tokenizer | HF `tokenizers` in the Python driver. Token ids are the interface, and both t4q and the llama.cpp oracle consume the same id file. |
-| validation | `oracle_dump`, a 150-line C++ file linked against the sm_75 `libllama.so` already built in `otdoges/t4-qwen38-baseline`, dumps full logits and named intermediates |
+| validation | `oracle_dump`, a 150-line C++ file linked against the sm_75 `libllama.so` already built in `t4-qwen38-baseline`, dumps full logits and named intermediates |
 
 ## 2. Resolved disagreements between the research files
 
@@ -248,7 +248,7 @@ If a profile shows any GEMV below 240 GB/s, fix that before doing anything else.
 
 ## 10. Numerical validation plan
 
-The oracle is llama.cpp a4cb4c61, the sm_75 build in kernel output `otdoges/t4-qwen38-baseline` (`llama-bin-sm75/libllama.so`, CUDA 12.8). `tools/oracle_dump.cpp` compiles against `llama.h`/`ggml.h` from that commit (a shallow clone takes seconds; there's no rebuild of ggml). It does three things:
+The oracle is llama.cpp a4cb4c61, the sm_75 build in kernel output `t4-qwen38-baseline` (`llama-bin-sm75/libllama.so`, CUDA 12.8). `tools/oracle_dump.cpp` compiles against `llama.h`/`ggml.h` from that commit (a shallow clone takes seconds; there's no rebuild of ggml). It does three things:
 - loads the same GGUF with `-ngl 99 -sm layer`, f16 KV, FA on;
 - evaluates a fixed **token-id file** two ways: as a 512-token batch (MMQ path), and then token by token for the last 64 positions (MMVQ path, the same regime as t4q decode);
 - writes the full fp32 logits for every position (`.npy`, 248320 floats per row) and, through `cb_eval`, full dumps of the named intermediates `attn_norm-N`, `linear_attn_qkv_mixed-N`, `z-N`, `beta_sigmoid-N`, `gate-N`, `conv_output_silu-N`, `q_conv_predelta-N`, `k_conv_predelta-N`, `v_conv_predelta-N`, `attn_output-N`, `final_output-N`, `linear_attn_out-N`, `Qcur-N`, `attn_gated-N`, `ffn_out-N`, `l_out-N`, `result_norm` and `result_output` for N ∈ {0, 3, 31, 63}, on the first and last positions.
@@ -304,10 +304,10 @@ void t4q_reset(t4q_ctx*);  void t4q_free(t4q_ctx*);
 
 - **Build:** a plain Makefile with no CMake. On the Kaggle image, nvcc 12.8 is at `/usr/local/cuda`, and the libcuda stub is not needed because t4q uses only the runtime API. If NCCL is enabled, `-lnccl` links against the system 2.25.1.
 - **Kernel packaging:** `tools/mkkernel.py <stage>` tars `t4q/` and inlines it as base64 into `kaggle/<stage>/t4q-<stage>.py`, the same pattern as `kaggle/baseline/template.py`. That writes `kernel-metadata.json` with:
-  - `id` = `otdoges/t4q-<stage>`, `is_private` true, `kernel_type` script, `enable_gpu` and `enable_internet` true;
+  - `id` = `t4q-<stage>`, `is_private` true, `kernel_type` script, `enable_gpu` and `enable_internet` true;
   - `machine_shape` `NvidiaTeslaT4`;
   - the same pinned `docker_image` as the baseline (`gcr.io/kaggle-private-byod/python@sha256:37c64f7d...`);
-  - `kernel_sources: ["otdoges/t4-qwen38-baseline"]`, which supplies libllama for the oracle.
+  - `kernel_sources: ["t4-qwen38-baseline"]`, which supplies libllama for the oracle.
 
   It never copies anything from the `prior/` kernels: they contain leaked tokens, and t4q needs no secrets because every download is public.
 - **Script flow:**
@@ -319,8 +319,8 @@ void t4q_reset(t4q_ctx*);  void t4q_free(t4q_ctx*);
   The stage scripts have a `DEADLINE` guard like the baseline's.
 - **Loop:**
   - `kaggle kernels push -p kaggle/<stage>`
-  - poll `kaggle kernels status otdoges/t4q-<stage>`
-  - `kaggle kernels output otdoges/t4q-<stage> -p kaggle/<stage>/out`
+  - poll `kaggle kernels status t4q-<stage>`
+  - `kaggle kernels output t4q-<stage> -p kaggle/<stage>/out`
 
   The account allows **2 concurrent GPU sessions**, and another agent's `cyber-frost-*` kernels were seen holding both. On "Maximum batch GPU session count", retry every 60 s.
 
