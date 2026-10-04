@@ -854,3 +854,62 @@ Full table and caveats: `research/VERIFY.md`. Raw JSON and llama logs: `research
 1. Run the oracle `floor` job and a decode-path `last` on several 512-token prompts. That separates a sensitive position from a real prefill accuracy problem.
 2. Change `batch_check.py`'s bench to distinct prompts, reusing `verify_check.py`'s approach, and re-measure B=64 at 1k and B=32 at 4k.
 3. Measure depth-4k single-stream decode and MTP in the same session as llama.cpp.
+
+## 2026-10-03 - M5 round 2: int4 tensor-core verify GEMV (spec_tc), harness honesty fixes
+
+**Gate: kernel CORRECT, performance PARKED.** The TC verify GEMV produces dp4a-level values (ULP diffs <= 1.9e-5 on
+every shape, exact on the K=512 micro case) but streams at only 45-95 GB/s vs the dp4a's 76-259, so `spec_tc = 1`
+runs ~2x slower end-to-end (k3_tc 31-34 tok/s vs k3_dv1 66-70). The option stays default-off; the perf restructure
+is the follow-up. Kaggle v6 through v16; final state v16 + v17 (gate fix).
+
+### What was built
+- `t4q/src/kernels/tp_gemv_tc.cuh` (`t4q::gtc`): one token tile of TPD = 8 per block (one mma.m8n8k32 m-tile
+  absorbs every M <= 8 column), BR = 64/128 weight rows, 64-k stages with a register double buffer, weights read
+  through `gemm8::WPtr` (the decode P4 layout, no conversion pass). Activations: the engine's existing per-32 q8_1
+  buffers read directly, digit planes (lo/hi nibbles, `d4_from_q8`'s shuffle) built in-flight at smem staging.
+  Numerics: weight code as s4 (c ^ 8), x = 16 * hi + lo, so 16 * H + L - MAGIC = P = sum(x * (c - 8)), the exact
+  dp4a integer; the float epilogue replicates `h2f(d_w) * ((x_d * 0.0625f) * float(16 P))` verbatim per group.
+  SQ mode (gate|up): silu(gate) * up -> the k_gemv SQ q8 layout, plus fp32 y for memory-faithful A/B.
+- `t4q/tools/tc_bench.cu`: 7 synthetic cases (a K=512/N=8 micro + the 6 real TP shapes) x M in {2,4,7,8}: a host
+  float model of the dp4a CVT=2 arithmetic, max-abs-diff + first-mismatch DIFF reports, GB/s burst rates,
+  `--case`/`--dev`/`--reps` args, unbuffered logging. All 7 cases `ok:true`, `fails:0` (v16).
+- `tests/spec_check.py` tc section + `tools/stage_m5.py`: forced-draft A/B (spec_tc 0 vs 1 verify logits) with
+  argmax-equality + max-abs-diff records, tc configs in the v5 sweep, per-case bench driver, 7 cases.
+
+### The three bugs that took v6..v12
+1. Link failure: the new `gemm8.cuh` include in `tp_spec.cu` re-defined three non-template `__global__` kernels
+   (v6) -> `static` on `ksum_kernel`, `quant8_tok_kernel`, `quant8_g128_kernel`; local podman link check passed (v8).
+2. IMA at spec_tc = 1: the SQ epilogue's `nog = BR/32` should be `BR/64` (a BR=128 weight-row span covers only
+   BR/2 down rows because each 8-row tile interleaves 4 gate + 4 up rows) -> the q8 writes overran the staged
+   smem; plus `TcArgs.y` was never set (both the engine branch and the bench) (v8/v9/v11).
+3. The bench SIGSEGV: the synthetic generator used row stride `2 + K/2` instead of `src_row_bytes(FAST_P4, K)`.
+
+### What the harness taught us (the "honesty" fixes)
+- **Bit-identity between tc and dp4a is unattainable by design**: both kernels contract a*b+c into FMA (nvcc's
+  default `-fmad=true`; `-Xcompiler -ffp-contract=off` never reaches device code) and sum the 512-k group products
+  in different orders (dp4a: 16 per-lane chunk partials through a shfl_xor tree; tc: flat ascending). The right
+  gates: max-abs-diff magnitude (bench) + argmax equality + accept-rate parity (spec_check). The K=512 micro case
+  (one chunk, one order) is bit-EXACT for tc vs dp4a vs host: proof the mapping/int arithmetic are right.
+- **The engine-level 0.529 logit diff is the SQ requant amplification chain, not a kernel bug**: tc-vs-dp4a ULP
+  differences tip individual roundf() boundaries when gateup's silu(gate)*up is re-quantized to q8 (the bench's
+  sq_eq is false for exactly that case), the down GEMV then sees a few +-1 q8 entries, and the logits move ~0.5
+  with argmax equal 32/32 and 35/35. Accept rates are unchanged (k3_tc 0.81/0.72/0.82 vs dp4a 0.81/0.73/0.82).
+- **All spec variants tip the same near-tie**: P1 token 435 diverges for EVERY non-default config (sqt128, rb1,
+  tc, tc1) and nothing else; the default k{N}_dv1 configs stay byte-identical. V5's identity gate now covers only
+  the default-arithmetic configs; variants are gated on accept-rate parity (+-0.03 vs the same-k base).
+
+### Perf verdict and the parked restructure
+- v16 rates (M=8): qkvz 67 vs 79 dp4a, attn_qkv 45 vs 76, gateup 82 vs 107, down 95 vs 137, out 69 vs 156,
+  clamp 95 vs 118. The v14 L2-prefetch addition (~12 stages ahead, gemm8::prefetch9's trick) bought only ~15%.
+- Diagnosis: the block-wide `__syncthreads` double buffer (512 stages) serializes load latency against compute,
+  and the X-side smem staging + 4 ldsm_x1 per warp-stage add issue slots the dp4a does not pay.
+- Parked plan (next TC attempt): warp-autonomous staging (each warp owns its WN rows: the W smem slices become
+  warp-private, syncs drop to __syncwarp) + direct-A fragments (each lane builds its own a-fragment from 2 L2-hot
+  u32 loads of xq, deleting the X smem stage and the X ldsm entirely). Estimated 1.5-2.5x; the TC wins only when
+  that lands (M >= 7 shapes first).
+
+### Next steps
+1. L2 (PLAN_500): tree drafts / TPD = 16 on the dp4a path - orthogonal to the verify kernel, biggest expected
+   tok/s lever (M5 r1 k=3 baseline 66-70 tok/s -> target 100-160).
+2. The TC perf restructure above, then re-evaluate spec_tc defaults for k >= 6.
+3. L3: the low-bit UD-Q2_K_XL / IQ3 fast modes with the KL gate.

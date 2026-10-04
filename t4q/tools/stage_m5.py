@@ -35,9 +35,10 @@ RESULTS = {"stage": STAGE}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "unsloth/Qwen3.8-27B-GGUF"
 GGUF = "Qwen3.8-27B-Q4_0.gguf"
-SPEC_ARGS = ["--gen", "512", "--ks", "3,4,5", "--dvs", "1", "--dv0_ks", "", "--sections", "ref,v4,v5,trace",
+SPEC_ARGS = ["--gen", "512", "--ks", "3,4,5,6", "--dvs", "1", "--dv0_ks", "", "--sections", "ref,v4,tc,v5,trace",
              "--trace_ks", "3", "--prompts", "P0,P1,P2", "--ngs", "0",
-             "--extra", "spec_k=3,spec_rb=1;spec_k=4,spec_rb=1;spec_k=3,spec_sqt=128;spec_k=4,spec_sqt=128;spec_k=6"]
+             "--extra", "spec_k=3,spec_rb=1;spec_k=4,spec_rb=1;spec_k=3,spec_sqt=128;spec_k=4,spec_sqt=128;spec_k=6;"
+                        "spec_k=3,spec_tc=1,spec_rb=1;spec_k=4,spec_tc=1,spec_rb=1;spec_k=6,spec_tc=1"]
 NOP2P_ARGS = ["--gen", "256", "--ks", "3", "--dvs", "1", "--dv0_ks", "", "--sections", "ref,v4,v5"]
 RUN_NOP2P = False
 # extra processes (env at load time): (name, env, args)
@@ -341,7 +342,8 @@ def summarize(val):
             if isinstance(v, dict) and "t0" in v:
                 v["clocks"] = clocks_between(v["t0"], v["t1"])
     keep = ("load_s", "selftest_worst", "vram_used_mib", "p2p", "mtp", "ref", "V4", "V4_pass",
-            "V4_error", "spec", "V5_pass", "best_spec", "gate_60", "prof", "prof_error", "final_stats", "trace_error")
+            "V4_error", "tc", "tc_pass", "tc_error", "spec", "V5_pass", "best_spec", "gate_60", "prof", "prof_error",
+            "final_stats", "trace_error")
     return {k: val.get(k) for k in keep if k in val}
 
 
@@ -360,6 +362,21 @@ def main():
         result("build", {"ok": rc == 0, "secs": el(), "tail": o[-3000:] if rc else ""})
         if rc:
             return
+        # int4 tensor-core verify GEMV vs dp4a: bit-identity + per-shape GB/s (synthetic P4, no model needed).
+        # One process per case: a crash in one shape leaves the others' results intact.
+        tbr, tbo = sh(f"nvcc -O3 -std=c++17 -arch=sm_75 -Xcompiler -ffp-contract=off -I{t4q}/include "
+                      f"{t4q}/tools/tc_bench.cu -o {W / 'tc_bench'}", timeout=900, logname="tc_bench_build.txt")
+        if tbr == 0:
+            parts = []
+            for ci in range(7):
+                crc, cout = sh(f"{W / 'tc_bench'} --case {ci} --reps 100", timeout=600,
+                               logname=f"tc_bench_{ci}.txt", cwd=str(W))
+                tail = (OUT / "logs" / f"tc_bench_{ci}.txt")
+                txt = tail.read_text()[-1400:] if tail.exists() else cout[-800:]
+                parts.append(f"case{ci} rc={crc}\n{txt}")
+            result("tc_bench", {"rc": 0, "out": ("\n").join(parts)[-5000:]})
+        else:
+            result("tc_bench", {"rc": tbr, "out": tbo[-3000:]})
         prepare_prompts(t4q)
         th.join(timeout=1800)
         model = DL.get("path")

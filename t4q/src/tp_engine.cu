@@ -1320,6 +1320,7 @@ int tp_set_option(t4q_ctx* c, const std::string& k, int v) {
     if (k == "graphs") { S.graphs = v != 0; return 0; }
     if (k == "spec_k") { if (v < 0 || v > tp::MMAX - 1) throw std::runtime_error("spec_k must be 0..6"); S.spec_k = v; return 0; }
     if (k == "spec_dv") { S.spec_dv = v; return 0; }
+    if (k == "spec_tc") { S.spec_tc = v != 0; return 0; }
     if (k == "spec_force") { S.spec_force = v; return 0; }
     if (k == "spec_dbg") { S.spec_dbg = v; return 0; }
     if (k == "spec_prof") { S.spec_prof = v; return 0; }

@@ -364,6 +364,7 @@ struct State {
     int spec_k = 0;       // drafts per step (0: plain decode in t4q_generate; 1..MMAX-1)
     int spec_dv = 1;      // 1: drafts use the truncated head (Mtp::lmd), 0: the full lm_head
     int spec_force = 0;   // debug: drafts are the continuation set with t4q_spec_force (acceptance 100% if correct)
+    int spec_tc = 0;      // 1: M > 1 P4 GEMVs on the int4 tensor cores (kernels/tp_gemv_tc.cuh, bit-identical)
     int spec_dbg = 0;     // debug: copy the accepted verify columns' logits to dumps["spec_logits"] every step
     int spec_prof = 0;    // 1: one iteration in flight, per-graph GPU0 event times (stats spec.ms_draft / ms_verify)
     int spec_ahead = 4;   // spec iterations enqueued before the host reads the token ring

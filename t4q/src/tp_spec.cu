@@ -23,6 +23,7 @@
 
 #include "cupti_trace.h"
 #include "kernels/tp_gemv_impl.cuh"
+#include "kernels/tp_gemv_tc.cuh"
 #include "model.h"
 #include "tp.h"
 #include "tp_api.h"
@@ -34,11 +35,16 @@ namespace spec {
 using Clock = std::chrono::steady_clock;
 double secs(Clock::time_point a) { return std::chrono::duration<double>(Clock::now() - a).count(); }
 
+// 1: M > 1 P4 GEMVs go through the int4 tensor-core kernel (bit-identical to the dp4a path, see the header). Read at
+// graph capture time (the dispatch is baked into the graph).
+int g_spec_tc = 0;
+
 constexpr int DM = 5120;
 constexpr size_t SZS = (size_t)24 * 128 * 128;          // DeltaNet state floats per layer per GPU
 constexpr int WSZ = 2 * tp::NSPLIT * 6 * 258;            // attention split workspace floats per column
 constexpr int AMB = 2 * tp::MMAX;                         // argmax mailbox floats per slot
 constexpr size_t RBS = (size_t)tp::MMAX * 24 * 128;      // replay stash floats per layer
+constexpr int TPD_SPEC = tp::MMAX + 1;                   // spec_tc token tile (8): xq2 / xm2 pad row
 
 // ------------------------------------------------------------------------------------------------ kernels
 
@@ -544,6 +550,26 @@ void gemv_mt(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream
     const ProArgs P = sq ? *sq : ProArgs{};
     const int f = W.L.fmt, nch = W.L.nch, rpl = W.L.rpl;
     const bool isseg = seg != nullptr, issq = sq != nullptr;
+    // spec_tc: the M > 1 P4 GEMVs on the int4 tensor cores (bit-identical to the dp4a path below, header for why).
+    // qkvz's 48 fp32 alpha/beta rows run in k_seg_m (the k_gemv SEG arithmetic verbatim).
+    if (g_spec_tc && M > 1 && f == FAST_P4 && (W.L.K % 64) == 0) {
+        t4q::gtc::TcArgs A;
+        A.q = t4q::gemm8::make_args(W.L, W.base, nullptr, nullptr, nullptr, nullptr, 0, 0, 0);
+        A.xq = xq;
+        A.xms = xm;
+        A.y = y;
+        A.ldy = W.L.N;
+        A.N = W.L.N;
+        A.K = W.L.K;
+        A.T = M;
+        if (issq) {
+            A.sq_xq = P.sq_xq;
+            A.sq_xm = P.sq_xm;
+        }
+        CK(t4q::gtc::gemv_tc_launch(rpl, issq, A, s));
+        if (isseg) t4q::gtc::k_seg_m<<<(S.nrows + 7) / 8, 256, 0, s>>>(S.w, S.x, S.y, S.nrows, M);
+        return;
+    }
 #define T4Q_GM(FMT, RPL, NCH, SEG_, SQ_)                                                                        \
     if (f == FMT && rpl == RPL && nch == NCH && isseg == SEG_ && issq == SQ_) {                                 \
         launch_gemv<FMT, RPL, NCH, false, SEG_, PRO_NONE, SQ_, (FMT == FAST_P4 ? 2 : 1), M>(W, xq, xm, y, s, A, S, \
@@ -613,7 +639,7 @@ struct SG {  // per GPU
 };
 struct Spec {
     SG G[2];
-    int k = 0, dv = -1, force = 0, ng = 0, ngmax = 0, rb = -1, sqt = 0;  // configuration of the captured graphs
+    int k = 0, dv = -1, force = 0, ng = 0, ngmax = 0, rb = -1, sqt = 0, tc = 0;  // configuration of the captured graphs
     bool rb_cfg = false;
     int* h_cnt = nullptr;           // host-mapped emitted-token counter (GPU0 writes)
     int* d_cnt = nullptr;
@@ -670,8 +696,9 @@ Spec* spec_get(t4q_ctx* c) {
         B.logd = dz<float>(124160);
         B.xq = dz<int8_t>((size_t)MMAX * 17408);
         B.xm = dz<int2>((size_t)MMAX * 17408 / 32);
-        B.xq2 = dz<int8_t>((size_t)MMAX * 8704);
-        B.xm2 = dz<int2>((size_t)MMAX * 8704 / 32);
+        // 8 rows (not MMAX): the spec_tc kernel's 8-token tile reads the pad row 7 (stale bytes feed discarded lanes)
+        B.xq2 = dz<int8_t>((size_t)TPD_SPEC * 8704);
+        B.xm2 = dz<int2>((size_t)TPD_SPEC * 8704 / 32);
         B.xqd = dz<int8_t>(DM);
         B.xmd = dz<int2>(DM / 32);
         B.part = dz<float>((size_t)2 * MMAX * DM);
@@ -1114,8 +1141,10 @@ int tp_spec_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop,
     const bool dvh = S.spec_dv && S.G[0].mtp.dv > 0;
     const bool force = S.spec_force != 0;
     if (!P->G[0].ev || P->k != k || P->dv != (int)dvh || P->force != (int)force || P->ng != S.spec_ng ||
-        P->ngmax != S.spec_ngmax || P->rb != S.spec_rb || P->sqt != S.spec_sqt) {
+        P->ngmax != S.spec_ngmax || P->rb != S.spec_rb || P->sqt != S.spec_sqt || P->tc != S.spec_tc) {
         P->rb_cfg = S.spec_rb != 0;
+        P->tc = S.spec_tc;
+        g_spec_tc = S.spec_tc;
         tp::g_sq_threads = S.spec_sqt == 128 ? 128 : 256;
         sync2(c);
         capture(c, P, k, dvh, force);

@@ -954,8 +954,9 @@ static inline cudaError_t launch9(int fmt, int rpl, int bn, int ga, const Args& 
 }
 
 // split-K: out = sum over the kz fp32 slices (fixed order) -> fp16 yh (and yh2) or fp32 y. grid (T, N / 256) x 256
-__global__ void ksum_kernel(const float* __restrict__ part, long long zs, int kz, int ldy, float* y, __half* yh,
-                            __half* yh2) {
+// (static: non-template __global__ in a header -> internal linkage, TUs may both include this header)
+static __global__ void ksum_kernel(const float* __restrict__ part, long long zs, int kz, int ldy, float* y, __half* yh,
+                                   __half* yh2) {
     const size_t i = (size_t)blockIdx.x * ldy + blockIdx.y * 256 + threadIdx.x;
     float v = part[i];
     for (int z = 1; z < kz; ++z) v += part[z * zs + i];
@@ -1928,8 +1929,8 @@ static inline cudaError_t launch15(int fmt, int rpl, const Args& a, cudaStream_t
 }
 
 // per-token quantizer (GA 0): one 256-thread block per token, q = round(x / d), d = amax(x[t]) / 127; dx is [Tp]
-__global__ void __launch_bounds__(256) quant8_tok_kernel(const float* __restrict__ x, int ldx, int T, int K,
-                                                         int8_t* __restrict__ xq, float* __restrict__ dx) {
+static __global__ void __launch_bounds__(256) quant8_tok_kernel(const float* __restrict__ x, int ldx, int T, int K,
+                                                                int8_t* __restrict__ xq, float* __restrict__ dx) {
     __shared__ float red[8];
     const int t = blockIdx.x, tid = threadIdx.x;
     int8_t* dst = xq + (size_t)t * K;
@@ -2051,8 +2052,8 @@ __global__ void quant8_kernel(const float* __restrict__ x, int ldx, int T, int T
 }
 
 // GA 128: one thread per (token, 128-group), two passes over the inputs (no 128-float register array)
-__global__ void quant8_g128_kernel(const float* __restrict__ x, int ldx, int T, int Tp, int K, int8_t* __restrict__ xq,
-                                   float* __restrict__ dx) {
+static __global__ void quant8_g128_kernel(const float* __restrict__ x, int ldx, int T, int Tp, int K,
+                                          int8_t* __restrict__ xq, float* __restrict__ dx) {
     const int nb = K / 128;
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= Tp * nb) return;
