@@ -1,0 +1,67 @@
+t4q/src/kernels/tp_gemv_tc.cuh
+  s_ac85989787ca8c::t_279e7ca6a02334 135-138,141-142
+  s_ac85989787ca8c::t_1ff3abf0f80a81 146,149-151,155,163-164,172-174,177,181-185,189-193,195-197,220-225,227,231-242,244,246-266
+  s_ac85989787ca8c::t_859e581fd21c1a 271-274,282-283,287-332
+  s_ac85989787ca8c::t_9bc71bd33c31e4 381
+  s_ac85989787ca8c::t_f815790b7761b2 48-62
+  s_ac85989787ca8c::t_9cdb44fbef74e6 275-276,278-281,284-286,333
+  s_ac85989787ca8c::t_ddc7a6904d1eeb 382,388,397,406-408,414-415,418,426,444
+  s_ac85989787ca8c::t_e46e61903423b0 24-36,65-68,70
+  s_ac85989787ca8c::t_102d80a3034dff 127-128
+  s_ac85989787ca8c::t_a849f1eed95ffb 171,175-176,194,198,200,269-270
+  s_ac85989787ca8c::t_0e20294b98bf9b 37-47
+  s_ac85989787ca8c::t_b01095abe19e29 178-179
+  s_ac85989787ca8c::t_298733369d6825 201-207,209-211,213-217,228-230
+  s_ac85989787ca8c::t_c3992a0d77db82 1
+  s_ac85989787ca8c::t_f2df9e121f5a57 122,129-130,132,139-140
+  s_ac85989787ca8c::t_ba4e40f21031d5 126
+  s_ac85989787ca8c::t_dfbc3bc71f59dd 162,165-170,180,188
+  s_ac85989787ca8c::t_ebb7cd8da92de7 379,387,393,398-399,402-405,409-413,416-417,419-425,427-443
+  s_ac85989787ca8c::t_260182bb37037a 243
+t4q/tools/stage_m5.py
+  s_ac85989787ca8c::t_446f2d7627631a 380-405
+  s_ac85989787ca8c::t_ce67d91b80f78d 372
+README.md
+  s_7ba56e32c83126::t_60f9d489672098 1-67
+t4q/tools/tc_bench.cu
+  s_ac85989787ca8c::t_ebd3fd53e50d05 382
+  s_ac85989787ca8c::t_48888c908abcf2 407
+  s_ac85989787ca8c::t_0a2f86fd35d2a8 276
+  s_ac85989787ca8c::t_02bec674827fcd 180,182-184,192-193,203-210,219-221
+  s_ac85989787ca8c::t_8c1f22a59e4871 330-332,347-349,352,365,368-381,383-406,408-417
+  s_ac85989787ca8c::t_e507a9e143d729 173-175,178-179,181,185-191,197,211-218,222-226
+.gitignore
+  s_97d1c75a376ae1::t_06acf6ac1e5181 1-2,5-8,10-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1c651bb50b6366ee021f00f0a263e90b7e94300e",
+  "prompts": {},
+  "sessions": {
+    "s_7ba56e32c83126": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "ab3e7ac9-c451-4c67-b088-51754bb44560",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "Jackson57279 <otdoges@proton.me>"
+    },
+    "s_97d1c75a376ae1": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "696dd368-ae56-44e8-8b1e-deea892b63ce",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "Jackson57279 <otdoges@proton.me>"
+    },
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <otdoges@proton.me>"
+    }
+  }
+}
