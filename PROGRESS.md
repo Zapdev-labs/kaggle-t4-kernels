@@ -958,3 +958,62 @@ X ldsm are gone. L2 prefetch kept ~12 stages ahead. ptxas: 63-66 regs, 0 spills.
    persistent block per 64 rows with a K-loop grid-stride, and nch-style chunking like the dp4a's. Only worth it
    if the projected M>=7 win clears the added complexity.
 3. L3: the low-bit UD-Q2_K_XL / IQ3 fast modes with the KL gate.
+
+## 2026-10-04 - M5 rounds 4-8: the TC GEMV from 2-3x behind to beating dp4a on 3 of 6 shapes (v31)
+
+Kernel template grew to `template <RPL, BR, SQ, RREG, RSMEM, HOIST, BAT, AR>`; the bench (`tc_bench.cu`) became a
+6-variant x 4-M x 8-case matrix with a dp4a anchor per shape; the timing harness learned 20 warmups + min-of-4
+windows and to join the model download before benching (v29's timings were contaminated 1.2-2x by the concurrent
+download OOM-killing the clocks monitor and case tails). ncu is permanently out (ERR_NVGPUCTRPERM on the notebook
+nodes) - the within-run matrix is the only instrument.
+
+### r4-r5 (v25-v26): group-of-4 ring, then occupancy was the theory that died
+- r4: load W in GROUPS of 4 stages (256 k-els = the 8 consecutive Q4 blocks of a plane-half unit run) held in a
+  2-deep register+smem ring; one `__syncwarp` per group, one `ldsm_x4` per stage, A fragments in-register from
+  global q8. Burst-2 down_tp hit 168.8 GB/s at M=7/8, BEATING dp4a - the first shape won (v27).
+- r5 parameterized the ring (RREG x RSMEM). v26's matrix killed the occupancy theory: <2,1> (16 warps/SM)
+  matched <2,2> (8) within noise; BAT=2 (quad burst) was structurally WRONG (4 groups staging into RSMEM=2's two
+  buffers: groups base and base+2 collide) and is dropped; 8 L2 prefetches per group only doubled LSU pressure
+  (hardware MLP covers DRAM latency once 8-16 LDGs are outstanding).
+- v28's d-window fusion (2 d u16s -> one LDG.128) FATALed the whole matrix (`cudaErrorMisalignedAddress`): FAST_P4
+  d words interleave the RPL planes (`sa = d + (g*RPL + r)*2 B`), so odd-plane rows sit at 2 mod 4 - no wider d
+  window exists. The 4 separate u16 loads are a layout constraint, documented in the header.
+
+### r7 (v28-v30): the A-ring, and the clean winner matrix
+- The surviving M=4 gap was A-side latency: the hoist issues the group's 16 q8 + 4 xms words at the TOP of
+  compute but stage 0 consumes them immediately - every group eats one ~270+ cy stall on its first mma. AR:
+  compute(t) issues group t+1's A words into compile-time-indexed ping-pong buffers a full group early.
+- v30 (clean) per-shape winners at 16 warps or less: AR64 wins qkvz (129.7-135.6), qkvz_clamp (123.6-127.9),
+  gateup (138-139, beats dp4a at M8: 138.3 vs 118.7), attn (54.5-66.5), out (69.3-91.6); star wins down
+  (130-151). The GEMV gap directly throttles spec decoding: tc configs sit at the rb1 floor (k4_tc 41.9 ~
+  x_k4_rb1 42.4 vs dv1 66.8 tok/s).
+
+### r8 (v31): d to a register ring, 16-warp occupancy parity
+The star's RSMEM-2 ring needed 40 KB smem at BR128 = 8 warps/SM (dp4a: no smem, 16-20 warps). The d words were
+the smem parasite: gload now packs each lane's two stages' d pairs into one u32 per stage (`rd_p[4][2]`, a 4-deep
+REGISTER d-ring) and compute shfls the row's pair from the owning loader lane - one shfl per pair, no barrier.
+STAGE loses its d area (20->16 KB at BR128, 10->8 at BR64): the star runs 16 warps/SM at both BRs. RREG is pinned
+to 2 (the live d set {t, t+1, t+RREG, t+RREG+1} needs 4 slots; RREG 4's refill collides with a live read) and
+both schedules unroll their outer loops by 4 so the ring indices are call-site literals (a runtime index lands
+the whole ring in local memory - r4's lesson).
+- v31 measured clean: all 28 CHECK rows per case ok=true, engine gates green, best_spec 66.84 (k3_dv1). The star
+  now reaches 171.4 GB/s on down at M4 (+27% within-run over ctrl), AR64 gateup 156.9 (+27%), and TC WINS
+  gateup at M7/8 (153.2 vs 148.7; 154.3/147.9 vs 118.7), down at M8 (133.8 vs 126.9), and is within 1.45x on
+  qkvz at M8 (139.3 vs 201.5).
+- The remaining gap is structural: TC's per-launch time is M-INDEPENDENT (the mma m-tile covers all 8 token
+  slots and the A loads fetch them all), dp4a scales with M - so TC loses at the engine's real M=2-6.
+
+### r9 (v32, in flight): T-gating the A loads + engine promotion to the winners
+- r9: gate the A-side loads on `tok < a.T` (quad-uniform; the stale token quads skip their ~24 of ~30 LSU ops
+  per group and zero their registers; the mma stays m8 - the B-fragment pattern needs all 32 lanes - but the
+  tensor pipe is <2% utilized, so the waste is free). This also fixes a latent OOB: the ungated stale quads
+  read past the a.T-token xq/xms buffers.
+- The engine default (`gemv_tc_launch`) is promoted to v31's per-shape winners, all BR64: rpl2 non-sq (qkvz/attn)
+  the star <2,64,0,2,2,1,1,0>; rpl4 non-sq (down/out) the star <4,64,0,2,2,1,1,0>; rpl4 sq (gateup) the AR ring
+  <4,64,1,2,2,1,1,1>. ptxas (both TUs, 18 instantiations): 0 stack/0 spills, star 121-148 regs, AR 166-182.
+
+### Standing gate (unchanged)
+"Fully faster than dp4a on ALL real shapes" is still open: v31 wins 3 of 6 (at M7/8) and the engine's real M
+regime is 2-6, where the r9 T-gate is the projected closing move. The promotion puts the winners in the engine
+so the spec sweep measures the joint end-to-end; if the matrix reshuffles under the T-gate, the dispatch is
+adjusted in the next round.
