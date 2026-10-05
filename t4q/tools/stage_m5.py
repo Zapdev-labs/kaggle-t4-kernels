@@ -410,7 +410,7 @@ def main():
             result("nop2p", {"rc": rc, "tail": o[-2000:] if rc else ""} | summarize(v2))
         # v33/v34 both died mid-matrix to the worker's OOM killer with the 16 GB model's page cache still
         # resident: drop its CLEAN pages (POSIX_FADV_DONTNEED) before the synthetic-P4 matrix so the 8 case
-        # processes (a ~1.2 GB dual-GPU CUDA context each) get the full RAM headroom
+        # processes (a ~1.2 GB dual-GPU CUDA context each, 11 cases in the r11 matrix) get the full RAM headroom
         try:
             fd = os.open(model, os.O_RDONLY)
             os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
@@ -426,16 +426,23 @@ def main():
                       f"{t4q}/tools/tc_bench.cu -o {W / 'tc_bench'}", timeout=900, logname="tc_bench_build.txt")
         if tbr == 0:
             parts = []
-            # the REAL shapes first, the (already-proven) micro smoke cases last: v33/v34/v35 all had the
-            # worker's OOM killer reap the notebook mid-matrix at a random case boundary (a noisy tenant on
-            # the shared T4x2 node - v32's identical flow survived), and each case's process leaves its
-            # CHECK lines in its own log, so a late kill only ever costs the micro columns
-            for ci in (2, 3, 4, 5, 6, 7, 0, 1):
-                crc, cout = sh(f"{W / 'tc_bench'} --case {ci} --reps 100 --variants 0,1,2,3,4,5", timeout=900,
-                               logname=f"tc_bench_{ci}.txt", cwd=str(W))
-                tail = (OUT / "logs" / f"tc_bench_{ci}.txt")
-                txt = tail.read_text()[-1400:] if tail.exists() else cout[-800:]
-                parts.append(f"case{ci} rc={crc}\n{txt}")
+            # the REAL shapes first (8 variants: the v37 comparison set 0-5 + the r11 twins 8/9), then the
+            # r11 diagnostics (case 10 outk5: the out-class K sweep; 9 n2048 / 8 n1024: the qkvz-class N
+            # sweep - lean 4-variant lists 2,4,8,9: V3/V5 duplicate V2/V4 below N 7168), the (already-proven)
+            # micro smoke cases last: v33/v34/v35 all had the worker's OOM killer reap the notebook
+            # mid-matrix at a random case boundary (a noisy tenant on the shared T4x2 node - v32's identical
+            # flow survived), and each case's process leaves its CHECK lines in its own log, so a late kill
+            # only ever costs the micro columns
+            plan = [(2, 3, 4, 5, 6, 7), (10, 9, 8), (0, 1)]
+            for grp, (reps_, vars_, tmo) in zip(plan, [(100, "0,1,2,3,4,5,8,9", 1200),
+                                                        (100, "2,4,8,9", 900),
+                                                        (100, "0,1,2,3,4,5", 900)]):
+                for ci in grp:
+                    crc, cout = sh(f"{W / 'tc_bench'} --case {ci} --reps {reps_} --variants {vars_}", timeout=tmo,
+                                   logname=f"tc_bench_{ci}.txt", cwd=str(W))
+                    tail = (OUT / "logs" / f"tc_bench_{ci}.txt")
+                    txt = tail.read_text()[-1400:] if tail.exists() else cout[-800:]
+                    parts.append(f"case{ci} rc={crc}\n{txt}")
             result("tc_bench", {"rc": 0, "out": ("\n").join(parts)[-5000:]})
         else:
             result("tc_bench", {"rc": tbr, "out": tbo[-3000:]})

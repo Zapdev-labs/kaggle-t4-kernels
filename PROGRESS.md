@@ -1051,3 +1051,67 @@ dv1 by ~15% end-to-end (52-60 vs 65-67 tok/s). r11 candidate (the structural end
 STS -> syncwarp -> ldsm -> mma round-trip with register-only B fragments via warp shuffles (the ldmatrix
 redistribution as ~4-8 __shfl_sync ops + the nibble ALU - no smem, no barrier pairs, no ldsm, the dp4a
 register path's shape); that removes the last structural difference from dp4a besides the mma itself.
+
+## 2026-10-05 - M5 round 11 (r11): pure-shuffle B dead on paper (PTX-pinned), RREG-4 measured and
+## refuted; the marginal rate is issue-bound, not cover-bound
+**Gate: NOT passed (unchanged wins: gateup M7/8 AR64, down M7/8 star - down M7 is a v40 flip inside the
+M2-style noise). v38 (old-loop rerun, healthy node), v39 (node OOM at the tc_bench build, 6 s in), v40
+(the fixed r11 matrix, OOM at the last micro case - the engine data and every real/diagnostic case
+CHECK row survived). Gates: every CHECK ok=true nnan=0, sq_eq=true except gateup's known q8-ULP
+requant rows; engine V4/V5/tc/argmax/parity/gate_60 all True, best_spec k3_dv1 65.79.**
+
+### The PTX ISA pins the B mapping and kills the pure-shuffle GEMV
+The planned r11 endgame (register-only B fragments via warp shuffles, no smem/ldsm/syncwarp) is dead on
+paper: ldmatrix.x4 gives thread l matrix i's row `l>>2`, 16-bit words `2*(l&3)+{0,1}`; the `mma.m8n8k32`
+B operand needs lane l to hold n = `8g + (l>>2)` with nibble j at k = `4*(l&3) + (j>>1) + 16*(j&1)`. So
+lane l's B word is component `(l&3)` of loader lane `(16g + 2*(l>>2) + (s>>1))`'s `rq[2*(s&1)+bb]` - the
+component index varies per consumer, so one shfl can never serve the four consumers of a source word,
+and the honest move set is **64 SHFL warp-issues per group vs the smem path's 10** (4 STS.128 + 4
+ldsm.x4 + 2 syncwarp) - a 3-6x LSU-issue regression in a kernel whose M2 speed came from CUTTING LSU
+issues 3x (r9's T-gate). The smem round-trip stays; the last structural difference from dp4a is the
+mma shape itself.
+
+### RREG 4 (the double per-warp W cover) measured and REFUTED
+Design: the surviving r11 lever from the cover theory - dp4a streams ~9.2 KB/warp in flight vs the
+star's 4 KB, so deepen the ring: RREG 4 (`rq[4][RQW]`, +32 regs), the d-ring generalized to depth
+`2*RREG` (r8's rule generalized: the live d set at a burst is the RREG unconsumed groups plus the
+refill pair = RREG+2 slots), schedules unrolled by 2*RREG so every slot index stays a call-site
+literal. 183-227 regs (star/AR, all 0 stack 0 spills, podman-verified) = 2 blocks = 8 warps/SM at BR64:
+half the star's warps, double the cover. Bench: V8 (star-R4) / V9 (AR-R4), the WN8 dispatch removed (its
+6 combos freed the instantiation budget: 24 - 6 + 5 = 23, inside the v33 envelope).
+- v40 verdict: V8/V9 lose to the RREG-2 star/AR on EVERY real shape at every M (M4, the tightest-noise M:
+  down 131.7 vs 213.2, out 93.7 vs 97.7, attn 82.4 vs 85.0, qkvz 130.0 vs 167.7, clamp 133.2 vs 170.5,
+  gateup AR-R4 121.0 vs AR64 191.3). With r10: **WN8 (half cover, double warps) and RREG-4 (double
+  cover, half warps) both hold the total in-flight constant (~64 KB/SM) and both lose** - the star's
+  16 warps x 4 KB is the measured sweet spot; neither total in-flight bytes nor per-warp cover is the
+  binding currency. WN8 halved the bytes per fixed per-group cost (r10's measured reason); RREG-4
+  halved the independent instruction streams that interleave the consume windows (8 warps hide half
+  the latency of 16).
+
+### The N/K-sweep diagnostics: the gap is BOTH fixed-cost and issue-bound marginal
+Three new cases decompose the per-launch cost (M2, K 5120 rpl2: n1024 64.3 / n2048 99.5 / attn 109.6 /
+qkvz 109.6 GB/s star vs dp4a 202.1 / 207.3 / 225.6 / 246.3; out-class K sweep at N 5120 rpl4: out K3072
+118.7 / outk5 K5120 129.6 / down K8704 218.1 star vs dp4a 219.6 / 237.3 / 259.1). The linear fit over N:
+- dp4a: ~3 us fixed + ~254 GB/s marginal - riding the DRAM roof.
+- TC star: ~22 us fixed (inflated by small-N underfill: N 1024 is 16 blocks over 40 SMs) + ~122 GB/s
+  marginal - HALF the DRAM roof with 16 warps of 4 KB cover and ~50-60 warp-issues per 2 KB group
+  (32 mma + 10 LSU + control). 16 warps on the 4 schedulers make that an issue roof of ~180-220 GB/s -
+  exactly the measured marginal ceiling; the cover was never the marginal constraint.
+
+### r12 direction (from the diagnostics, not the refuted cover theory)
+The issue count per weight-byte must halve: `mma.m16n8k64.s4.s4` (B = 8 rows x 64 k = 256 B/mma ->
+16 mma/group vs 32, the same 4 ldsm.x4/group; the A side is 16 columns so M2 wastes 14/16 of it, but
+the A requant cost is per-k not per-column, and the T-gate already zeroes the stale-token A loads) plus
+the remaining syncwarp/epilogue trims. If the measured marginal stays ~120 after the mma halving, the
+TC verify path is structurally capped and dp4a verify stays the engine default.
+
+### Harness lessons (v38-v40)
+The stage edits go in `t4q/tools/stage_m5.py` - the packed `kaggle/m5/t4q-m5.py` is REGENERATED by
+mkkernel.py (the first v38 push shipped the old matrix because the loop edit went into the packed
+file). Kaggle id/title must resolve exactly: after the v38 title-slug rename (t4q-m5 ->
+otdoges-t4q-m5), an id/title mismatch 409s every push; the metadata now carries id
+`otdoges/otdoges-t4q-m5` + title `otdoges/t4q-m5` (title slug == id slug). The node OOM killer took 2
+of 4 pushes (v39 six seconds into the tc_bench compile, v40 at the last micro case): the matrix-last
+design did its job both times - the engine data and the full real-case matrix landed. The m5 flow is
+now ~20 min end-to-end (the 16 GB model downloads in 85 s from the warm cache), so retry-on-kill is
+cheap.

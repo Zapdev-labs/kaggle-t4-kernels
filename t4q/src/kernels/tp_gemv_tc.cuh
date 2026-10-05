@@ -77,10 +77,11 @@
 // rides 16-20 warps/SM. The d words were the smem parasite: they now ride a 4-deep REGISTER ring (gload packs
 // each lane's two stages' d pairs into one u32 per stage; compute shfls the row's pair from the owning lane - one
 // shfl per pair, warp-synchronous, no barrier), STAGE loses its d area (20 -> 16 KB at BR 128, 10 -> 8 at BR 64),
-// which lifts the star to 16 warps/SM at both BRs: dp4a's occupancy with dp4a's batch sizes. The d-ring is why
-// RREG is pinned to 2 (the live d set {t, t+1, t+RREG, t+RREG+1} needs 4 slots; RREG 4's refill collides) and
-// why the schedules unroll their outer loops by 4 (the slot indices must be call-site literals or the ring
-// lands in local memory - r4's lesson).
+// which lifts the star to 16 warps/SM at both BRs: dp4a's occupancy with dp4a's batch sizes. The d-ring is
+// why RREG was pinned to 2 through r10 (the live d set {t, t+1, t+RREG, t+RREG+1} needs 4 slots; a depth-4
+// RREG 4 refill collides) and why the schedules unroll their outer loops by 2*RREG (the slot indices must
+// be call-site literals or the ring lands in local memory - r4's lesson). r11 lifts the pin: the d-ring
+// goes 2*RREG deep, so RREG 4's 8 slots clear its live window (see the r11 paragraph).
 // v31 measured the r8 kernel clean (min-window timing, download joined first): the star/AR64 reached
 // 16-warp occupancy parity and WON gateup at M7/8 (154 vs 149/119), down at M8 (134 vs 127), within 1.45x
 // of dp4a on qkvz at M8 - but every shape still lost at M 2-4, and the diagnosis is structural: TC's per-launch
@@ -99,6 +100,22 @@
 // (N/8) with STAGE unchanged and every row still warp-private (no cross-warp reduction). The star8 lands at
 // 80-95 regs (3 blocks = 24 warps/SM at BR 64); the AR8's ring keeps 127-128 regs (2 blocks = 16) - its BR 64
 // launch-bounds target is 2 blocks (3 spills the A-ring, 48 B of local).
+// r11 (v38+): the B-fragment mapping, pinned by the PTX ISA (ldmatrix x4: thread l receives matrix i's row
+// l>>2, 16-bit words 2*(l&3)+{0,1}; mma.m8n8k32's B operand: thread l holds n = 8g + (l>>2), nibble j at
+// k = 4*(l&3) + (j>>1) + 16*(j&1)), kills the planned register-only B build: lane l's word is component
+// (l&3) of loader lane (16g + 2*(l>>2) + (s>>1))'s rq[2(s&1)+bb] - the component index varies per consumer,
+// so ONE shfl op can never serve the four consumers of a source (they need its four components), and the
+// move set is 64 SHFL warp-issues per group (one per (unit, component, n-tile)) vs the smem path's 10
+// (4 STS.128 + 4 ldsm_x4 + 2 syncwarp) - a 3-6x LSU-issue regression in a kernel whose M2 speed came from
+// CUTTING LSU issues 3x (r9's T-gate). The smem round-trip stays. The surviving r11 lever is the per-warp
+// W cover: dp4a streams 250+ GB/s off a 2-deep ring of 512-el chunks (~9.2 KB in flight per warp) while
+// the star (RREG 2 x 2 KB groups) holds 4 KB, and r10 showed the currency is the PER-WARP cover (star8
+// halved the cover and lost ~25% at every warp count, total in-flight equal or higher). RREG 4 doubles
+// the cover to 8 KB: the rq ring 4-deep (+32 regs), the d-ring 2*RREG = 8 deep (+8) - ~182 regs (star) /
+// ~206 (AR ring) = 2 blocks = 8 warps/SM at BR 64: half the star's warps, double the cover, dp4a's
+// per-warp batch shape. The d-ring depth rule generalizes r8's: the live set at a burst is the groups
+// {t..t+RREG-1} (loaded, unconsumed) plus the refill pair {t+RREG, t+RREG+1} - RREG+2 slots, so 2*RREG
+// covers it (4 at RREG 2 = r8 exactly, 8 at RREG 4).
 // r3 structure (v18+): BR/16 warps of 32 lanes, each warp owning exactly 16 weight rows = 2 mma n-tiles (v16's
 // 256-thread block mapped two warps onto every tile and computed each one twice). Each warp owns its rows end to end:
 //   * W staging is warp-private, so the k-loop needs only __syncwarp, never __syncthreads (the SQ epilogue's one
@@ -196,9 +213,10 @@ gemv_tc_kernel(const TcArgs a) {
     static_assert(BAT == 0 || BAT == 1,
                   "burst-4 was dropped in r7: RSMEM 2 holds two live buffers, groups base and base+2 collide");
     static_assert(AR == 0 || HOIST == 1, "the A-ring rides the hoist's pinned A-side loads");
-    static_assert(RREG == 2,
-                  "r8's register d-ring is 4 deep (the live set {t, t+1, t+RREG, t+RREG+1}): RREG 4's refill of "
-                  "d-slot g%4 collides with compute(g)'s pending read - V8's buffer collision, twice over");
+    static_assert(RREG == 2 || RREG == 4,
+                  "r8's register d-ring is 2*RREG deep: the live set at a burst is {t..t+RREG-1} plus the refill "
+                  "pair {t+RREG, t+RREG+1} = RREG+2 slots - 4 at RREG 2 (r8 exactly), 8 at RREG 4 (r11); any "
+                  "shallower collides the refill with a pending read - V8's buffer collision");
     extern __shared__ __align__(16) unsigned char smem[];
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     const int row0 = blockIdx.y * BR;
@@ -228,18 +246,18 @@ gemv_tc_kernel(const TcArgs a) {
 #pragma unroll
     for (int g = 0; g < C::NG; ++g) F[g][0] = F[g][1] = 0.f;
 
-    // W register rings (the dp4a chunk-ring idea, r4/r8): group gi = blocks 8gi..8gi+7 = units
+    // W register rings (the dp4a chunk-ring idea, r4/r8/r11): group gi = blocks 8gi..8gi+7 = units
     // jj0..jj0+7 of the row's plane-half, chunk c = gi >> 1, jj0 = (gi & 1) << 3. The lane's code units are
     // (jj0 + wh*4 + k), k = 0..RQW-1: WN 16: 64 B contiguous (2 stages); WN 8: 32 B (1 stage, wh = the
-    // stage). Group gi rides code slot gi % RREG (the smem STS frees it a refill early) and d slot gi % 4 of
-    // the REGISTER d-ring (r8: d never touches smem - the codes' STS->ldsm handoff frees rq early, but d
-    // lives ONLY in registers, so its slot must outlive the refill horizon: at the pair's burst the live d set
-    // is {t, t+1, t+RREG, t+RREG+1} - four groups, hence depth 4 and RREG 2 only (RREG 4's refill of slot
-    // t%4 collides with compute(t)'s pending read, V8's lesson twice over). Both ring indices are call-site
-    // constants (the schedules unroll by 4), so the arrays stay in registers (a runtime ring index lands the
-    // whole set in local memory - the first r4 draft's 160-B stack).
+    // stage). Group gi rides code slot gi % RREG (the smem STS frees it a refill early) and d slot gi %
+    // (2*RREG) of the REGISTER d-ring (r8: d never touches smem - the codes' STS->ldsm handoff frees rq
+    // early, but d lives ONLY in registers, so its slot must outlive the refill horizon: at the pair's
+    // burst the live d set is the RREG unconsumed groups plus the refill pair, RREG+2 slots - hence depth
+    // 2*RREG (4 at RREG 2, r8's rule; 8 at RREG 4, r11's double W cover). Both ring indices are call-site
+    // constants (the schedules unroll their outer loops by 2*RREG), so the arrays stay in registers (a
+    // runtime ring index lands the whole set in local memory - the first r4 draft's 160-B stack).
     int4 rq[RREG][C::RQW];
-    uint32_t rd_p[4][C::RDW];  // [d slot = group & 3][pair]: (d(2st) | d(2st+1) << 16) per stage of the row
+    uint32_t rd_p[2 * RREG][C::RDW];  // [d slot = group % 2*RREG][pair]: (d(2st) | d(2st+1) << 16) per stage
     auto gload = [&](int gi, int4 (&rqs)[C::RQW], uint32_t (&rds)[C::RDW]) {
         const int c = gi >> 1, j = ((gi & 1) << 3) + (WN == 8 ? 2 * wh : 4 * wh);
 #pragma unroll
@@ -389,9 +407,9 @@ gemv_tc_kernel(const TcArgs a) {
     // One STEP per group (r5, BAT 0): STS(G_t) (its LDG was RREG groups back) -> syncwarp -> refill the
     // just-consumed slots with G_{t+RREG} -> compute(G_t) -> syncwarp. The opening syncwarp makes the STS visible
     // to the whole warp's ldsm; the closing one orders the step's ldsm reads before any later STS rewrites the
-    // buffer (the single-buffer RSMEM=1 case needs it, the 2-buffer case gets it free). r8: the step loop
-    // unrolls by FOUR (not RREG) so the d-ring slot t%4 is the literal j - group t's d must outlive the
-    // gload(t+RREG) refill two steps away, and the codes' smem handoff does not cover the register-only d.
+    // buffer (the single-buffer RSMEM=1 case needs it, the 2-buffer case gets it free). r8/r11: the step loop
+    // unrolls by 2*RREG (not RREG) so the d-ring slot t%(2*RREG) is the literal j - group t's d must outlive
+    // the gload(t+RREG) refill RREG steps away, and the codes' smem handoff does not cover the register-only d.
     auto step = [&](int t, int4 (&rqs)[C::RQW], uint32_t (&rdc)[C::RDW], uint32_t (&rds)[C::RDW], unsigned char* B,
                     uint32_t (&aqc)[4][4], int4 (&axc)[4], uint32_t (&aqn2)[4][4], int4 (&axn2)[4]) {
         gstore(rqs, B);
@@ -408,34 +426,34 @@ gemv_tc_kernel(const TcArgs a) {
     for (int j = 0; j < RREG; ++j)
         if (j < ng) gload(j, rq[j], rd_p[j]);
     if (BAT == 0) {
-        // the outer loop unrolls by 4 so every slot / buffer index is a call-site constant and the register
-        // rings never land in local memory (a runtime ring index does - r4's 160-B stack lesson)
-        for (int base = 0; base < ng; base += 4)
+        // the outer loop unrolls by 2*RREG so every slot / buffer index is a call-site constant and the
+        // register rings never land in local memory (a runtime ring index does - r4's 160-B stack lesson)
+        for (int base = 0; base < ng; base += 2 * RREG)
 #pragma unroll
-            for (int j = 0; j < 4; ++j) {
+            for (int j = 0; j < 2 * RREG; ++j) {
                 const int t = base + j;
                 if (t >= ng) break;
-                step(t, rq[j & 1], rd_p[j], rd_p[j ^ 2], buf(t), aq[j & 1], axd[j & 1], aq[(j + 1) & 1],
-                     axd[(j + 1) & 1]);
+                step(t, rq[j & (RREG - 1)], rd_p[j], rd_p[j ^ RREG], buf(t), aq[j & 1], axd[j & 1],
+                     aq[(j + 1) & 1], axd[(j + 1) & 1]);
             }
     } else {
         // r6 BURST-2 (RSMEM >= 2): per PAIR, both STSes first (both buffers live - RSMEM 2 is what makes the
         // pair storeable up front), then ONE 8-wide load burst into the pair's just-freed slots (dp4a's few
         // huge batches: ~4.6 KB of weight bytes per warp in flight at once vs the step's 2.3 KB), then both
-        // computes; the burst rides RREG groups of cover before its STS. r8: the outer loop unrolls by TWO
-        // PAIRS (base += 4, p in 0..1) so the d-ring slots (2p, 2p+1 for the computes, 2p^2 / (2p+1)^2 for
-        // the refills) are literals; the 4-wide quad (BAT 2) is structurally wrong at RSMEM 2 and dropped
-        // (v27), and RREG 4 is dropped with it (its refill would collide with the live d of compute(t)).
-        for (int base = 0; base < ng; base += 4)
+        // computes; the burst rides RREG groups of cover before its STS. r8/r11: the outer loop unrolls by
+        // RREG PAIRS (base += 2*RREG, p in 0..RREG-1) so every ring slot is a literal (2p and 2p+1 for the
+        // computes, 2p^RREG / (2p+1)^RREG for the refills); the 4-wide quad (BAT 2) is structurally wrong at
+        // RSMEM 2 and dropped (v27). r11's RREG 4 rides the same schedule at depth-8 d-ring (2*RREG).
+        for (int base = 0; base < ng; base += 2 * RREG)
 #pragma unroll
-            for (int p = 0; p < 2; ++p) {
-                const int t0 = base + 2 * p, t1 = t0 + 1;  // rq slots: (base+2p) % RREG 2 = 0 / (base+2p+1) % 2 = 1
+            for (int p = 0; p < RREG; ++p) {
+                const int t0 = base + 2 * p, t1 = t0 + 1;  // rq slots: t0 % RREG = 2p % RREG, t1: +1 - literals
                 unsigned char *B0 = buf(t0), *B1 = buf(t1);
-                if (t0 < ng) gstore(rq[0], B0);
-                if (t1 < ng) gstore(rq[1], B1);
+                if (t0 < ng) gstore(rq[t0 & (RREG - 1)], B0);
+                if (t1 < ng) gstore(rq[t1 & (RREG - 1)], B1);
                 __syncwarp();
-                if (t0 + RREG < ng) gload(t0 + RREG, rq[0], rd_p[2 * p ^ 2]);
-                if (t1 + RREG < ng) gload(t1 + RREG, rq[1], rd_p[(2 * p + 1) ^ 2]);
+                if (t0 + RREG < ng) gload(t0 + RREG, rq[t0 & (RREG - 1)], rd_p[(2 * p) ^ RREG]);
+                if (t1 + RREG < ng) gload(t1 + RREG, rq[t1 & (RREG - 1)], rd_p[(2 * p + 1) ^ RREG]);
                 if (t0 < ng) compute(t0, B0, aq[0], axd[0], aq[1], axd[1], rd_p[2 * p]);
                 if (t1 < ng) compute(t1, B1, aq[1], axd[1], aq[0], axd[0], rd_p[2 * p + 1]);
                 __syncwarp();
@@ -522,35 +540,36 @@ static inline cudaError_t gemv_tc_launch(int rpl, bool sq, const TcArgs& a, cuda
     return cudaErrorInvalidValue;
 }
 
-// bench variant dispatch (the r8 matrix + r10): vreg 2 (the register d-ring is RREG 2 only), vsmem 1/2,
-// hoist 0/1, bat 0/1, ar 0/1, wn 8/16 (r10: one n-tile per warp, double the total warps), br64 forces BR 64
-// for big N (the ragged-grid A/B: BR 128 at N 8192 is 64 blocks over 40 SMs, a 2:1 imbalance). BAT 1 needs
-// RSMEM 2 (the burst stages both buffers before compute). Valid combos: <2,1,0,0,0> (V0/V1: control step),
-// <2,2,1,1,0> (V2/V3: the burst-2 star), <2,2,1,1,1> (V4/V5: + the r7 A-ring), and the r10 WN 8 twins V6
-// (the star8) / V7 (the AR8). r8 dropped the 4-group ring (star4): its refill collides with the live d.
+// bench variant dispatch (the r8 matrix + r11): vreg 2/4 (the register d-ring depth is 2*RREG), vsmem
+// 1/2, hoist 0/1, bat 0/1, ar 0/1, wn 16, br64 forces BR 64 for big N (the ragged-grid A/B: BR 128 at
+// N 8192 is 64 blocks over 40 SMs, a 2:1 imbalance). BAT 1 needs RSMEM 2 (the burst stages both buffers
+// before compute). Valid combos: <2,1,0,0,0> (V0/V1: control step), <2,2,1,1,0> (V2/V3: the burst-2
+// star), <2,2,1,1,1> (V4/V5: + the r7 A-ring), and the r11 RREG-4 twins V8 (star-R4) / V9 (AR-R4: the
+// double W cover, ~182/206 regs = 2 blocks = 8 warps/SM at BR 64). r8 dropped the 4-group ring at
+// depth-4 d (star4): its refill collided with the live d; r11's 8-deep d-ring fixes exactly that. r10's
+// WN 8 dispatch is REMOVED (refuted by the v35/v36 matrix: -25% on every shape, GB/s tracks per-SM
+// in-flight bytes, not warp count - and its 6 combos were the instantiation budget the r11 twins need:
+// this plain inline function instantiates every combo in its body in BOTH TUs, and v33's 30-combo
+// tc_bench compile OOM'd the 13 GB worker; 24 - 6 + 5 = 23 stays inside the proven envelope).
 static inline cudaError_t gemv_tc_launch_v(int rpl, bool sq, int vreg, int vsmem, int hoist, int bat, int ar,
                                            bool br64, int wn, const TcArgs& a, cudaStream_t s) {
     const bool big = br64 ? false : (a.N >= 56 * 128);
     const bool v2 = vreg == 2, s1 = vsmem == 1, s2 = vsmem == 2, h0 = hoist == 0, h1 = hoist == 1,
               b0 = bat == 0, b1 = bat == 1, a0 = ar == 0, a1 = ar == 1, w8 = wn == 8;
-    if (w8) {
-        // r10: the WN 8 variants run at BR 64 ONLY (the engine's promoted BR): the big-N ternary would
-        // instantiate both BRs of every combo and v33's tc_bench compile (30 gemv_tc instantiations) OOM'd
-        // the 13 GB Kaggle worker mid-matrix - the dedicated branch halves the added count
-        if (v2 && s2 && h1 && b1 && a0) {
-            if (rpl == 2)
-                return sq ? cudaErrorInvalidValue : launch_t<2, 64, 0, 2, 2, 1, 1, 0, 8>(a, s);
-            if (rpl == 4)
-                return sq ? launch_t<4, 64, 1, 2, 2, 1, 1, 0, 8>(a, s)
-                          : launch_t<4, 64, 0, 2, 2, 1, 1, 0, 8>(a, s);
+    if (vreg == 4) {
+        // r11: the RREG-4 ring (double per-warp W cover, the 8-deep d-ring) - BR 64 only (one BR per combo:
+        // v33's 30-instantiation tc_bench compile OOM'd the worker), HOIST + BAT 1 + RSMEM 2 only (the
+        // promoted schedule shape). ~182 regs (star) / ~206 (AR ring) = 2 blocks = 8 warps/SM.
+        if (!(s2 && h1 && b1 && wn == 16)) return cudaErrorInvalidValue;
+        if (rpl == 2 && !sq) {
+            if (a0) return launch_t<2, 64, 0, 4, 2, 1, 1, 0>(a, s);  // attn-class starR4
+            if (a1) return launch_t<2, 64, 0, 4, 2, 1, 1, 1>(a, s);   // qkvz/clamp-class AR-R4
         }
-        if (v2 && s2 && h1 && b1 && a1) {
-            if (rpl == 2)
-                return sq ? cudaErrorInvalidValue : launch_t<2, 64, 0, 2, 2, 1, 1, 1, 8>(a, s);
-            if (rpl == 4)
-                return sq ? launch_t<4, 64, 1, 2, 2, 1, 1, 1, 8>(a, s)
-                          : launch_t<4, 64, 0, 2, 2, 1, 1, 1, 8>(a, s);
+        if (rpl == 4 && !sq) {
+            if (a0) return launch_t<4, 64, 0, 4, 2, 1, 1, 0>(a, s);  // down/out-class starR4
+            if (a1) return launch_t<4, 64, 0, 4, 2, 1, 1, 1>(a, s);
         }
+        if (rpl == 4 && sq && a1) return launch_t<4, 64, 1, 4, 2, 1, 1, 1>(a, s);  // gateup AR-R4
         return cudaErrorInvalidValue;
     }
     if (rpl == 2 && !sq) {

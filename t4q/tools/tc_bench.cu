@@ -106,6 +106,13 @@ static const Case CASES[] = {
     {"down_tp", 8704, 5120, 4, 17, false, true},
     {"out_tp", 3072, 5120, 4, 6, false, true},
     {"qkvz_clamp", 5120, 8240, 2, 10, false, true},  // N % BR != 0: exercises the row clamp
+    // r11 diagnostics (fixed-vs-marginal per-launch cost): n1024/n2048 extend the qkvz-class N sweep
+    // (1024, 2048, 4096=attn, 8192=qkvz) at fixed K 5120 rpl 2 - a linear fit over N gives the fixed
+    // launch cost and the marginal N cost separately; outk5 extends the out-class K sweep (3072=out,
+    // 5120=outk5, 8704=down) at fixed N 5120 rpl 4 - the same split over K (the compute+code-load length).
+    {"n1024_tp", 5120, 1024, 2, 10, false, true},   // 16 blocks at BR 64: grid underfill on purpose
+    {"n2048_tp", 5120, 2048, 2, 10, false, true},   // 32 blocks at BR 64: partial fill on purpose
+    {"outk5_tp", 5120, 5120, 4, 10, false, true},   // out-class at qkvz's K: the K-length effect at fixed N
 };
 
 // Timing methodology (r7): 20 warmups (absorb the module load AND the idle->boost clock ramp - v26/v29's
@@ -185,15 +192,17 @@ static cudaError_t dispatch_tc(const t4q::gtc::TcArgs& A, cudaStream_t s, int rp
     return t4q::gtc::gemv_tc_launch_v(rpl, sq, vreg, vsmem, hoist, bat, ar, br64, wn, A, s);
 }
 
-// ring variants A/B'd per shape (the r8 matrix + r10): v = <RREG, RSMEM, HOIST, BAT, AR, force BR 64, WN>.
+// ring variants A/B'd per shape (the r8 matrix + r11): v = <RREG, RSMEM, HOIST, BAT, AR, force BR 64, WN>.
 // HOIST pins the group's A-side global loads up front; BAT turns the per-step 4x LDG.128 W batch into an
 // 8-wide pair burst; AR moves the A-side one group early (r7); r8 moved the d words from smem to a shfl'd
-// register ring (STAGE -4 KB: the star runs 16 warps/SM at BR 64, was 12); r10's WN 8 halves the warp's row
-// count (one mma n-tile, 2 int4 + 1 u32 d per lane per group, ldsm_x2) - the grid's TOTAL warps double
-// (N/16 -> N/8), the v32 engine trace's binding constraint (GB/s tracked total warps: attn 256 = 6.4/SM
-// -> 102 GB/s). IDS EQUAL ARRAY INDICES (0..7) - v27 passed ids as indices into the table, so ids landed on
-// the wrong rows: the loop below resolves ids by LOOKING UP the v field instead. star4 (the 4-group
-// register ring) is dropped: r8's register d-ring is 4 deep, and RREG 4's refill collides with the live d.
+// register ring (STAGE -4 KB: the star runs 16 warps/SM at BR 64, was 12). r10's WN 8 twins (one n-tile
+// per warp, 2x the total warps) are DROPPED from the matrix - refuted at -25% on every shape (GB/s tracks
+// the per-SM in-flight bytes, not the warp count; the engine's gemv_tc_launch comment keeps the verdict)
+// - and their dispatch combos freed the instantiation budget the r11 twins need (v33's 30-combo compile
+// OOM'd the 13 GB worker). IDS EQUAL ARRAY INDICES (0..7) - v27 passed ids as indices into the table, so
+// ids landed on the wrong rows: the loop below resolves ids by LOOKING UP the v field instead. The r11
+// RREG-4 twins V8 (star-R4) / V9 (AR-R4) double the per-warp W cover (8 KB) at half the warps (2 blocks =
+// 8/SM at BR 64, ~182/206 regs): r8's depth-4 d-ring collision is cleared by the 8-deep (2*RREG) d-ring.
 struct VInfo {
     int v, vreg, vsmem, hoist, bat, ar, wn;
     bool br64;
@@ -205,8 +214,8 @@ static const VInfo VS[] = {
     {3, 2, 2, 1, 1, 0, 16, true},   // the star with BR 64 forced for big N (the ragged-grid A/B)
     {4, 2, 2, 1, 1, 1, 16, false},  // r7 A-ring: the star + next group's A-side one group early
     {5, 2, 2, 1, 1, 1, 16, true},   // the A-ring with BR 64 forced
-    {6, 2, 2, 1, 1, 0, 8, false},   // r10 star8: the star at one n-tile per warp (2x the total warps)
-    {7, 2, 2, 1, 1, 1, 8, false},   // r10 AR8: the A-ring at one n-tile per warp
+    {8, 4, 2, 1, 1, 0, 16, true},  // r11 star-R4: the star at RREG 4 (2x the per-warp W cover, 8-deep d-ring)
+    {9, 4, 2, 1, 1, 1, 16, true},  // r11 AR-R4: the A-ring at RREG 4 (the promoted-schedule shape at 8 warps/SM)
 };
 
 int main(int argc, char** argv) {
@@ -396,7 +405,10 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 const VInfo V = *Vp;
-                if (V.br64 && N < 56 * 128) continue;  // duplicate of the plain variant for the BR-64 shapes
+                // the vreg-2 BR-64 twins are duplicates below N 7162 (BR is 64 there anyway) - skip them;
+                // the r11 vreg-4 twins REQUIRE BR 64 (their only combo), so they run at every N (the N-sweep
+                // diagnostics need exactly that: fixed cost vs N at the same BR)
+                if (V.br64 && V.vreg == 2 && N < 56 * 128) continue;
                 cur_br = V.br64 ? 64 : (N >= 56 * 128 ? 128 : 64);
                 CK(cudaMemset(d_y, 0xFF, (size_t)MM * N * 4));  // NaN fill: an unwritten output shows as NaN, not 0
                 if (C.sq) {

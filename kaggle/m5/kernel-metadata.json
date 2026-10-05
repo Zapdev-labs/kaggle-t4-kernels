@@ -1,6 +1,6 @@
 {
-  "id": "t4q-m5",
-  "title": "t4q-m5",
+  "id": "otdoges/otdoges-t4q-m5",
+  "title": "otdoges/t4q-m5",
   "code_file": "t4q-m5.py",
   "language": "python",
   "kernel_type": "script",
@@ -11,7 +11,7 @@
   "keywords": [],
   "dataset_sources": [],
   "kernel_sources": [
-    "t4-qwen38-baseline"
+    "otdoges/t4-qwen38-baseline"
   ],
   "competition_sources": [],
   "model_sources": [],
