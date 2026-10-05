@@ -1,0 +1,37 @@
+t4q/tools/tc_bench.cu
+  s_ac85989787ca8c::t_3f794232977c35 195,198-205
+  s_ac85989787ca8c::t_bc067953c66845 408-411
+  s_ac85989787ca8c::t_83ec279bf681de 109-115
+  s_ac85989787ca8c::t_1d50677bc249e2 217-218
+PROGRESS.md
+  s_ac85989787ca8c::t_8914e183bb34bc 1054-1117
+t4q/src/kernels/tp_gemv_tc.cuh
+  s_ac85989787ca8c::t_437268e3a4b3b2 80-84
+  s_ac85989787ca8c::t_f25a49e4f57037 216-219
+  s_ac85989787ca8c::t_b366306ec4346d 543-553
+  s_ac85989787ca8c::t_9fb839f50dd4c4 410-412
+  s_ac85989787ca8c::t_998a02ac092d58 443-447,449-450,452-453,455-456
+  s_ac85989787ca8c::t_f86992f24a7228 249,252-258,260
+  s_ac85989787ca8c::t_045c072f48c107 103-118
+  s_ac85989787ca8c::t_7e41b1e14b80e1 429-431,433,436-437
+  s_ac85989787ca8c::t_30494ce0f4b1e5 559-566,568-570,572
+t4q/tools/stage_m5.py
+  s_ac85989787ca8c::t_83fc1dc49c0c3b 429-445
+  s_ac85989787ca8c::t_42a7a03cfccd16 413
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1b6604c85f09efa1223aeefb006fc4cdf56e0385",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
