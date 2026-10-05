@@ -113,6 +113,22 @@ static const Case CASES[] = {
     {"n1024_tp", 5120, 1024, 2, 10, false, true},   // 16 blocks at BR 64: grid underfill on purpose
     {"n2048_tp", 5120, 2048, 2, 10, false, true},   // 32 blocks at BR 64: partial fill on purpose
     {"outk5_tp", 5120, 5120, 4, 10, false, true},   // out-class at qkvz's K: the K-length effect at fixed N
+    // r12 rpl A/B (the packing experiment): the v40 per-SM group-rate decomposition showed the rpl2-packed
+    // class at HALF the rpl4 class's rate (qkvz 1.19M groups/s/SM vs down 2.37M, same kernel, same warps;
+    // outk5 rpl4-K5120 sits in the same slow regime as out rpl4-K3072) - and the rpl is a PACKING parameter,
+    // so the A/B holds the shape fixed and flips only the layout. If TC(qkvz_r4) jumps, the fix is a repack
+    // choice (the loader's per-tensor rpl), not a kernel rewrite; the dp4a anchors ride along (DK(4,10) vs
+    // DK(2,10)) so the repack's dp4a cost is measured in the same run. down_r2 is the reverse control (the
+    // fast shape at rpl2; dp4a's rpl2 nch-17 template does not exist, so it is host-gated only).
+    {"qkvz_r4", 5120, 8192, 4, 10, false, true},   // qkvz's exact shape, packed rpl 4
+    {"attn_r4", 5120, 4096, 4, 10, false, true},    // attn's exact shape, packed rpl 4
+    {"down_r2", 8704, 5120, 2, 17, false, false},  // down's exact shape, packed rpl 2 (TC-only)
+    // r13: the engine's TRUE attn shape (selftest: qkv_a N 7168 K 5120 - the r11 attn case's N 4096 was a
+    // stale approximation) - the same-shape rpl A/B at the true N, between attn_r4's N 4096 (rpl 4 wins BOTH
+    // paths: dp4a 133.7 -> 203.0, TC star 80.9 -> 98.5) and qkvz's N 8192 (rpl 2 wins: dp4a 252.6 vs 244.8,
+    // TC 174.3 vs 175.7). If rpl 4 wins at 7168 too, the loader's T4Q_RPL_QKV_A default flips (r14).
+    {"attn_e_tp", 5120, 7168, 2, 10, false, true},  // the engine's true qkv_a shape, packed rpl 2 (default)
+    {"attn_e_r4", 5120, 7168, 4, 10, false, true},  // the engine's true qkv_a shape, packed rpl 4
 };
 
 // Timing methodology (r7): 20 warmups (absorb the module load AND the idle->boost clock ramp - v26/v29's

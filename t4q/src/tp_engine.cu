@@ -95,11 +95,18 @@ void build_fw(t4q_ctx* c, Stage& sg, int g, tp::FW& W, const std::vector<Piece>&
     if (K % 512) throw std::runtime_error(std::string("K % 512 != 0 in ") + what);
     if ((ff == FAST_P4 || ff == FAST_P4M) && !il) {  // A/B knobs: all P4, N-split (qkvz, qkv_a), K-split (down, wo)
         const std::string w(what);
-        const bool nsplit = w.find("qkvz") != std::string::npos || w.find("qkv_a") != std::string::npos;
+        const bool qkva = w.find("qkv_a") != std::string::npos;  // attention q|k|v, N 7168 per GPU
+        const bool nsplit = w.find("qkvz") != std::string::npos || qkva;
         const bool ksplit = w.find("ffn_down") != std::string::npos || w.find("attn_output") != std::string::npos;
-        if (nsplit) rpl = 2;  // M4 v11 selftest: qkvz 99.6 -> 94.3 us, qkv_a 84.3 -> 83.8 us with 128-thread blocks
+        // M4 v11 selftest: qkvz 99.6 -> 94.3 us, qkv_a 84.3 -> 83.8 us with 128-thread blocks.
+        // r12 v41 A/B (M4, one node): qkvz (N 8192) keeps rpl 2 (dp4a 252.6 vs 244.8, TC 174.3 vs 175.7);
+        // the attn regime flips with N - N 4096 packed rpl 4 wins BOTH paths (dp4a 133.7 -> 203.0,
+        // TC star 80.9 -> 98.5) - and the engine's real qkv_a is N 7168 (the bench attn case's N 4096
+        // was a stale approximation), so T4Q_RPL_QKV_A A/Bs the true shape before any default flip.
+        if (nsplit) rpl = 2;
         if (getenv("T4Q_RPL_P4")) rpl = atoi(getenv("T4Q_RPL_P4"));
         if (nsplit && getenv("T4Q_RPL_N")) rpl = atoi(getenv("T4Q_RPL_N"));
+        if (qkva && getenv("T4Q_RPL_QKV_A")) rpl = atoi(getenv("T4Q_RPL_QKV_A"));
         if (ksplit && getenv("T4Q_RPL_K")) rpl = atoi(getenv("T4Q_RPL_K"));
     }
     if (ff == FAST_K5 && getenv("T4Q_RPL_K5")) rpl = atoi(getenv("T4Q_RPL_K5"));

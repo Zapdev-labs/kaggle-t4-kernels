@@ -41,8 +41,21 @@ SPEC_ARGS = ["--gen", "512", "--ks", "3,4,5,6", "--dvs", "1", "--dv0_ks", "", "-
                         "spec_k=3,spec_tc=1,spec_rb=1;spec_k=4,spec_tc=1,spec_rb=1;spec_k=6,spec_tc=1"]
 NOP2P_ARGS = ["--gen", "256", "--ks", "3", "--dvs", "1", "--dv0_ks", "", "--sections", "ref,v4,v5"]
 RUN_NOP2P = False
-# extra processes (env at load time): (name, env, args)
-VARIANTS = []
+# extra processes (env at load time): (name, env, args).
+# r13/r14: the qkv_a (attention q|k|v, N 7168 K 5120) repack A/B at ENGINE level. The v42 bench A/B at the
+# TRUE shape refuted the repack per-GEMV (M4 dp4a 243.1 vs 239.4, TC AR64 178.1 vs 177.8, rpl4 -30% at M8
+# dp4a) - but the v42 r4a variant showed TWO anomalies its bench anchors contradict: x_k3_rb1 (rb=1,
+# dp4a) jumped to rb=0 speed (54.95 -> 68.16 tok/s, +24%, all 3 prompts, same node, same run) right after
+# the k3_dv1 (rb=0) config ERRORED (the 4-s AR-wait watchdog 8000 on its first spec step), and the class
+# landed +1.2% above the main's rb0 best on every prompt. Either the errored config left the engine
+# running rb0 semantics (an option-state artifact) or the repack removes a real ~10 ms/step rb=1 penalty.
+# v43 settles it: the v4 section warms the spec machinery (spec-enter + first-step) so k3_dv1 (rb0) runs
+# clean at rpl4, and the within-variant rb0/rb1 pair plus the main's rpl2 pair (47.6/57.7 ms per step)
+# decide. If rb0@rpl4 > rb0@rpl2 the default flips; if the pair matches rpl2 the line closes.
+VARIANTS = [("r4a", {"T4Q_RPL_QKV_A": "4"},
+             ["--gen", "512", "--ks", "3", "--dvs", "1", "--dv0_ks", "", "--sections", "v4,v5",
+              "--prompts", "P0,P1,P2", "--ngs", "0",
+              "--extra", "spec_k=3,spec_rb=1;spec_k=3,spec_tc=1,spec_rb=1"])]
 
 
 def el():
@@ -391,6 +404,10 @@ def main():
         val = json.loads(vout.read_text()) if vout.exists() else {}
         result("spec_check", {"rc": rc, "secs": round(time.time() - t), "tail": o[-3000:] if rc else ""})
         result("summary", summarize(val))
+        # v42: the r4a variant's FIRST spec step hit the 4-s AR-wait watchdog (8000): the main process's
+        # CUDA teardown (8.6 GB x 2 GPUs) races the next process's first graph launches on the driver-global
+        # locks, so let the teardown drain before the variant processes start
+        time.sleep(20)
         for vname, venv, vargs in VARIANTS:
             if DEADLINE - el() < 420:
                 break
@@ -410,7 +427,7 @@ def main():
             result("nop2p", {"rc": rc, "tail": o[-2000:] if rc else ""} | summarize(v2))
         # v33/v34 both died mid-matrix to the worker's OOM killer with the 16 GB model's page cache still
         # resident: drop its CLEAN pages (POSIX_FADV_DONTNEED) before the synthetic-P4 matrix so the 8 case
-        # processes (a ~1.2 GB dual-GPU CUDA context each, 11 cases in the r11 matrix) get the full RAM headroom
+        # processes (a ~1.2 GB dual-GPU CUDA context each, 12 cases in the r13 matrix) get the full RAM headroom
         try:
             fd = os.open(model, os.O_RDONLY)
             os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
@@ -426,23 +443,21 @@ def main():
                       f"{t4q}/tools/tc_bench.cu -o {W / 'tc_bench'}", timeout=900, logname="tc_bench_build.txt")
         if tbr == 0:
             parts = []
-            # the REAL shapes first (8 variants: the v37 comparison set 0-5 + the r11 twins 8/9), then the
-            # r11 diagnostics (case 10 outk5: the out-class K sweep; 9 n2048 / 8 n1024: the qkvz-class N
-            # sweep - lean 4-variant lists 2,4,8,9: V3/V5 duplicate V2/V4 below N 7168), the (already-proven)
-            # micro smoke cases last: v33/v34/v35 all had the worker's OOM killer reap the notebook
-            # mid-matrix at a random case boundary (a noisy tenant on the shared T4x2 node - v32's identical
-            # flow survived), and each case's process leaves its CHECK lines in its own log, so a late kill
-            # only ever costs the micro columns
-            plan = [(2, 3, 4, 5, 6, 7), (10, 9, 8), (0, 1)]
-            for grp, (reps_, vars_, tmo) in zip(plan, [(100, "0,1,2,3,4,5,8,9", 1200),
-                                                        (100, "2,4,8,9", 900),
-                                                        (100, "0,1,2,3,4,5", 900)]):
-                for ci in grp:
-                    crc, cout = sh(f"{W / 'tc_bench'} --case {ci} --reps {reps_} --variants {vars_}", timeout=tmo,
-                                   logname=f"tc_bench_{ci}.txt", cwd=str(W))
-                    tail = (OUT / "logs" / f"tc_bench_{ci}.txt")
-                    txt = tail.read_text()[-1400:] if tail.exists() else cout[-800:]
-                    parts.append(f"case{ci} rc={crc}\n{txt}")
+            # r13 question FIRST: the true qkv_a shape A/B (14/15: attn_e_tp/attn_e_r4, N 7168 - the engine's
+            # real attention q|k|v, selftest-pinned; the stale N 4096 case stays as the control 12 attn_r4 that
+            # pairs with them for the N dependence), then the real-shape continuity set (2-7, the v37/v40
+            # comparison set), then outk5 (10, the rpl4-K5120 slow-regime point), micros last. The r12 A/B
+            # twins 11 qkvz_r4 / 13 down_r2 are off the run lists (v41 measured both; verdicts recorded) - their
+            # dispatches stay for the record, like the r11 RREG-4 twins 8/9. The engine now runs a VARIANTS
+            # process before the matrix, so the kill window lands mid-matrix: new-questions-first protects the
+            # r13 data, each case's process leaves its CHECK lines in its own log, and a late worker-OOM kill
+            # only costs the continuity columns
+            for ci in (14, 15, 12, 2, 3, 4, 5, 6, 7, 10, 0, 1):
+                crc, cout = sh(f"{W / 'tc_bench'} --case {ci} --reps 100 --variants 0,1,2,3,4,5", timeout=900,
+                               logname=f"tc_bench_{ci}.txt", cwd=str(W))
+                tail = (OUT / "logs" / f"tc_bench_{ci}.txt")
+                txt = tail.read_text()[-1400:] if tail.exists() else cout[-800:]
+                parts.append(f"case{ci} rc={crc}\n{txt}")
             result("tc_bench", {"rc": 0, "out": ("\n").join(parts)[-5000:]})
         else:
             result("tc_bench", {"rc": tbr, "out": tbo[-3000:]})

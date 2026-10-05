@@ -577,7 +577,8 @@ void gemv_mt(const FW& W, const int8_t* xq, const int2* xm, float* y, cudaStream
         return;                                                                                                 \
     }
     T4Q_GM(FAST_P4, 2, 10, true, false)    // DeltaNet qkvz + alpha/beta rows (RPL 2 for the N-split weights)
-    T4Q_GM(FAST_P4, 2, 10, false, false)   // attention q|k|v
+    T4Q_GM(FAST_P4, 2, 10, false, false)   // attention q|k|v (rpl 2 default: v41 qkvz-class N sweep)
+    T4Q_GM(FAST_P4, 4, 10, false, false)   // attention q|k|v packed rpl 4 (T4Q_RPL_QKV_A A/B, N 7168)
     T4Q_GM(FAST_K5, 2, 6, false, false)    // ssm_out
     T4Q_GM(FAST_P4, 4, 6, false, false)    // attn_output
     T4Q_GM(FAST_P4, 4, 10, false, true)    // gate|up + silu q8 epilogue

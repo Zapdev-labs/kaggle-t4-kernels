@@ -1115,3 +1115,128 @@ of 4 pushes (v39 six seconds into the tc_bench compile, v40 at the last micro ca
 design did its job both times - the engine data and the full real-case matrix landed. The m5 flow is
 now ~20 min end-to-end (the 16 GB model downloads in 85 s from the warm cache), so retry-on-kill is
 cheap.
+
+## 2026-10-05 - M5 round 12 (r12): the m16n8k32 s4 mma is sm_80-only (the shape lever is dead on
+## T4); the rpl packing A/B is measured - shape-local, not a uniform win; the bench attn shape was
+## stale, the engine's qkv_a is N 7168
+**Gate: NOT passed (unchanged wins: gateup M7/8 AR64, down M7/8 star). v41 (the fixed r12 matrix): the
+OOM kill at the last micro case again - only micro2 and the final SUMMARY block lost; all 12 case
+logs with full M sweeps + the engine sweep landed. Gates: every CHECK ok=true nnan=0; engine
+V4/V5/tc/argmax/parity/gate_60 all True, best_spec k3_dv1 66.52.**
+
+### The mma-shape lever is dead on paper (sm_80-only)
+The r11-planned `mma.m16n8k32/.m16n8k64` with `.s4/.u4` operands requires sm_80 (the PTX ISA Target
+ISA Notes) - on the T4 (sm_75) the only sub-byte mma is `m8n8k32`, so the two-digit q8 split forcing
+32 mma per group is STRUCTURAL. The operand-flip/mma-shape family is closed; what remains of the
+issue-bound marginal (~122 GB/s vs dp4a's 254 DRAM-roof) is the mma count itself.
+
+### The rpl A/B: the packing matters, but shape-locally
+The v40 decomposition (the rpl2-packed class at HALF the rpl4 class's per-SM group rate, same kernel,
+same warps) made rpl a bench A/B without a kernel rewrite: same shape, only the layout flips
+(qkvz_r4 / attn_r4 / down_r2, cases 11/12/13; the dp4a anchors ride along - DK(4,10) vs DK(2,10)).
+v41 M4 verdict (one node, one run):
+- down (K 8704, N 5120): rpl4 REQUIRED - down_r2 (rpl2) halves it (star 217.0 vs 110.3; dp4a 258.9 vs
+  n/a - dp4a's rpl2 nch-17 template does not exist). The engine already packs down/out/gateup rpl4.
+- qkvz (K 5120, N 8192): rpl2 KEEPS it (dp4a 252.6 vs 244.8, TC 174.3 vs 175.7 - rpl4 neutral to
+  slightly negative). The engine already packs qkvz rpl2.
+- attn (K 5120, N 4096): rpl4 wins BOTH paths - dp4a 133.7 -> 203.0 (+52%), TC star 80.9 -> 98.5
+  (+22%). The packing effect is a memory-subsystem effect shared by both kernels (the per-warp
+  contiguous run doubles), not a TC-only artifact.
+So "rpl4 everywhere" is refuted; the current engine packings are already optimal for every tensor
+whose shape was measured EXCEPT the attention qkv_a.
+
+### The stale bench shape (the r12 miss)
+The bench's attn case was N 4096 - a stale approximation. The engine's real qkv_a (selftest-pinned)
+is **N 7168, K 5120** (q|gate 6144 | k 512 | v 512 rows per GPU), sitting between attn's measured
+N 4096 (rpl4 wins) and qkvz's N 8192 (rpl2 wins). The v41 A/B does NOT decide the engine's attn
+packing; the r13 A/B runs at the true shape.
+
+### r13 design (v42): the true-shape A/B + the engine-level variant, defaults untouched
+- Bench cases attn_e_tp (14, N 7168 rpl2) / attn_e_r4 (15, N 7168 rpl4) - the true-shape A/B, with
+  attn_r4 (12) kept as the N-4096 control for the N dependence. The r12 twins 11/13 are off the run
+  lists (v41 measured both; their dispatches stay for the record).
+- The loader gained `T4Q_RPL_QKV_A` (qkv_a-only, applied after T4Q_RPL_N; defaults unchanged: qkv_a
+  still packs rpl2), and tp_spec.cu gained the (FAST_P4, 4, 10, non-sq) dp4a instantiation it needs
+  (255 regs at the launch-bounds cap, 0 spill; the non-spec decode path already had it). Prefill/
+  TC dispatch on W.L.rpl generically - no other wall.
+- The m5 VARIANTS mechanism (env at load time) runs an engine-level A/B in the SAME run: the r4a
+  process loads with T4Q_RPL_QKV_A=4 and re-runs k3_dv1 + the two best extras (spec_k=3,spec_rb=1
+  and its TC twin) - its tok_s compares 1:1 against the main run's same configs on the same node.
+  The repack is value-identical, so the promotion gates are: k3_dv1 byte-identical to the reference,
+  accept-rate parity, and the tok/s comparison. If rpl4 wins at the true shape, r14 flips the loader
+  default for qkv_a only.
+- Matrix order is new-questions-first (14, 15, 12, then the real-shape continuity set 2-7, outk5,
+  micros last): the engine variant adds ~4 min before the matrix, so the kill window now lands
+  mid-matrix - the r13 data lands before it, and only continuity columns are at risk (v40/v41
+  already hold them).
+Podman: all three changed TUs compile RC=0; the gtc envelope is unchanged (24 unique gemv_tc
+instantiations in the bench TU, all 0 stack 0 spill); tp_spec's only spillers are the pre-existing
+gemm8 prefill family (benign since v24).
+
+## 2026-10-05 - M5 round 13 (r13): the true-shape A/B closes the rpl line (qkv_a keeps rpl 2);
+## the rb=1 + dp4a + rpl2 ~10 ms/step penalty is real and the repack removes it - but it promotes
+## nothing (rb 1 never beats rb 0); the 8000 first-step watchdog flake is harness-mitigated
+**Gate: NOT passed (unchanged wins: gateup M7/8 AR64, down M7/8 star). v42 ran COMPLETE (no OOM
+kill); v43 was killed at ~1264 s mid-matrix, after both engine sweeps and both true-shape case
+sweeps (24 CHECK lines each) - everything that mattered landed. Gates: every CHECK ok=true nnan=0;
+main V4/V5/tc/argmax/parity all True, best_spec k3_dv1 66.95 (v42) / 64.59 (v43, slower node); the
+r4a variant V5_pass True both runs.**
+
+### The true-shape bench A/B: qkv_a keeps rpl 2
+Cases attn_e_tp (14) / attn_e_r4 (15), N 7168 K 5120 (the selftest-pinned engine shape), M4
+v42 / M4 v43 (same numbers within 1%):
+- dp4a: 243.1 / 242.0 (rpl 2) vs 239.4 (rpl 4) - neutral; at M8 dp4a rpl 4 COLLAPSES
+  (177.9 -> 124.9, -30%).
+- TC AR64: 178.1 vs 177.8; star64 176.4 vs 170.9 - neutral; the one TC win (rpl 4 M8, AR64 142.5
+  vs dp4a 124.9) is moot - the engine keeps rpl 2, where dp4a wins M8.
+The r12 attn N-4096 anchors turned out node-variable (dp4a rpl 2 M4: 133.7 in v41, 157.2 in v42)
+- the +52% was partly node variance; the honest N-4096 effect is ~+28% (157.2 -> 200.6). The
+transition to the rpl2 side happens somewhere in N 4096..7168, and the engine's N 7168 is on it.
+
+### The engine-level A/B: the repack moves NOTHING that matters - and the rb=1 anomaly is real
+v42's r4a variant (T4Q_RPL_QKV_A=4, one node, same run): x_k3_rb1 (rb=1, dp4a) jumped 54.95 ->
+68.16 tok/s (+24%, all three prompts, +1.2% above the main's rb 0 best) - right after the k3_dv1
+(rb=0) config ERRORED (the 4-s AR-wait watchdog, code 8000, at its first spec step). Every
+per-GEMV rate said neutral (bench M4 dp4a/TC, M=1 selftest 244 vs 249, the ref decode 30.1 vs 30.5),
+so the first read was a post-error artifact. v43 settled it CLEAN (the v4 warmup made k3_dv1 run;
+no 8000, V5_pass True):
+- k3_dv1 (rb 0, dp4a): main 69.07/64.59/69.37 vs r4a 68.94/64.71/69.74 - IDENTICAL (+-0.3%).
+- x_k3_rb1 (rb 1, dp4a): main 56.35/52.22/57.49 vs r4a 68.85/64.41/69.68 - **the ~10 ms/step
+  rb=1 penalty is REAL at rpl 2 (present in v38-v43) and the repack removes it entirely**.
+- x_k3_tc1_rb1 (rb 1, TC): main 56.26/52.09/57.40 vs r4a 56.04/52.16/57.37 - the TC class is
+  rb-IMMUNE and rpl-IMMUNE at this shape.
+The verdict: rb 1 at rpl 4 == rb 0 exactly (64.41-69.68 vs 64.59-69.74), and rb 0 itself is
+rpl-neutral - so the repack promotes NOTHING (the engine's best config stays rb 0, and rb 1 never
+beats it at either packing). qkv_a stays rpl 2; the rpl line is CLOSED in both directions at the
+true shapes: rpl 2 {qkvz, qkv_a}, rpl 4 {down, wo, gateup} - the current engine packings, now all
+measured.
+
+### The open curiosity (recorded, not pursued): the rb=1 penalty has NO per-GEMV signature
+The ~10 ms/step penalty is specific to (rb=1 verify graph) x (dp4a) x (qkv_a at rpl 2): the bench
+gemv rates at the true shape are rpl-equal, the TC class and the rb 0 class are rpl/penalty-immune,
+and the k_gdn_m stash/replay arithmetic is far too small (the rb 1 path SAVES ~0.9 ms/step of
+snapshot writes). Whatever it is, it lives in the rb 1 verify graph's interaction with the qkv_a
+gemv's rpl 2 layout, and it is not a tok/s lever (rb 1 == rb 0 once it is gone).
+
+### The 8000 watchdog flake (a harness race, mitigated; a robustness note for the engine)
+A fresh process's FIRST spec step can hit the 4-s AR-wait watchdog (st.err = 8000+idx) - seen once
+(v42's variant, right after the main process's 8.6 GB x 2 CUDA teardown; the driver-global teardown
+races the next process's first graph launches). Harness-mitigated in v43: a 20-s teardown drain
+before the VARIANTS loop + the v4 section as the variant warmup - the variant then ran clean
+(V5_pass True, no recurrence). The underlying race stands: a user going straight to spec decode on
+a fresh engine could see a hard error; the fix (a cross-GPU barrier before the first verify step,
+or a first-step-only longer watchdog) is an engine change for a later round.
+
+### Where the standing gate stands after r4-r13 (the lever census)
+The TC GEMV beats dp4a only on gateup M7/8 (AR64) and down M7/8 (star, M7 a v40 flip inside
+noise). Every structural lever is now measured-dead on T4 within the exact-numerics constraint:
+cover (WN8, r10) and warp count (RREG-4, r11) refuted by the two-sided falsification; the mma shape
+is sm_80-only (m16n8k32/k64 s4 needs sm_80; T4 is stuck at m8n8k32 and the two-digit q8 split, 32
+mma/group); the packing is closed (r12/r13, all engine tensors measured at their true shapes); the
+per-launch cost is ~22 us fixed + ~122 GB/s marginal, issue-bound (~50-60 warp-issues per 2 KB
+group vs 4 schedulers/SM) against dp4a's ~3 us + 254 GB/s DRAM roof. The one un-measured lever left
+is the s4-activation requant (16 mma/group, -10 A-loads/group -> the marginal roof ~180-220 or
+better; but it breaks the V4/V5 bit-identity gates and the tok/s effect rides through the draft
+ACCEPTANCE rate, unmeasured). r14: either measure that acceptance-vs-speed tradeoff once, or accept
+the TC as the M7/8-only promotion and move to the next tok/s lever of PLAN_500 (the tree drafts /
+TPD = 16 on the dp4a path).
