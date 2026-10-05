@@ -90,6 +90,15 @@
 // read past a.T-token xq/xms buffers, a latent OOB); the mma itself stays m8 (the B-fragment pattern needs all
 // 32 lanes) but it is <2% of the time, so the tensor-pipe waste is free. The engine default is promoted to
 // v31's per-shape winners (gemv_tc_launch below).
+// r10 (v33+): v32's engine trace (per-kernel CUPTI) explained the rest of the gap: the verify's TC launches
+// run at the matrix's per-launch times (qkvz 167.9 vs bench 165.7 us) under a uniform ~1.28x sustained-clock
+// inflation, and GB/s across shapes tracks the grid's TOTAL warps = N/16 (attn N 4096: 256 warps = 6.4/SM ->
+// 102 GB/s; down N 5120: 320 = 8/SM -> 216; gateup 1088 capped) - the small-N shapes are warp-starved, not
+// latency- or tensor-bound. WN 8: each warp owns ONE mma n-tile (8 rows, the lane QUAD loader - one stage, 2
+// code int4s + 1 packed d u32 per lane per group, ldsm_x2 for the two k32 halves), so the total warps double
+// (N/8) with STAGE unchanged and every row still warp-private (no cross-warp reduction). The star8 lands at
+// 80-95 regs (3 blocks = 24 warps/SM at BR 64); the AR8's ring keeps 127-128 regs (2 blocks = 16) - its BR 64
+// launch-bounds target is 2 blocks (3 spills the A-ring, 48 B of local).
 // r3 structure (v18+): BR/16 warps of 32 lanes, each warp owning exactly 16 weight rows = 2 mma n-tiles (v16's
 // 256-thread block mapped two warps onto every tile and computed each one twice). Each warp owns its rows end to end:
 //   * W staging is warp-private, so the k-loop needs only __syncwarp, never __syncthreads (the SQ epilogue's one
@@ -149,30 +158,40 @@ __device__ __forceinline__ void tc_quant_warp(float v, int8_t* xq_i, int2* xm_g)
     if (lane == 0) *xm_g = make_int2(__float_as_int(d), (int)((unsigned)(s & 0xffff) | ((unsigned)s1 << 16)));
 }
 
-template <int BR, int SQ, int RSMEM>
+template <int BR, int SQ, int RSMEM, int ROWSW>
 struct Cfg {
-    static constexpr int WN = 16;        // rows per warp = 2 mma n-tiles
-    static constexpr int NW = BR / WN;   // warps per block: 4 (BR 64, 128 threads) or 8 (BR 128, 256 threads)
-    static constexpr int NG = 2;         // mma n-tiles per warp (16 rows)
+    static_assert(ROWSW == 8 || ROWSW == 16, "r10: 8 (one mma n-tile) or 16 (two) rows per warp");
+    static constexpr int WN = ROWSW;      // rows per warp: 8 (one mma n-tile, r10) or 16 (two)
+    static constexpr int NW = BR / WN;   // warps per block: WN 16: 4/8 (128/256 threads at BR 64/128);
+                                         // WN 8: 8/16 (256/512) - SAME smem, double the warps per block
+    static constexpr int NG = WN / 8;    // mma n-tiles per warp: 2 (16 rows) or 1 (8 rows)
     // per-warp GROUP buffer (4 stages of 64 el): [4 stages x WN x 32 B codes]. The d words ride NO smem (r8):
     // gload packs each lane's two stages' d pairs into ONE u32 per stage of a 4-deep REGISTER ring, and
     // compute shfls the row's pair from the owning lane pair (warp-synchronous, no barrier) - STAGE loses
     // the d area, 20 -> 16 KB at BR 128 / 10 -> 8 KB at BR 64, lifting the RSMEM-2 ring from 8 to 16
     // warps/SM (BR 128) and the BR 64 star from 12 to 16: dp4a's occupancy with dp4a's batch sizes.
+    // r10 WN 8: the warp owns ONE n-tile (8 rows) - the group buffer halves per warp (1 KB) while the block
+    // doubles its warp count, so STAGE is UNCHANGED and the grid's TOTAL warps double (N/16 -> N/8): the
+    // v32 engine trace showed GB/s tracking total warps (attn N 4096: 256 warps = 6.4/SM -> 102 GB/s; down
+    // N 5120: 320 = 8/SM -> 216), and the small-N shapes are the engine's laggards (attn/out 0.5x dp4a).
     static constexpr int WGRP = 4 * WN * 32;
     static constexpr int STAGE = NW * WGRP;         // ONE smem ring buffer (a group); the ring is RSMEM deep
     static constexpr int O_SQ = RSMEM * STAGE;      // SQ: [BR][TPD] fp32 outputs staged by row
     static constexpr int SMEM = O_SQ + (SQ ? BR * TPD * 4 : 0);
     // r8 <*,2>: BR 128 non-sq 32 KB -> 2 blocks = 16 warps/SM (was 8), BR 64 non-sq 16 KB -> 4 blocks
     // (122-reg star) = 16 warps (was 12), BR 64 sq 20 KB -> 3 blocks = 12; <*,1>: 16/8 KB -> 4/8 blocks.
+    // r10 WN 8: 256 threads at BR 64 - the per-thread reg budget halves (fewer F/fb/rq regs, the A-ring
+    // unchanged), so the star8 should hold 2 blocks = 16 warps/SM while serving 2x the total warps.
+    static constexpr int RQW = WN == 8 ? 2 : 4;  // code int4s per lane per group (WN 8: 1 stage = 2 units)
+    static constexpr int RDW = WN == 8 ? 1 : 2;  // d pairs packed per lane per group (1 u32 each)
 };
 
-template <int RPL, int BR, int SQ, int RREG, int RSMEM, int HOIST, int BAT, int AR>
-__global__ void __launch_bounds__(BR / 16 * 32,
-                                  HOIST ? (RREG == 2 ? (BR == 64 ? 3 : 1) : (BR == 64 ? 2 : 1))
+template <int RPL, int BR, int SQ, int RREG, int RSMEM, int HOIST, int BAT, int AR, int WN = 16>
+__global__ void __launch_bounds__(BR / WN * 32,
+                                  HOIST ? (RREG == 2 ? (BR == 64 ? (WN == 8 ? 2 : 3) : 1) : (BR == 64 ? 2 : 1))
                                         : (RREG == 2 ? (BR == 64 ? 4 : 2) : (BR == 64 ? 2 : 1)))
 gemv_tc_kernel(const TcArgs a) {
-    using C = Cfg<BR, SQ, RSMEM>;
+    using C = Cfg<BR, SQ, RSMEM, WN>;
     static_assert(RSMEM >= 2 || BAT == 0, "burst schedules store both pair buffers before compute");
     static_assert(BAT == 0 || BAT == 1,
                   "burst-4 was dropped in r7: RSMEM 2 holds two live buffers, groups base and base+2 collide");
@@ -193,12 +212,15 @@ gemv_tc_kernel(const TcArgs a) {
     // discarded F slots stay NaN-free (the int mma path is bounded either way).
     const bool tlive = tok < a.T;
 
-    // this warp owns WN weight rows; the row's 8 group code units (128 B, one plane-half unit run) live in the
-    // lane pair (lane >> 1 = row, lane & 1 = wh): wh 0 holds the group's stages 0-1 (blocks 8gi..8gi+3), wh 1
-    // stages 2-3, each lane's 4 units one CONTIGUOUS 64-B run of the row's plane-half.
-    const int wrow = warp * C::WN + (lane >> 1);   // local row in the tile
+    // this warp owns WN weight rows (r10: 8 or 16 = one or two mma n-tiles); the row's 8 group code units
+    // (128 B, one plane-half unit run) live in the lane team: WN 16: the lane PAIR (lane >> 1 = row,
+    // lane & 1 = wh), wh 0 holds the group's stages 0-1 (blocks 8gi..8gi+3), wh 1 stages 2-3, each lane's
+    // 4 units one CONTIGUOUS 64-B run of the row's plane-half; WN 8: the lane QUAD (lane >> 2 = row,
+    // lane & 3 = qh), qh owning exactly ONE stage (blocks 8gi+2qh..8gi+2qh+1, 32 B contiguous) - the
+    // group's W bytes spread over ALL 32 lanes either way.
+    const int wrow = warp * C::WN + (WN == 8 ? (lane >> 2) : (lane >> 1));  // local row in the tile
     const int wrow_g = min(row0 + wrow, a.N - 1);  // clamped global row for the loads (padded tile tail)
-    const int wh = lane & 1;
+    const int wh = WN == 8 ? (lane & 3) : (lane & 1);  // WN 8: the lane's stage; WN 16: its stage pair
     const gemm8::WPtr<FAST_P4, RPL> P(a.q, wrow_g, 0);  // blk 0: P.code / P.sa sit at the row's plane-half base
     const int8_t* xtok = (const int8_t*)a.xq + (size_t)tok * K;  // own token's q8 row (tok >= T: stale, discarded)
 
@@ -207,46 +229,48 @@ gemv_tc_kernel(const TcArgs a) {
     for (int g = 0; g < C::NG; ++g) F[g][0] = F[g][1] = 0.f;
 
     // W register rings (the dp4a chunk-ring idea, r4/r8): group gi = blocks 8gi..8gi+7 = units
-    // jj0..jj0+7 of the row's plane-half, chunk c = gi >> 1, jj0 = (gi & 1) << 3. The lane's 4 code units are
-    // (jj0 + wh*4 + k), k = 0..3: 64 B contiguous. Group gi rides code slot gi % RREG (the smem STS frees it a
-    // refill early) and d slot gi % 4 of the REGISTER d-ring (r8: d never touches smem - the codes' STS->ldsm
-    // handoff frees rq early, but d lives ONLY in registers, so its slot must outlive the refill horizon: at
-    // the pair's burst the live d set is {t, t+1, t+RREG, t+RREG+1} - four groups, hence depth 4 and RREG 2
-    // only (RREG 4's refill of slot t%4 collides with compute(t)'s pending read, V8's lesson twice over).
-    // Both ring indices are call-site constants (the schedules unroll by 4), so the arrays stay in registers
-    // (a runtime ring index lands the whole set in local memory - the first r4 draft's 160-B stack).
-    int4 rq[RREG][4];
-    uint32_t rd_p[4][2];  // [d slot = group & 3][stage & 1]: (d(2st) | d(2st+1) << 16) of the lane's row
-    auto gload = [&](int gi, int4 (&rqs)[4], uint32_t (&rds)[2]) {
-        const int c = gi >> 1, j = ((gi & 1) << 3) + wh * 4;
+    // jj0..jj0+7 of the row's plane-half, chunk c = gi >> 1, jj0 = (gi & 1) << 3. The lane's code units are
+    // (jj0 + wh*4 + k), k = 0..RQW-1: WN 16: 64 B contiguous (2 stages); WN 8: 32 B (1 stage, wh = the
+    // stage). Group gi rides code slot gi % RREG (the smem STS frees it a refill early) and d slot gi % 4 of
+    // the REGISTER d-ring (r8: d never touches smem - the codes' STS->ldsm handoff frees rq early, but d
+    // lives ONLY in registers, so its slot must outlive the refill horizon: at the pair's burst the live d set
+    // is {t, t+1, t+RREG, t+RREG+1} - four groups, hence depth 4 and RREG 2 only (RREG 4's refill of slot
+    // t%4 collides with compute(t)'s pending read, V8's lesson twice over). Both ring indices are call-site
+    // constants (the schedules unroll by 4), so the arrays stay in registers (a runtime ring index lands the
+    // whole set in local memory - the first r4 draft's 160-B stack).
+    int4 rq[RREG][C::RQW];
+    uint32_t rd_p[4][C::RDW];  // [d slot = group & 3][pair]: (d(2st) | d(2st+1) << 16) per stage of the row
+    auto gload = [&](int gi, int4 (&rqs)[C::RQW], uint32_t (&rds)[C::RDW]) {
+        const int c = gi >> 1, j = ((gi & 1) << 3) + (WN == 8 ? 2 * wh : 4 * wh);
 #pragma unroll
-        for (int k = 0; k < 4; ++k) {
+        for (int k = 0; k < C::RQW; ++k) {
             rqs[k] = gemv::ldg_nc_v4(P.code + c * P.cs_code + (j + k) * 16);
         }
-        // the lane's 4 d u16s pair up per stage (blocks j+2u and j+2u+1 of the same row), each pair packed
+        // the lane's d u16s pair up per stage (the pair's two blocks of the same row), each pair packed
         // into ONE u32 register word - the shfl consumer (r8) fetches the pair in a single shfl_sync
 #pragma unroll
-        for (int u = 0; u < 2; ++u)
+        for (int u = 0; u < C::RDW; ++u)
             rds[u] = (uint32_t)__ldg((const unsigned short*)(P.sa + c * P.cs_s + (j + 2 * u) * RPL * 2)) |
                      ((uint32_t)__ldg((const unsigned short*)(P.sa + c * P.cs_s + (j + 2 * u + 1) * RPL * 2)) << 16);
         if (BAT == 0 && gi + RREG + 2 < ng) {  // L2 prefetch beyond the ring horizon (BAT 0 only: with 8 LDGs
             // outstanding the hardware MLP covers DRAM latency and the prefetches only add LSU pressure)
-            const int gp = gi + RREG + 2, c2 = gp >> 1, j2 = ((gp & 1) << 3) + wh * 4;
+            const int gp = gi + RREG + 2, c2 = gp >> 1, j2 = ((gp & 1) << 3) + (WN == 8 ? 2 * wh : 4 * wh);
 #pragma unroll
-            for (int k = 0; k < 4; ++k) {
+            for (int k = 0; k < C::RQW; ++k) {
                 gemm8::prefetch_l2(P.code + c2 * P.cs_code + (j2 + k) * 16);
                 gemm8::prefetch_l2(P.sa + c2 * P.cs_s + (j2 + k) * RPL * 2);
             }
         }
     };
-    auto gstore = [&](const int4 (&rqs)[4], unsigned char* B) {
-        const int row = lane >> 1;
-        // unit (j + k) = block 8gi + wh*4 + k: stage sloc = 2*wh + (k >> 1) (k = 2*sloc + bb), code 16 B per row
-        // per stage at wswz(row, bb) - CODES ONLY (r8): the d pairs stay in the register d-ring until the
-        // compute-side shfl, so the smem group buffer loses its d area (STAGE -4 KB at BR 128)
+    auto gstore = [&](const int4 (&rqs)[C::RQW], unsigned char* B) {
+        const int row = WN == 8 ? (lane >> 2) : (lane >> 1);
+        // unit (j + k) = block 8gi + (WN 16: wh*4 / WN 8: 2*wh) + k: stage sloc = (WN 16: 2*wh + (k >> 1) /
+        // WN 8: wh), code 16 B per row per stage at wswz(row, k & 1) - CODES ONLY (r8): the d pairs stay in
+        // the register d-ring until the compute-side shfl, so the smem group buffer loses its d area
 #pragma unroll
-        for (int k = 0; k < 4; ++k)
-            *(int4*)(B + (2 * wh + (k >> 1)) * (C::WN * 32) + row * 32 + wswz(row, k & 1) * 16) = flip4(rqs[k]);
+        for (int k = 0; k < C::RQW; ++k)
+            *(int4*)(B + (WN == 8 ? wh : 2 * wh + (k >> 1)) * (C::WN * 32) + row * 32 + wswz(row, k & 1) * 16) =
+                flip4(rqs[k]);
     };
     // A-side (HOIST, r6/r7): the group's 16 q8 words (the lane's lo/hi nibble pair of each stage's 2 blocks) +
     // 4 xms words as one back-to-back pinned-volatile batch (ptxas cannot sink them into the stage loop). The
@@ -279,7 +303,7 @@ gemv_tc_kernel(const TcArgs a) {
         }
     };
     auto compute = [&](int gi, const unsigned char* Bp, uint32_t (&aqg)[4][4], int4 (&axg)[4],
-                       uint32_t (&aqn)[4][4], int4 (&axn)[4], uint32_t (&rdc)[2]) {
+                       uint32_t (&aqn)[4][4], int4 (&axn)[4], uint32_t (&rdc)[C::RDW]) {
         if (HOIST) {
             if (AR) {
                 if (gi + 1 < ng)
@@ -305,13 +329,20 @@ gemv_tc_kernel(const TcArgs a) {
                 fa[0][bb] = (lo4 & 0x0F0F0F0Fu) | ((hi4 & 0x0F0F0F0Fu) << 4);
                 fa[1][bb] = ((lo4 >> 4) & 0x0F0F0F0Fu) | (hi4 & 0xF0F0F0F0u);
             }
-            // both bb x g B fragments in ONE ldsm_x4 (r3: two ldsm_x2): lanes 8m..8m+7 address matrix m,
-            // m = 2*bb + g over (rows 8g..8g+7, unit wswz(row, bb)); r3's lanes 16..31 idle addresses are gone
-            uint32_t fb[2][2];
-            {
+            // the warp's B fragments: WN 16: both bb x g matrices in ONE ldsm_x4 (r3: two ldsm_x2), lanes
+            // 8m..8m+7 addressing matrix m = 2*bb + g over (rows 8g..8g+7, unit wswz(row, bb)); WN 8: the
+            // single n-tile's two bb halves in an ldsm_x2 - lanes 0-7 address (row = lane, bb 0), lanes
+            // 8-15 (row = lane-8, bb 1); the fragment regs are fb[bb][g] either way (mma: fb[0][g], fb[1][g])
+            uint32_t fb[2][C::NG];
+            if constexpr (WN == 16) {
                 const int m = lane >> 3, r = 8 * (m & 1) + (lane & 7), bb = m >> 1;
                 gemm8::ldsm_x4(fb[0][0], fb[0][1], fb[1][0], fb[1][1],
                                Bp + s * (C::WN * 32) + r * 32 + wswz(r, bb) * 16);
+            } else {
+                // lanes 16-31's addresses are ignored by the x2 but still clamped to the row's own 32 B so
+                // no architecture ever wanders off the warp's group buffer
+                const int r = lane & 7, bb = lane < 16 ? (lane >> 3) : (lane & 1);
+                gemm8::ldsm_x2(fb[0][0], fb[1][0], Bp + s * (C::WN * 32) + r * 32 + wswz(r, bb) * 16);
             }
             // activation d of this token at the stage's two k32 blocks (one 16-B load: the index is 16-B
             // aligned); r9: the stale token quads read 0 (gated, no OOB past a.T-token xms; the hoisted path
@@ -324,10 +355,15 @@ gemv_tc_kernel(const TcArgs a) {
                 float2 ws[2];  // per row: {d of the stage's even k32, d of the odd k32} (gemm20's layout, packed)
 #pragma unroll
                 for (int e = 0; e < 2; ++e) {
-                    // r8: the row's d pair rides the LOADER lane's register d-ring word - lane 2*row + (s>>1)
-                    // packed its stage-(s&1) pair at gload (the lane pair's wh = s>>1 half owns stages 2wh,
-                    // 2wh+1) - ONE shfl per pair, warp-synchronous, no smem round-trip, no barrier
-                    const uint32_t dp = __shfl_sync(0xffffffffu, rdc[s & 1], 2 * (8 * g + 2 * t4 + e) + (s >> 1));
+                    // r8: the row's d pair rides the LOADER lane's register d-ring word - ONE shfl per pair,
+                    // warp-synchronous, no smem round-trip, no barrier. WN 16: the loader lane PAIR owns the
+                    // row (lane 2*row + (s >> 1) packed its stage-(s & 1) pair); r10 WN 8: the loader lane
+                    // QUAD owns it (lane 4*row + s packed exactly stage s's pair)
+                    uint32_t dp;
+                    if constexpr (WN == 8)
+                        dp = __shfl_sync(0xffffffffu, rdc[0], 4 * (8 * g + 2 * t4 + e) + s);
+                    else
+                        dp = __shfl_sync(0xffffffffu, rdc[s & 1], 2 * (8 * g + 2 * t4 + e) + (s >> 1));
                     ws[e] = make_float2(gemm8::h2f(dp & 0xffffu), gemm8::h2f(dp >> 16));
                 }
                 int h0[2], l0[2], h1[2], l1[2];
@@ -356,7 +392,7 @@ gemv_tc_kernel(const TcArgs a) {
     // buffer (the single-buffer RSMEM=1 case needs it, the 2-buffer case gets it free). r8: the step loop
     // unrolls by FOUR (not RREG) so the d-ring slot t%4 is the literal j - group t's d must outlive the
     // gload(t+RREG) refill two steps away, and the codes' smem handoff does not cover the register-only d.
-    auto step = [&](int t, int4 (&rqs)[4], uint32_t (&rdc)[2], uint32_t (&rds)[2], unsigned char* B,
+    auto step = [&](int t, int4 (&rqs)[C::RQW], uint32_t (&rdc)[C::RDW], uint32_t (&rds)[C::RDW], unsigned char* B,
                     uint32_t (&aqc)[4][4], int4 (&axc)[4], uint32_t (&aqn2)[4][4], int4 (&axn2)[4]) {
         gstore(rqs, B);
         __syncwarp();
@@ -449,65 +485,91 @@ gemv_tc_kernel(const TcArgs a) {
     }
 }
 
-template <int RPL, int BR, int SQ, int RREG, int RSMEM, int HOIST, int BAT, int AR>
+template <int RPL, int BR, int SQ, int RREG, int RSMEM, int HOIST, int BAT, int AR, int WN = 16>
 static cudaError_t launch_t(const TcArgs& a, cudaStream_t s) {
     if (a.K % 256 || a.T < 1 || a.T > TPD) return cudaErrorInvalidValue;  // K%256: groups of 4 x 64-el stages
-    using C = Cfg<BR, SQ, RSMEM>;
+    using C = Cfg<BR, SQ, RSMEM, WN>;
     static int attr_mask = 0;  // per device: prefer max smem carveout
     int dev = 0;
     cudaGetDevice(&dev);
     if (!(attr_mask & (1 << dev))) {
-        cudaError_t e = cudaFuncSetAttribute(gemv_tc_kernel<RPL, BR, SQ, RREG, RSMEM, HOIST, BAT, AR>,
+        cudaError_t e = cudaFuncSetAttribute(gemv_tc_kernel<RPL, BR, SQ, RREG, RSMEM, HOIST, BAT, AR, WN>,
                                              cudaFuncAttributePreferredSharedMemoryCarveout, 100);
         if (e != cudaSuccess) return e;
         attr_mask |= 1 << dev;
     }
     dim3 grid(1, (a.N + BR - 1) / BR);
-    gemv_tc_kernel<RPL, BR, SQ, RREG, RSMEM, HOIST, BAT, AR><<<grid, C::NW * 32, C::SMEM, s>>>(a);
+    gemv_tc_kernel<RPL, BR, SQ, RREG, RSMEM, HOIST, BAT, AR, WN><<<grid, C::NW * 32, C::SMEM, s>>>(a);
     return cudaGetLastError();
 }
 
-// engine default = the v31 matrix's per-shape winners (M7/M8 columns, the W-stream-bound regime), all at
-// BR 64 (r8 cut the star's smem to 16 KB -> 4 blocks = 16 warps/SM; BR 128's 32 KB gives the same 16 in 2
-// blocks, but the finer grid tails better: star64 131-139 GB/s vs star 123-129 on qkvz's N 8192): rpl 2
-// non-sq (qkvz/attn) the star <2,64,0,2,2,1,1,0>; rpl 4 non-sq (down/out) the star <4,64,0,2,2,1,1,0> (down
-// 171.4 GB/s at M4, +27% over ctrl); rpl 4 sq (gateup) the AR ring <4,64,1,2,2,1,1,1> (156.9, +27%, beats
-// dp4a at M7/8). Every shape still loses to dp4a at M 2-4 until r9's T-gating lands in the same version.
+// engine default = the measured per-shape winners, all at BR 64 (r8 cut the star's smem to 16 KB -> 4 blocks
+// = 16 warps/SM; the finer grid tails better than BR 128's 2-block 16): rpl 4 non-sq (down/out) the star
+// <4,64,0,2,2,1,1,0> (down 217 GB/s at M4, +53% over ctrl); rpl 4 sq (gateup) the AR ring <4,64,1,2,2,1,1,1>
+// (156-186, beats dp4a at M7/8); rpl 2 non-sq: the AR ring <2,64,0,2,2,1,1,1> for the BIG N (qkvz/clamp,
+// N >= 8192: v36 has AR64 > star64 at EVERY M, +23..+55% at M2 where the r9 T-gate makes the A-side the
+// largest fraction - the AR ring covers exactly that), the star <2,64,0,2,2,1,1,0> for the small N (attn
+// N 4096: the star's M2 131 vs the AR's 120, ties at M4-8). r10's WN 8 (one n-tile per warp, 2x the total
+// warps) is REFUTED by the same matrix: it lost ~25% on every shape (the per-warp in-flight bytes halved
+// while the fixed per-group costs - the syncwarp pair, the AR loads, the ldsm setup - doubled per byte; the
+// warp count was never the constraint: GB/s tracks the in-flight bytes per SM, not the warps).
 static inline cudaError_t gemv_tc_launch(int rpl, bool sq, const TcArgs& a, cudaStream_t s) {
     if (rpl == 2)
-        return sq ? cudaErrorInvalidValue : launch_t<2, 64, 0, 2, 2, 1, 1, 0>(a, s);
+        return sq ? cudaErrorInvalidValue
+                  : (a.N >= 8192 ? launch_t<2, 64, 0, 2, 2, 1, 1, 1>(a, s) : launch_t<2, 64, 0, 2, 2, 1, 1, 0>(a, s));
     if (rpl == 4)
         return sq ? launch_t<4, 64, 1, 2, 2, 1, 1, 1>(a, s) : launch_t<4, 64, 0, 2, 2, 1, 1, 0>(a, s);
     return cudaErrorInvalidValue;
 }
 
-// bench variant dispatch (the r8 matrix): vreg 2 (the register d-ring is RREG 2 only), vsmem 1/2, hoist 0/1,
-// bat 0/1, ar 0/1, br64 forces BR 64 for big N (the ragged-grid A/B: BR 128 at N 8192 is 64 blocks over 40
-// SMs, a 2:1 imbalance). BAT 1 needs RSMEM 2 (the burst stages both buffers before compute). Valid combos:
-// <2,1,0,0,0> (V0/V1: control step), <2,2,1,1,0> (V2/V3: the burst-2 star), <2,2,1,1,1> (V4/V5: + the r7
-// A-ring). r8 dropped the 4-group ring (V6/star4): its refill collides with the live d of compute(t).
+// bench variant dispatch (the r8 matrix + r10): vreg 2 (the register d-ring is RREG 2 only), vsmem 1/2,
+// hoist 0/1, bat 0/1, ar 0/1, wn 8/16 (r10: one n-tile per warp, double the total warps), br64 forces BR 64
+// for big N (the ragged-grid A/B: BR 128 at N 8192 is 64 blocks over 40 SMs, a 2:1 imbalance). BAT 1 needs
+// RSMEM 2 (the burst stages both buffers before compute). Valid combos: <2,1,0,0,0> (V0/V1: control step),
+// <2,2,1,1,0> (V2/V3: the burst-2 star), <2,2,1,1,1> (V4/V5: + the r7 A-ring), and the r10 WN 8 twins V6
+// (the star8) / V7 (the AR8). r8 dropped the 4-group ring (star4): its refill collides with the live d.
 static inline cudaError_t gemv_tc_launch_v(int rpl, bool sq, int vreg, int vsmem, int hoist, int bat, int ar,
-                                           bool br64, const TcArgs& a, cudaStream_t s) {
+                                           bool br64, int wn, const TcArgs& a, cudaStream_t s) {
     const bool big = br64 ? false : (a.N >= 56 * 128);
     const bool v2 = vreg == 2, s1 = vsmem == 1, s2 = vsmem == 2, h0 = hoist == 0, h1 = hoist == 1,
-              b0 = bat == 0, b1 = bat == 1, a0 = ar == 0, a1 = ar == 1;
+              b0 = bat == 0, b1 = bat == 1, a0 = ar == 0, a1 = ar == 1, w8 = wn == 8;
+    if (w8) {
+        // r10: the WN 8 variants run at BR 64 ONLY (the engine's promoted BR): the big-N ternary would
+        // instantiate both BRs of every combo and v33's tc_bench compile (30 gemv_tc instantiations) OOM'd
+        // the 13 GB Kaggle worker mid-matrix - the dedicated branch halves the added count
+        if (v2 && s2 && h1 && b1 && a0) {
+            if (rpl == 2)
+                return sq ? cudaErrorInvalidValue : launch_t<2, 64, 0, 2, 2, 1, 1, 0, 8>(a, s);
+            if (rpl == 4)
+                return sq ? launch_t<4, 64, 1, 2, 2, 1, 1, 0, 8>(a, s)
+                          : launch_t<4, 64, 0, 2, 2, 1, 1, 0, 8>(a, s);
+        }
+        if (v2 && s2 && h1 && b1 && a1) {
+            if (rpl == 2)
+                return sq ? cudaErrorInvalidValue : launch_t<2, 64, 0, 2, 2, 1, 1, 1, 8>(a, s);
+            if (rpl == 4)
+                return sq ? launch_t<4, 64, 1, 2, 2, 1, 1, 1, 8>(a, s)
+                          : launch_t<4, 64, 0, 2, 2, 1, 1, 1, 8>(a, s);
+        }
+        return cudaErrorInvalidValue;
+    }
     if (rpl == 2 && !sq) {
-        if (v2 && s1 && h0 && b0 && a0)  // V0/V1: control (per-step W issue, per-stage A reads)
+        if (v2 && s1 && h0 && b0 && a0 && !w8)  // V0/V1: control (per-step W issue, per-stage A reads)
             return big ? launch_t<2, 128, 0, 2, 1, 0, 0, 0>(a, s) : launch_t<2, 64, 0, 2, 1, 0, 0, 0>(a, s);
-        if (v2 && s2 && h1 && b1 && a0)  // V2/V3: the burst-2 star, r8 smem cut (16 warps/SM at BR 64)
+        if (v2 && s2 && h1 && b1 && a0 && !w8)  // V2/V3: the burst-2 star, r8 smem cut (16 warps/SM at BR 64)
             return big ? launch_t<2, 128, 0, 2, 2, 1, 1, 0>(a, s) : launch_t<2, 64, 0, 2, 2, 1, 1, 0>(a, s);
-        if (v2 && s2 && h1 && b1 && a1)  // V4/V5: the star + r7 A-ring (12 warps/SM at BR 64, 166 regs)
+        if (v2 && s2 && h1 && b1 && a1 && !w8)  // V4/V5: the star + r7 A-ring (12 warps/SM at BR 64, 166 regs)
             return big ? launch_t<2, 128, 0, 2, 2, 1, 1, 1>(a, s) : launch_t<2, 64, 0, 2, 2, 1, 1, 1>(a, s);
         return cudaErrorInvalidValue;
     }
     if (rpl == 4) {
-        if (v2 && s1 && h0 && b0 && a0)  // V0/V1 at rpl 4 (sq 0/1)
+        if (v2 && s1 && h0 && b0 && a0 && !w8)  // V0/V1 at rpl 4 (sq 0/1)
             return sq ? (big ? launch_t<4, 128, 1, 2, 1, 0, 0, 0>(a, s) : launch_t<4, 64, 1, 2, 1, 0, 0, 0>(a, s))
                       : (big ? launch_t<4, 128, 0, 2, 1, 0, 0, 0>(a, s) : launch_t<4, 64, 0, 2, 1, 0, 0, 0>(a, s));
-        if (v2 && s2 && h1 && b1 && a0)  // V2/V3 at rpl 4
+        if (v2 && s2 && h1 && b1 && a0 && !w8)  // V2/V3 at rpl 4
             return sq ? (big ? launch_t<4, 128, 1, 2, 2, 1, 1, 0>(a, s) : launch_t<4, 64, 1, 2, 2, 1, 1, 0>(a, s))
                       : (big ? launch_t<4, 128, 0, 2, 2, 1, 1, 0>(a, s) : launch_t<4, 64, 0, 2, 2, 1, 1, 0>(a, s));
-        if (v2 && s2 && h1 && b1 && a1)  // V4/V5 at rpl 4
+        if (v2 && s2 && h1 && b1 && a1 && !w8)  // V4/V5 at rpl 4
             return sq ? (big ? launch_t<4, 128, 1, 2, 2, 1, 1, 1>(a, s) : launch_t<4, 64, 1, 2, 2, 1, 1, 1>(a, s))
                       : (big ? launch_t<4, 128, 0, 2, 2, 1, 1, 1>(a, s) : launch_t<4, 64, 0, 2, 2, 1, 1, 1>(a, s));
         return cudaErrorInvalidValue;

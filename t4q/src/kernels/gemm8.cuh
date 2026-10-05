@@ -107,6 +107,13 @@ __device__ __forceinline__ void ldsm_x4(uint32_t& r0, uint32_t& r1, uint32_t& r2
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"
                  : "=r"(r0), "=r"(r1), "=r"(r2), "=r"(r3) : "r"(sp));
 }
+// r10 (gemv_tc WN 8): the single n-tile's two 16-B unit halves - lanes 0-7 address (row, unit 0), lanes
+// 8-15 (row, unit 1); lanes 16-31's addresses are ignored by the hardware (keep them in the row's 32 B)
+__device__ __forceinline__ void ldsm_x2(uint32_t& r0, uint32_t& r1, const void* p) {
+    const unsigned sp = (unsigned)__cvta_generic_to_shared(p);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];"
+                 : "=r"(r0), "=r"(r1) : "r"(sp));
+}
 __device__ __forceinline__ float h2f(uint32_t b) { return __half2float(__ushort_as_half((unsigned short)(b & 0xffff))); }
 __device__ __forceinline__ __half2 as_h2(uint32_t v) { return *reinterpret_cast<const __half2*>(&v); }
 __device__ __forceinline__ uint32_t h2_bits(__half2 h) { return *reinterpret_cast<const uint32_t*>(&h); }

@@ -367,23 +367,9 @@ def main():
         # tail mid-bench, and the surviving TC timings came out 1.2-2x slow while dp4a and the engine sweep
         # (which run later, after the download finished) stayed at speed
         th.join(timeout=2400)
-        # int4 tensor-core verify GEMV vs dp4a: bit-identity + per-shape GB/s (synthetic P4, no model needed).
-        # One process per case: a crash in one shape leaves the others' results intact.
-        tbr, tbo = sh(f"nvcc -O3 -std=c++17 -arch=sm_75 -Xcompiler -ffp-contract=off -I{t4q}/include "
-                      f"{t4q}/tools/tc_bench.cu -o {W / 'tc_bench'}", timeout=900, logname="tc_bench_build.txt")
-        if tbr == 0:
-            parts = []
-            for ci in range(8):
-                crc, cout = sh(f"{W / 'tc_bench'} --case {ci} --reps 100 --variants 0,1,2,3,4,5", timeout=900,
-                               logname=f"tc_bench_{ci}.txt", cwd=str(W))
-                tail = (OUT / "logs" / f"tc_bench_{ci}.txt")
-                txt = tail.read_text()[-1400:] if tail.exists() else cout[-800:]
-                parts.append(f"case{ci} rc={crc}\n{txt}")
-            result("tc_bench", {"rc": 0, "out": ("\n").join(parts)[-5000:]})
-        else:
-            result("tc_bench", {"rc": tbr, "out": tbo[-3000:]})
-        # ncu is unusable on Kaggle (v27 measured: ERR_NVGPUCTRPERM, GPU perf counters are admin-gated on the
-        # notebook nodes), so the within-run variant matrix stays the only profiling instrument
+        # the ENGINE spec sweep runs BEFORE the tc_bench matrix (v33: the worker OOM-killed the notebook
+        # mid-matrix at case 6/8 and the engine data - the actual goal metric - was lost; the matrix is
+        # synthetic P4 and needs no model, so it goes last and any late kill only costs the matrix)
         prepare_prompts(t4q)
         th.join(timeout=1800)
         model = DL.get("path")
@@ -422,6 +408,37 @@ def main():
                            env=dict(os.environ, T4Q_NO_P2P="1"))
             v2 = json.loads(vout2.read_text()) if vout2.exists() else {}
             result("nop2p", {"rc": rc, "tail": o[-2000:] if rc else ""} | summarize(v2))
+        # v33/v34 both died mid-matrix to the worker's OOM killer with the 16 GB model's page cache still
+        # resident: drop its CLEAN pages (POSIX_FADV_DONTNEED) before the synthetic-P4 matrix so the 8 case
+        # processes (a ~1.2 GB dual-GPU CUDA context each) get the full RAM headroom
+        try:
+            fd = os.open(model, os.O_RDONLY)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            os.close(fd)
+        except OSError:
+            pass
+        # int4 tensor-core verify GEMV vs dp4a: bit-identity + per-shape GB/s (synthetic P4, no model needed).
+        # One process per case: a crash in one shape leaves the others' results intact. LAST (see the note at
+        # prepare_prompts): the engine data lands first, and any late worker OOM only costs matrix columns.
+        # ncu is unusable on Kaggle (ERR_NVGPUCTRPERM, admin-gated counters), so the within-run variant matrix
+        # stays the only profiling instrument.
+        tbr, tbo = sh(f"nvcc -O3 -std=c++17 -arch=sm_75 -Xcompiler -ffp-contract=off -I{t4q}/include "
+                      f"{t4q}/tools/tc_bench.cu -o {W / 'tc_bench'}", timeout=900, logname="tc_bench_build.txt")
+        if tbr == 0:
+            parts = []
+            # the REAL shapes first, the (already-proven) micro smoke cases last: v33/v34/v35 all had the
+            # worker's OOM killer reap the notebook mid-matrix at a random case boundary (a noisy tenant on
+            # the shared T4x2 node - v32's identical flow survived), and each case's process leaves its
+            # CHECK lines in its own log, so a late kill only ever costs the micro columns
+            for ci in (2, 3, 4, 5, 6, 7, 0, 1):
+                crc, cout = sh(f"{W / 'tc_bench'} --case {ci} --reps 100 --variants 0,1,2,3,4,5", timeout=900,
+                               logname=f"tc_bench_{ci}.txt", cwd=str(W))
+                tail = (OUT / "logs" / f"tc_bench_{ci}.txt")
+                txt = tail.read_text()[-1400:] if tail.exists() else cout[-800:]
+                parts.append(f"case{ci} rc={crc}\n{txt}")
+            result("tc_bench", {"rc": 0, "out": ("\n").join(parts)[-5000:]})
+        else:
+            result("tc_bench", {"rc": tbr, "out": tbo[-3000:]})
     except Exception:  # noqa: BLE001
         import traceback
         result("fatal", traceback.format_exc()[-3000:])

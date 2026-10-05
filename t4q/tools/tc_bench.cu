@@ -181,28 +181,32 @@ static void dispatch_dp4a(const Case& C, const tp::FW& W, const int8_t* d_xq, co
 }
 
 static cudaError_t dispatch_tc(const t4q::gtc::TcArgs& A, cudaStream_t s, int rpl, bool sq, int vreg, int vsmem, int hoist,
-                               int bat, int ar, bool br64) {
-    return t4q::gtc::gemv_tc_launch_v(rpl, sq, vreg, vsmem, hoist, bat, ar, br64, A, s);
+                               int bat, int ar, bool br64, int wn) {
+    return t4q::gtc::gemv_tc_launch_v(rpl, sq, vreg, vsmem, hoist, bat, ar, br64, wn, A, s);
 }
 
-// ring variants A/B'd per shape (the r8 matrix): v = <RREG, RSMEM, HOIST, BAT, AR, force BR 64>. HOIST pins
-// the group's A-side global loads up front; BAT turns the per-step 4x LDG.128 W batch into an 8-wide pair
-// burst; AR moves the A-side one group early (r7); r8 moved the d words from smem to a shfl'd register ring
-// (STAGE -4 KB: the star runs 16 warps/SM at BR 64, was 12). IDS EQUAL ARRAY INDICES (0..5) - v27 passed
-// ids 1,4..9 as indices into the 7-entry table, so ids landed on the wrong rows and out-of-range ids
-// silently dropped: the loop below resolves ids by LOOKING UP the v field instead. star4 (the 4-group
+// ring variants A/B'd per shape (the r8 matrix + r10): v = <RREG, RSMEM, HOIST, BAT, AR, force BR 64, WN>.
+// HOIST pins the group's A-side global loads up front; BAT turns the per-step 4x LDG.128 W batch into an
+// 8-wide pair burst; AR moves the A-side one group early (r7); r8 moved the d words from smem to a shfl'd
+// register ring (STAGE -4 KB: the star runs 16 warps/SM at BR 64, was 12); r10's WN 8 halves the warp's row
+// count (one mma n-tile, 2 int4 + 1 u32 d per lane per group, ldsm_x2) - the grid's TOTAL warps double
+// (N/16 -> N/8), the v32 engine trace's binding constraint (GB/s tracked total warps: attn 256 = 6.4/SM
+// -> 102 GB/s). IDS EQUAL ARRAY INDICES (0..7) - v27 passed ids as indices into the table, so ids landed on
+// the wrong rows: the loop below resolves ids by LOOKING UP the v field instead. star4 (the 4-group
 // register ring) is dropped: r8's register d-ring is 4 deep, and RREG 4's refill collides with the live d.
 struct VInfo {
-    int v, vreg, vsmem, hoist, bat, ar;
+    int v, vreg, vsmem, hoist, bat, ar, wn;
     bool br64;
 };
 static const VInfo VS[] = {
-    {0, 2, 1, 0, 0, 0, false},  // control: the engine default path (per-step W issue, per-stage A reads)
-    {1, 2, 1, 0, 0, 0, true},   // the same with BR 64 forced for big N (v26's gateup winner)
-    {2, 2, 2, 1, 1, 0, false},  // the star: A-hoist + burst-2, r8 16 warps/SM (was 12 at BR 64, 8 at BR 128)
-    {3, 2, 2, 1, 1, 0, true},   // the star with BR 64 forced for big N (the ragged-grid A/B)
-    {4, 2, 2, 1, 1, 1, false},  // r7 A-ring: the star + next group's A-side one group early
-    {5, 2, 2, 1, 1, 1, true},   // the A-ring with BR 64 forced
+    {0, 2, 1, 0, 0, 0, 16, false},  // control: the engine default path (per-step W issue, per-stage A reads)
+    {1, 2, 1, 0, 0, 0, 16, true},   // the same with BR 64 forced for big N (v26's gateup winner)
+    {2, 2, 2, 1, 1, 0, 16, false},  // the star: A-hoist + burst-2, r8 16 warps/SM (was 12 at BR 64, 8 at BR 128)
+    {3, 2, 2, 1, 1, 0, 16, true},   // the star with BR 64 forced for big N (the ragged-grid A/B)
+    {4, 2, 2, 1, 1, 1, 16, false},  // r7 A-ring: the star + next group's A-side one group early
+    {5, 2, 2, 1, 1, 1, 16, true},   // the A-ring with BR 64 forced
+    {6, 2, 2, 1, 1, 0, 8, false},   // r10 star8: the star at one n-tile per warp (2x the total warps)
+    {7, 2, 2, 1, 1, 1, 8, false},   // r10 AR8: the A-ring at one n-tile per warp
 };
 
 int main(int argc, char** argv) {
@@ -400,7 +404,7 @@ int main(int argc, char** argv) {
                     CK(cudaMemset(d_sqm, 0, (size_t)MM * (N / 64) * 8));
                 }
                 const cudaError_t de =
-                    dispatch_tc(A, s, C.rpl, C.sq, V.vreg, V.vsmem, V.hoist, V.bat, V.ar, V.br64);
+                    dispatch_tc(A, s, C.rpl, C.sq, V.vreg, V.vsmem, V.hoist, V.bat, V.ar, V.br64, V.wn);
                 if (de == cudaErrorInvalidValue) {  // combo invalid for this shape (e.g. the rpl-2-only
                     fprintf(stderr, "bench: v%d invalid combo for %s, skipped\n", V.v, C.name);  // variants on
                     continue;  // an rpl-4 case): SKIP, not abort - v27's rpl-2 cases died at the first
@@ -430,7 +434,7 @@ int main(int argc, char** argv) {
                         for (int r = 0; r < ncmp; ++r) dx = fmaxf(dx, fabsf(y_a[(size_t)col * N + r] - y_b[(size_t)col * N + r]));
                     printf("DP4A_DIFF {\"case\":\"%s\",\"M\":%d,\"max_abs_diff\":%.7g}\n", C.name, M, dx);
                 }
-                const float ms_b = time_burst([&] { dispatch_tc(A, s, C.rpl, C.sq, V.vreg, V.vsmem, V.hoist, V.bat, V.ar, V.br64); }, reps);
+                const float ms_b = time_burst([&] { dispatch_tc(A, s, C.rpl, C.sq, V.vreg, V.vsmem, V.hoist, V.bat, V.ar, V.br64, V.wn); }, reps);
                 const double gbb = L.bytes / (ms_b * 1e-3) / 1e9;
                 const bool sq_eq = !C.sq || (memcmp(sq_a.data(), sq_b.data(), sq_a.size()) == 0 &&
                                              memcmp(sqm_a.data(), sqm_b.data(), sqm_b.size() * 8) == 0);

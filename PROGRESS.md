@@ -1003,17 +1003,51 @@ the whole ring in local memory - r4's lesson).
 - The remaining gap is structural: TC's per-launch time is M-INDEPENDENT (the mma m-tile covers all 8 token
   slots and the A loads fetch them all), dp4a scales with M - so TC loses at the engine's real M=2-6.
 
-### r9 (v32, in flight): T-gating the A loads + engine promotion to the winners
+### r9 (v32): T-gating the A loads + engine promotion to the winners
 - r9: gate the A-side loads on `tok < a.T` (quad-uniform; the stale token quads skip their ~24 of ~30 LSU ops
   per group and zero their registers; the mma stays m8 - the B-fragment pattern needs all 32 lanes - but the
   tensor pipe is <2% utilized, so the waste is free). This also fixes a latent OOB: the ungated stale quads
   read past the a.T-token xq/xms buffers.
-- The engine default (`gemv_tc_launch`) is promoted to v31's per-shape winners, all BR64: rpl2 non-sq (qkvz/attn)
-  the star <2,64,0,2,2,1,1,0>; rpl4 non-sq (down/out) the star <4,64,0,2,2,1,1,0>; rpl4 sq (gateup) the AR ring
-  <4,64,1,2,2,1,1,1>. ptxas (both TUs, 18 instantiations): 0 stack/0 spills, star 121-148 regs, AR 166-182.
+- The engine default (`gemv_tc_launch`) was promoted to the winners, all BR64; v32 measured it clean: the
+  M2/M4 columns jumped 20-78% (attn M2 73.8 -> 131.0, down M4 171 -> 216, qkvz M4 131 -> 169); TC WINS
+  gateup at M7/8 (159.4/152.1 vs 148.1/118.3), down at M8 (152.2 vs 135.5), down at M4 within 6% (216.2 vs
+  230.6); the engine tc configs rose 42 -> 52-60 tok/s (k4_tc 41.9 -> 53.7) vs dv1 65-67; all rows ok, nnan 0,
+  gates green, best_spec k3_dv1 67.49.
+- v32's engine CUPTI trace closed the accounting: the verify's TC launches run at the matrix's per-launch
+  times (qkvz 167.9 us vs bench 165.7) under a uniform ~1.22-1.28x sustained-clock inflation (sm 1301 MHz vs
+  1590 boost), so the engine gap is exactly the per-launch GB/s ratios x 64-72 launches/step x 32 layers,
+  not an engine-path anomaly.
+
+### r10 (v33-v36): the WN=8 warp doubling is REFUTED; qkvz/clamp promote to the AR ring
+- Theory (from the trace): GB/s tracked total warps = N/16 (attn 256 = 6.4/SM -> 102 GB/s; down 320 = 8/SM ->
+  216), so doubling the warps should lift the small-N shapes. WN 8: each warp owns ONE mma n-tile (8 rows,
+  a lane-QUAD loader - one stage, 2 code int4s + 1 packed d u32 per lane per group, ldsm_x2), total warps
+  N/8, STAGE unchanged, every row still warp-private. The kernel template grew a 9th param WN (8/16); the
+  star8 lands at 80-95 regs (24 warps/SM at BR64), the AR8 at 127-128 (its BR64 launch-bounds target is 2
+  blocks - 3 spills the A-ring 48 B to local).
+- v36's matrix REFUTES it: star8/AR8 lost ~25% on EVERY shape at every M (attn star8 69.7-103.6 vs star
+  102.7-131.4; down star8 98.5-189.8 vs star 152.2-217.7). The warp count was never the constraint: the
+  per-warp in-flight W bytes halved (2 KB/group vs 4) while the fixed per-group costs (the syncwarp pair,
+  the ldsm setup, the AR ring's loads) doubled per byte. GB/s tracks the in-flight bytes per SM, not warps.
+  The WN16 code stays (template param, committed-clean, one if-constexpr block) but is benched no more.
+- The same matrix promoted rpl2-nonsq at big N: AR64 > star64 on qkvz/clamp at EVERY M (+23..+55% at M2,
+  where the r9 T-gate makes the A-side the largest fraction and the AR ring covers exactly that load); the
+  small-N rpl2 (attn N 4096) keeps the star (its M2 131 vs 120, ties at M4-8). `gemv_tc_launch`: rpl2-nonsq
+  N >= 8192 -> <2,64,0,2,2,1,1,1>, else the star; rpl4-nonsq the star; rpl4-sq the AR64.
+
+### The v33-v35 worker-OOM saga (harness, not kernel)
+Three consecutive runs were OOM-killed mid-matrix at a drifting case boundary (v33 at micro1, v34 at
+gateup, v35 at case 2-3 of the real block) - the shared T4x2 node's RAM margin, not our leak (v32's
+identical 6-variant flow survived; the downloader already runs as a subprocess). The harness now: the
+ENGINE spec sweep runs BEFORE the tc_bench matrix (the goal metric survives any late kill), the model's
+clean page cache is dropped (POSIX_FADV_DONTNEED) before the matrix, the REAL cases run before the proven
+micro smoke cases, and the WN8 variants left the run list (24 -> 18 instantiations in the tc_bench TU,
+compile RSS down, matrix runtime -25%).
 
 ### Standing gate (unchanged)
-"Fully faster than dp4a on ALL real shapes" is still open: v31 wins 3 of 6 (at M7/8) and the engine's real M
-regime is 2-6, where the r9 T-gate is the projected closing move. The promotion puts the winners in the engine
-so the spec sweep measures the joint end-to-end; if the matrix reshuffles under the T-gate, the dispatch is
-adjusted in the next round.
+"Fully faster than dp4a on ALL real shapes" is still open: v36 wins 2 of 6 real shapes at M7/8 (gateup
+AR64, down star at M8) and sits within 6% on down at M4; the engine's real M regime (4-7) still favors
+dv1 by ~15% end-to-end (52-60 vs 65-67 tok/s). r11 candidate (the structural endgame): replace the smem
+STS -> syncwarp -> ldsm -> mma round-trip with register-only B fragments via warp shuffles (the ldmatrix
+redistribution as ~4-8 __shfl_sync ops + the nibble ALU - no smem, no barrier pairs, no ldsm, the dp4a
+register path's shape); that removes the last structural difference from dp4a besides the mma itself.
