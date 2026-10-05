@@ -1,0 +1,50 @@
+t4q/src/kernels/gemm8.cuh
+  s_ac85989787ca8c::t_48c7da8e0a16c3 110-116
+t4q/src/kernels/tp_gemv_tc.cuh
+  s_ac85989787ca8c::t_a24f7f362a93d3 189-190,194
+  s_ac85989787ca8c::t_7dbfc1016efe8e 358-366
+  s_ac85989787ca8c::t_55f9eb42143158 306
+  s_ac85989787ca8c::t_ae62e905da8166 540,542,544-552
+  s_ac85989787ca8c::t_be6ec624867dd4 342-344
+  s_ac85989787ca8c::t_fecc465e2e1e53 93-101
+  s_ac85989787ca8c::t_c61ff7d6fe3a61 191
+  s_ac85989787ca8c::t_8b4f5fcc50df5b 332-336,341,345
+  s_ac85989787ca8c::t_694ff6269b3c7d 165-167,173-176,183-186
+  s_ac85989787ca8c::t_40a1cc5bf5d451 215-221,223
+  s_ac85989787ca8c::t_978c03f01d5f86 232-244,246,249,252,257,259,265-269,271-273
+  s_ac85989787ca8c::t_c4e0b6f24199a2 525-530,532,535,557,559,561,566,569,572
+  s_ac85989787ca8c::t_c42eb6871edfff 337
+  s_ac85989787ca8c::t_1897324767fb0e 488,491,496,502
+  s_ac85989787ca8c::t_533a1aab5a4106 506-515,518-519
+  s_ac85989787ca8c::t_77d9ed46e35a72 541,543,553
+  s_ac85989787ca8c::t_092479cee55739 395
+  s_ac85989787ca8c::t_bb5048addf969a 536-539,554-555
+  s_ac85989787ca8c::t_2c15140670e892 161,163-164
+t4q/tools/tc_bench.cu
+  s_ac85989787ca8c::t_ff2031357ddd30 184-185,188-195,198,202-209
+t4q/tools/stage_m5.py
+  s_ac85989787ca8c::t_bd048c1f53f69c 434
+  s_ac85989787ca8c::t_4dcb598d40f80c 420-428,435-441
+  s_ac85989787ca8c::t_8c150227988935 411-419
+  s_ac85989787ca8c::t_bec4c3b74f60c9 429-433
+  s_ac85989787ca8c::t_7ef4481d54c926 370-372
+PROGRESS.md
+  s_ac85989787ca8c::t_1537da288f88af 1006,1011-1045
+  s_ac85989787ca8c::t_ba7ba5d586fb5e 1048-1053
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a57c0ddd53ba1ba4998092837bbc03bf4b77808e",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
