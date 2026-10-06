@@ -1807,3 +1807,59 @@ qh bits are CONSECUTIVE - the bug was in BOTH transcriptions (the kernel's too) 
 would have cost a quota round. The v7 payload stays frozen; this rides the v8 regen
 after the base verdicts.
 
+### r19j: the staging wall DECODED statically + the honest cf-m3 mechanism (a3ce0ae)
+A full read of cf_engine.cu with arithmetic: the moe stages ~20 MB/layer x 48 =
+~960 MB/token; the host MMAP->pinned memcpys ~62 ms/token run GPU-AND-PCIe IDLE
+(sequential with every layer's router sync), the H2D ~83 ms at the measured
+11.53 GB/s overlaps only the ~1 ms/layer dense GPU window, the GPU MoE ~7 ms -
+so the serialized critical path is ~150-165 ms/token = the ~6-8 tok/s mmap floor
+DECODED: the STAGING PATH ITSELF is the wall, not the disk. The launch count
+~54/layer = ~2600/token is the NEXT wall (~57 ms at the measured ~22 us/launch),
+hidden under the staging today - the lever order is now numbered with arithmetic:
+the tiering first, the CUDA-graph capture second (it pays only after the staging
+drops below the launch overhead), MTP third. The cf-m3 milestone rewritten to the
+honest mechanism (the resident tier from the census's hot-set file, absent file =
+OFF = the exact current path; the dual-path moe with the eidx-table batched gemvs;
+the sticky-speculation prefetch tuned by the census's churn rate). The orphaned
+dead r19e fp32 k_gemv_b + launch_gemv_batched removed. Build 0 errors.
+
+### r19k: the Q4_K source-order CATCH + the per-pick W-table mechanism (c980111 + 78d480e)
+TWO landings this round, both found/verified statically while the quota gate holds:
+
+The pre-quota catch (c980111): the real ggml block_q4_K is d, dmin (fp16),
+scales[12], qs[128] = 144 B (verified against the local ggml primary's struct +
+static_assert) - the tree had it as scales, qs, d, dmin with d/dmin at the block
+END (140/142), so BOTH the device repack and the CPU dequant mirror copied qs-tail
+bytes as the fp16 d/dmin into the packed meta. For CYBER-FROST that poisons the
+Q4_K token_embd AND the Q4_K lm_head (output, 341 MB each) - every logits row and
+every embedding row was garbage while the internal repack-vs-dequant check stayed
+CONSISTENT (both sides read the same wrong order, so it could never catch it).
+The frozen v7 payload carried this: its quota round would have failed every gate
+on garbage logits with a correct engine. The packed plane layout is unchanged
+(the K5-style meta), so the r19i sim's Q4_K dot verification still holds - this
+is purely the GGUF->packed source decode.
+
+The tiering's stepping stone (78d480e), adopted by the default path: the two moe
+batched gemvs now read the pick's slab view from a device table wt[blockIdx.y]
+instead of uniform-stride advances - the new k_gemv_q8k_b (the K2 gate|up, the
+shared xq/bsums/yd at strides 0 + the per-pick y stride) and the k_gemv_q80_b
+rework (the per-pick xq/xd/xs strides kept). The IDENTITY table (10 gate|up views
+into the up_stage, 10 down views into the dn_stage, built + uploaded ONCE at load -
+the staging bases never move) holds pointers that are exactly the ones the old
+stride math produced: the K2 dot's blk = row*nb + (g>>3) over the pick's base
+reproduces the global row's codes/meta addresses bit for bit, the P4 dot's
+b = row*cols/32 + g likewise over the codes and d planes. So the default path is
+BIT-IDENTICAL by construction, and the cf-m3 tiering later swaps in per-hit
+RESIDENT views with zero kernel change (the census's hot-set file becomes the only
+new input). Build 0 errors, zero spill (k_gemv_q8k_b<K2> 63 / <K4> 52 / k_gemv_q80_b
+62 regs), IDP.4A.S8.S8 112 (the new kernels carry the same inline dp4a dots as
+their singles). The sim needs no extension: the table form is pointer-only, the
+dot arithmetic is unchanged.
+
+The payload REGENERATED at 78d480e (the v7 was dead: it carried the Q4_K bug) and
+byte-verified (90 members, zero mismatches, the fix + the mechanism both packed;
+sha 533c2f13fae36e39). The gatekeeper prompt updated: the gates are now
+base + census + batching + q8 + dp4a + the Q4_K fix + the identity table (zero
+change), and the failure ladder is ordered by behavior-change size (c980111 first,
+78d480e last - it is bit-exact by construction).
+

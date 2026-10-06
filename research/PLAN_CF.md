@@ -127,35 +127,48 @@ dequant rates and the platform paths are measured, no more assumptions**:
   every timeout and burned the weekly 30 h GPU quota - DECODED (r19f): the downloader's own
   p.stat() on the fresh 82.85 GB file held the GIL through a D-state overlayfs stall and
   froze the whole process (thread watchdog included; the GPUs never ran); hardened with a
-  separate-process watchdog + a child-stat size probe. The v7 payload (regenerated 8c2969a,
-  byte-verified) now gates base + census + the r19e moe launch batching + the r19g q8
-  fast-activation paths in one quota-scarce round, with the bisect ladder 2f33431 ->
-  35d8c2d -> c3fb34c localizing a failure. The r18 worklist is CLOSED: every K-quant/P4 gemv
-  pairs the activation with the oracle's own activation quantization (Q2_K/Q4_K <-> Q8_K,
-  Q5_1 <-> Q8_1, Q4_0 <-> Q8_0, the exact ggml arithmetic, sim-verified 120/120), and the
-  integer partials run on the T4's IDP.4A (r19i, 942e86d: the 27B's own measured class,
-  the P4's factored -8 via the xs sums plane, the K4's nibble plane, the Q51's nibble-spread
-  qh fold; the K2's 2-bit extract stays scalar by a thin margin). Next speed levers, in
-  order, all AFTER the base gates - the order set by the staging-wall decomposition above:
-  (1) the census-gated tiered engine (cf-m3: the staging IS the ~150-165 ms/token wall; the
-  resident hits skip it entirely), (2) the CUDA-graph capture of the static-shape sections
-  (the ~57 ms launch overhead is hidden under the staging today and becomes the wall only
-  after the tiering), (3) MTP (cf-m4).
+  separate-process watchdog + a child-stat size probe. The v7 payload was regenerated at
+  8c2969a (byte-verified) to gate base + census + the r19e moe launch batching + the r19g q8
+  fast-activation paths in one quota-scarce round - then found DEAD before the push (r19k,
+  c980111): it carried the Q4_K source-block-order bug (d/dmin read from the block tail),
+  which poisons the Q4_K token_embd + lm_head - garbage logits with a correct engine. The
+  regenerated payload (78d480e, byte-verified, sha 533c2f13fae36e39) now gates base +
+  census + batching + q8 + the dp4a dots + the Q4_K fix + the r19k identity W-table, with
+  the failure ladder ordered by behavior-change size (c980111 -> 942e86d -> 78d480e [the
+  identity table is bit-exact by construction, near-zero suspicion] -> c3fb34c -> 35d8c2d
+  -> 2f33431). The r18 worklist is CLOSED: every K-quant/P4 gemv pairs the activation with
+  the oracle's own activation quantization (Q2_K/Q4_K <-> Q8_K, Q5_1 <-> Q8_1, Q4_0 <->
+  Q8_0, the exact ggml arithmetic, sim-verified 120/120), and the integer partials run on
+  the T4's IDP.4A (r19i, 942e86d: the 27B's own measured class, the P4's factored -8 via
+  the xs sums plane, the K4's nibble plane, the Q51's nibble-spread qh fold; the K2's 2-bit
+  extract stays scalar by a thin margin). The r19k W-table mechanism is LANDED in the
+  default path (78d480e): both moe batched gemvs read the pick's slab view from a device
+  table wt[blockIdx.y] (k_gemv_q8k_b + the k_gemv_q80_b rework), with the IDENTITY table
+  (the staged slab views, built + uploaded once at load) reproducing the old stride
+  pointers bit for bit - zero behavior change, and the tiering's per-hit resident views
+  swap in with zero kernel change. Next speed levers, in order, all AFTER the base gates -
+  the order set by the staging-wall decomposition above: (1) the census-gated tiered engine
+  (cf-m3: the staging IS the ~150-165 ms/token wall; the resident hits skip it entirely),
+  (2) the CUDA-graph capture of the static-shape sections (the ~57 ms launch overhead is
+  hidden under the staging today and becomes the wall only after the tiering), (3) MTP
+  (cf-m4).
 - **cf-m2 - the census**: the router concentration curve (section 3.2) + the per-bucket step
   trace (the 27B trace method). Verdict: the tier split for cf-m3. Gate: the curve + the
   chosen H per layer recorded, the projected tok/s with a measured miss model.
 - **cf-m3 - the tiered engine**: the resident tier (the hottest H experts/layer packed into
   VRAM at load from the census's hot-set file; absent file = OFF = the exact current staging
   path, so the landing is attribution-clean) + the dual-path moe (the hit picks run the
-  eidx-table batched gemvs over the resident slabs - NO staging, NO PCIe; the miss picks
-  pay the current MMAP->pinned->H2D staging for only their own rows) + the miss-pipeline
+  W-table batched gemvs over the resident slabs - NO staging, NO PCIe; the miss picks pay
+  the current MMAP->pinned->H2D staging for only their own rows) + the miss-pipeline
   tuning the census measures (the sticky-speculation prefetch: the previous token's layer-L
   picks prefetched into a double-buffered staging during the dense GPU window, so the miss
   memcpys hide under the H2D; the churn rate decides its value) + the PLE 16-row async
   prefetch after each sampling. The resident layout is the same packed staging shape
-  ([H*2*EE] K2 gate|up + [H*D] P4 down per layer), so the batched kernels carry over with
-  only the per-pick resident-index indirection (the identity table reproduces the current
-  uniform-stride behavior bit-exactly). Gate: >= 25 tok/s single-stream (3-4x the mmap
+  ([H*2*EE] K2 gate|up + [H*D] P4 down per layer), and the W-table mechanism is ALREADY
+  LANDED in the default path (r19k, 78d480e: k_gemv_q8k_b + the k_gemv_q80_b table form,
+  the identity table = the staged slab views reproduces the old uniform-stride pointers bit
+  for bit, zero behavior change) - the tiering only uploads the per-hit resident views into
+  the same table, with zero kernel change. Gate: >= 25 tok/s single-stream (3-4x the mmap
   floor), correctness gates intact.
 - **cf-m4 - MTP spec**: the draft/verify/rollback wiring on the tiered engine, the n-gram
   table prefetch driven by the sampled token, k tuned on the measured acceptance.
