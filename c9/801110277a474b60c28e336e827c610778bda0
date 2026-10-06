@@ -1,0 +1,21 @@
+t4q/src/kernels/deq.cuh
+  s_ee78a6a141091d::t_13316f2f03fee8 195-196,198-203
+t4q/src/quant_cpu.cpp
+  s_ee78a6a141091d::t_ce7a5a16f0c924 147,150-152,157,159
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c9801110277a474b60c28e336e827c610778bda0",
+  "prompts": {},
+  "sessions": {
+    "s_ee78a6a141091d": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "b8aa02a6-d6f7-4c6a-a2a4-8dd7cbfc6088",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
