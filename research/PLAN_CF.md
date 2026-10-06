@@ -60,6 +60,23 @@ dequant rates and the platform paths are measured, no more assumptions**:
   fallback at ~10-25 tok/s (the requant path, section 5, is the escape).
 - **The mmap floor** (the pack author's laptop and llama.cpp mmap on the same Kaggle box:
   6-9 tok/s): the floor to beat 5-10x.
+- **The cf-m1 staging wall (r19i's static decomposition, computed from the engine + the
+  measured 11.53 GB/s + the ~22 us/launch class)**: the MoE stages ~20 MB/layer (10 experts'
+  gate|up 1280x840 B + down 2560x360 B) x 48 layers = ~960 MB/token. The host MMAP->pinned
+  memcpys ~62 ms/token run GPU-AND-PCIe IDLE (after each layer's router sync, sequential
+  with everything); the H2D ~83 ms at 11.53 GB/s overlaps only the ~1 ms/layer of dense GPU
+  work; the GPU MoE itself is ~7 ms. The serialized critical path is ~150-165 ms/token =
+  the ~6-8 tok/s mmap floor DECODED - the floor is the staging path itself, not the disk.
+  The launch count is ~54/layer = ~2600/token (the q8 fast paths doubled the gemv calls
+  to quantize+dot); at the measured ~22 us/launch fixed that is ~57 ms/token, HIDDEN under
+  the staging today but the NEXT wall after the tiering. Lever order confirmed with
+  numbers: (1) the tiering (cf-m3: the resident hits skip the staging entirely; the misses
+  pay it), (2) the CUDA-graph capture (the launch overhead pays only after the staging
+  drops below it), (3) MTP. The r19e fp32 batched gemv (k_gemv_b) is orphaned dead code
+  since r19g's q8 rewire - removed r19i; the tiering lands the eidx-table variants instead
+  (the resident-hit batched gemvs read a per-pick resident-index table; the identity table
+  reproduces the current uniform-stride behavior bit-exactly, so the default path can adopt
+  the mechanism as a stepping stone with zero behavior change).
 
 ## 3. The two gating unknowns (cf-m0 and cf-m2)
 
@@ -119,15 +136,27 @@ dequant rates and the platform paths are measured, no more assumptions**:
   integer partials run on the T4's IDP.4A (r19i, 942e86d: the 27B's own measured class,
   the P4's factored -8 via the xs sums plane, the K4's nibble plane, the Q51's nibble-spread
   qh fold; the K2's 2-bit extract stays scalar by a thin margin). Next speed levers, in
-  order, all AFTER the base gates: (1) the cf-m3 CUDA-graph capture of the static-shape
-  sections; (2) the census-gated tiered engine (cf-m3) and MTP (cf-m4).
+  order, all AFTER the base gates - the order set by the staging-wall decomposition above:
+  (1) the census-gated tiered engine (cf-m3: the staging IS the ~150-165 ms/token wall; the
+  resident hits skip it entirely), (2) the CUDA-graph capture of the static-shape sections
+  (the ~57 ms launch overhead is hidden under the staging today and becomes the wall only
+  after the tiering), (3) MTP (cf-m4).
 - **cf-m2 - the census**: the router concentration curve (section 3.2) + the per-bucket step
   trace (the 27B trace method). Verdict: the tier split for cf-m3. Gate: the curve + the
   chosen H per layer recorded, the projected tok/s with a measured miss model.
-- **cf-m3 - the tiered engine**: the VRAM LRU (hottest H experts/layer), the pinned host-RAM
-  warm tier, the async miss pipeline (the router for layer L+1 runs during layer L's MoE so
-  the 10 expert rows prefetch one layer ahead), the PLE 16-row async prefetch after each
-  sampling. Gate: >= 25 tok/s single-stream (3-4x the mmap floor), correctness gates intact.
+- **cf-m3 - the tiered engine**: the resident tier (the hottest H experts/layer packed into
+  VRAM at load from the census's hot-set file; absent file = OFF = the exact current staging
+  path, so the landing is attribution-clean) + the dual-path moe (the hit picks run the
+  eidx-table batched gemvs over the resident slabs - NO staging, NO PCIe; the miss picks
+  pay the current MMAP->pinned->H2D staging for only their own rows) + the miss-pipeline
+  tuning the census measures (the sticky-speculation prefetch: the previous token's layer-L
+  picks prefetched into a double-buffered staging during the dense GPU window, so the miss
+  memcpys hide under the H2D; the churn rate decides its value) + the PLE 16-row async
+  prefetch after each sampling. The resident layout is the same packed staging shape
+  ([H*2*EE] K2 gate|up + [H*D] P4 down per layer), so the batched kernels carry over with
+  only the per-pick resident-index indirection (the identity table reproduces the current
+  uniform-stride behavior bit-exactly). Gate: >= 25 tok/s single-stream (3-4x the mmap
+  floor), correctness gates intact.
 - **cf-m4 - MTP spec**: the draft/verify/rollback wiring on the tiered engine, the n-gram
   table prefetch driven by the sampled token, k tuned on the measured acceptance.
   Gate: >= 40-60 tok/s, byte-identical greedy at every k.

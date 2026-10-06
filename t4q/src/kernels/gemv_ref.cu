@@ -40,47 +40,6 @@ void launch_gemv(const PackedW& W, const float* x, float* y, cudaStream_t s) {
     }
 }
 
-// batched GEMV over K expert slabs staged SoA: grid.y = the expert, the same per-row body as
-// k_gemv verbatim (bit-identical accumulation), with the x/y and W planes advanced per expert.
-// P4 (Q4_0) only today - the moe down experts; the other formats grow a case when a tier needs them.
-template <int FMT>
-__global__ void __launch_bounds__(256) k_gemv_b(PackedW W, const float* __restrict__ x, float* __restrict__ y,
-                                                int64_t x_stride, int64_t y_stride, int64_t codes_stride,
-                                                int64_t d_stride) {
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    const int64_t row = (int64_t)blockIdx.x * 8 + warp;
-    if (row >= W.rows) return;
-    W.codes += (size_t)blockIdx.y * codes_stride;
-    W.d = (uint16_t*)((uint8_t*)W.d + (size_t)blockIdx.y * d_stride);
-    const float* __restrict__ xb = x + (int64_t)blockIdx.y * x_stride;
-    float* __restrict__ yb = y + (int64_t)blockIdx.y * y_stride;
-    const int64_t ng = W.cols / 32;
-    float acc = 0.f;
-    for (int64_t g = lane; g < ng; g += 32) {
-        float w[32];
-        deq32<FMT>(W, row, g, w);
-        const float4* xv = (const float4*)(xb + g * 32);
-#pragma unroll
-        for (int j = 0; j < 8; j++) {
-            const float4 a = __ldg(xv + j);
-            acc += w[4 * j] * a.x + w[4 * j + 1] * a.y + w[4 * j + 2] * a.z + w[4 * j + 3] * a.w;
-        }
-    }
-#pragma unroll
-    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, o);
-    if (lane == 0) yb[row] = acc;
-}
-
-// W describes ONE expert slab (rows/cols); the codes/d strides are per-expert byte offsets in the
-// SoA staging; x_stride/y_stride the per-expert activation/output element strides.
-void launch_gemv_batched(const PackedW& W, const float* x, float* y, int64_t x_stride, int64_t y_stride, int batch,
-                         cudaStream_t s) {
-    const unsigned G = (unsigned)((W.rows + 7) / 8);
-    const int64_t cs = W.rows * (W.cols / 2);          // P4 codes bytes per expert slab
-    const int64_t ds = W.rows * (W.cols / 32) * 2;      // P4 fp16 d bytes per expert slab
-    k_gemv_b<FMT_P4><<<dim3(G, batch), 256, 0, s>>>(W, x, y, x_stride, y_stride, cs, ds);
-}
-
 // ------------------------------------------------------------------------------------------- q8_1 activations
 __global__ void k_quantize_q8_1(const float* __restrict__ x, int K, int8_t* xq, float* xd, float* xs) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;  // K % 32 == 0, blockDim multiple of 32
