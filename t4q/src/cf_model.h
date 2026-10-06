@@ -121,6 +121,8 @@ struct CfCtx {
     int gpu = 0, pos = 0, max_ctx = 0, steps = 0;
     double step_s = 0.0;
     bool have_logits = false;
+    // cf-m2 census: when set, every moe() appends the layer's top-10 (id, renormed weight)
+    FILE* census_f = nullptr;
     std::string err;
 };
 

@@ -160,6 +160,21 @@ PROMPTS = {
     "P1": "Name three benefits of quantized model weights.",
 }
 
+# the census prompt: ~200 tokens of natural prose (the same text class the 27B rounds used)
+WIKI = (
+    "The history of computing hardware covers the developments from early simple devices to "
+    "aid calculation to modern day computers. The first aids to computation were purely "
+    "mechanical devices which required the operator to set up the initial values of an "
+    "elementary arithmetic operation, then manipulate the device to obtain the result. "
+    "Numbers could also be represented in the form of digits, automatically manipulated by a "
+    "mechanism. Although this approach generally required more complex mechanisms, it "
+    "greatly increased the precision of results. The development of transistor technology "
+    "and then the integrated circuit chip led to a series of breakthroughs, causing digital "
+    "computers to largely replace analog computers. Semiconductor memory and the "
+    "microprocessor led to the miniaturized personal computer in the 1970s, and personal "
+    "computers became ubiquitous by the 1990s."
+)
+
 
 def parse_cf(out):
     vals = {}
@@ -255,6 +270,23 @@ def main():
         rc, o = stream([str(t4q / "build" / "cf_run"), "time", model, str(WORK / "P0.i32"), str(N_GEN)],
                        "cf_time.log", timeout=1800)
         result("time", parse_cf(o) or {"rc": rc, "tail": o[-1200:]})
+        # cf-m2 folded into the same quota-scarce round: the router census on natural text.
+        # The oracle chatw tokenizes the wiki slice (the same text class the 27B rounds used),
+        # then the census run dumps every layer's top-10 (id, renormed weight) per token.
+        (WORK / "W.txt").write_text(WIKI)
+        (WORK / "jobs2.txt").write_text(f"chatw W {WORK / 'W.txt'} {WORK / 'W.i32'}\n")
+        rc, o = stream([str(t4q / "build" / "oracle_dump"), model, str(WORK / "jobs2.txt"), str(ORC)],
+                       "oracle_census.log", timeout=600, env=env)
+        if (WORK / "W.i32").exists():
+            rc, o = stream([str(t4q / "build" / "cf_run"), "census", model, str(WORK / "W.i32"), "32",
+                            str(WORK / "census.bin")], "cf_census.log", timeout=1800)
+            cb = {}
+            if (WORK / "census.bin").exists():
+                shutil.copy2(WORK / "census.bin", OUT / "census.bin")
+                cb["bin_bytes"] = (WORK / "census.bin").stat().st_size
+            result("census", (parse_cf(o) or {"rc": rc}) | cb)
+        else:
+            result("census", {"error": "no W.i32", "tail": o[-800:]})
         result("summary", {"seq_pass": seq_pass, "gen_pass": gen_pass,
                            "seq": {k: v for k, v in summary.items() if k.startswith("seq")},
                            "gen": {k: v for k, v in summary.items() if k.startswith("gen")}})

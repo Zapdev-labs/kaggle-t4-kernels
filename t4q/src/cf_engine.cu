@@ -140,6 +140,10 @@ void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
     float wsum = 0.f;
     for (int k = 0; k < TOPK; k++) wsum += c->we_h[k];
     for (int k = 0; k < TOPK; k++) c->we_h[k] /= wsum;
+    if (c->census_f) {  // cf-m2: the router concentration census, same round as the gate
+        fwrite(c->eid, 4, TOPK, c->census_f);
+        fwrite(c->we_h, 4, TOPK, c->census_f);
+    }
     // stage the 10 experts' slabs: [gate 640 | up 640] per expert (Q2_K), then 2560 down rows (Q4_0)
     const size_t gu_row = L.t_gate_exps->row_bytes;   // 840
     const size_t dn_row = L.t_down_exps->row_bytes;   // 360

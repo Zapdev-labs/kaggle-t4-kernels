@@ -157,6 +157,37 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if (mode == "census") {
+        // cf-m2: the router concentration census. Header: "CFC1" u32 NL u32 TOPK u32 n_steps,
+        // then per step per layer the top-10 (u32 id, f32 renormed weight). Analysis is local.
+        const int n = atoi(argv[4]);
+        FILE* cf = fopen(argv[5], "wb");
+        if (!cf) { printf("CF {\"error\":\"census open %s\"}\n", argv[5]); return 1; }
+        uint32_t hdr[3] = {(uint32_t)'C' | ((uint32_t)'F' << 8) | ((uint32_t)'C' << 16) | ((uint32_t)'1' << 24),
+                           (uint32_t)cf::NL, (uint32_t)cf::TOPK};
+        fwrite(hdr, 4, 3, cf);
+        c->census_f = cf;
+        for (int t : ids)
+            if (!cf_step(c, t)) { printf("CF {\"error\":\"census prompt step: %s\"}\n", c->err.c_str()); return 1; }
+        const int eos = cf::EOS2;
+        std::vector<int32_t> gen;
+        for (int i = 0; i < n; i++) {
+            const int tok = argmax(c->h_logits, cf::V);
+            gen.push_back(tok);
+            if (tok == eos) break;
+            if (i + 1 < n && !cf_step(c, tok)) {
+                printf("CF {\"error\":\"census gen step: %s\"}\n", c->err.c_str());
+                return 1;
+            }
+        }
+        c->census_f = nullptr;
+        fclose(cf);
+        printf("CF {\"mode\":\"census\",\"prompt_n\":%d,\"gen_n\":%d,\"steps\":%d,\"mean_ms\":%.2f}\n",
+               (int)ids.size(), (int)gen.size() - 1, c->steps, c->step_s * 1000 / std::max(1, c->steps));
+        cf_free(c);
+        return 0;
+    }
+
     fprintf(stderr, "unknown mode %s\n", mode.c_str());
     return 2;
 }
