@@ -1,0 +1,44 @@
+t4q/src/cf_model.h
+  s_ac85989787ca8c::t_c0648e7e367725 99
+t4q/src/kernels/gemv_ref.cu
+  s_ac85989787ca8c::t_f2ed21abacdfe8 394-398,407-415,418-419
+  s_ac85989787ca8c::t_52baec53f43a74 167-170,181-183
+  s_ac85989787ca8c::t_94fd76925924b3 166,172-173,177-178,180,184-185,187
+  s_ac85989787ca8c::t_e7fce71079b44f 447-448,458
+  s_ac85989787ca8c::t_e8763aa972b04b 466-468,470-472,480,488,495-496,498,501-502,507
+  s_ac85989787ca8c::t_e7b6d755db423b 346-350,354
+  s_ac85989787ca8c::t_74b013c6c933d5 424-430,433-436,438-442
+t4q/tools/sim_q8_dots.py
+  s_ac85989787ca8c::t_bee64992935609 295
+  s_ac85989787ca8c::t_088678832a857b 180-181
+  s_ac85989787ca8c::t_d06100cc6dfca3 185,190,192-194,201-207,210-212,215-218
+  s_ac85989787ca8c::t_399a10f0fa9af8 219-232,234
+  s_ac85989787ca8c::t_4eae866cc727d9 213-214
+  s_ac85989787ca8c::t_7e49505885b2e9 233
+  s_ac85989787ca8c::t_e9ced933477225 168-179
+  s_ac85989787ca8c::t_1ceb32a8b8c101 199-200
+  s_ac85989787ca8c::t_3067830449fb60 186-188,195-198
+t4q/src/cf_loader.cu
+  s_ac85989787ca8c::t_5fc97ca61950b9 325
+t4q/src/kernels/kernels.h
+  s_ac85989787ca8c::t_4e2e03162eb41f 32-37,39-40
+t4q/src/cf_engine.cu
+  s_ac85989787ca8c::t_66138ff29351c2 194-195
+  s_ac85989787ca8c::t_16d03f5b21cde7 32-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "942e86da770c32a4408a3b7a67d864331556fef3",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
