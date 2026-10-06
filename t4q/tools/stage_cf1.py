@@ -106,6 +106,20 @@ def unpack():
 DL = {}
 
 
+def file_gb(p, logname):
+    """The ONLY size probe (v6 lesson): os.stat/getsize/exists hold the GIL, so a D-state
+    metadata stall on the fresh 82.85 GB file froze the whole v6 process for 12 h. The stat
+    runs in a child with a timeout - the GIL is never held; a D-locked stat costs at most
+    the timeout. Returns gb, or None if even the child-stat could not answer."""
+    rc, o = sh(["stat", "-c", "%s", str(p)], timeout=180, logname=logname)
+    if rc != 0:
+        return None
+    try:
+        return int(o.splitlines()[1].strip()) / 1e9
+    except (ValueError, IndexError):
+        return None
+
+
 def downloader():
     t = time.time()
     env = dict(os.environ, HF_XET_HIGH_PERFORMANCE="1", HF_HUB_ENABLE_HF_TRANSFER="1",
@@ -114,13 +128,20 @@ def downloader():
     if not shutil.which("hf"):
         sh("pip install -q -U 'huggingface_hub[hf_xet]' hf_transfer", timeout=600, logname="pip_hf.txt")
     p = MD / GGUF
+    gb = None
     rc, o = sh(["hf", "download", REPO, GGUF, "--local-dir", str(MD)], env=env, timeout=2400, logname="dl.txt")
-    if rc or not p.exists():
-        sh(f"curl -fL --retry 5 -o {p} https://huggingface.co/{REPO}/resolve/main/{GGUF}", timeout=2400,
-           logname="dl_curl.txt")
-    ok = p.exists() and p.stat().st_size > 8.0e10
+    if rc == 0:
+        gb = file_gb(p, "dl_stat.txt")
+    if gb is None or gb <= 80.0:  # the hf path failed or produced nothing: the curl fallback
+        rc, o = sh(f"curl -fL --retry 5 -o {p} https://huggingface.co/{REPO}/resolve/main/{GGUF}", timeout=2400,
+                   logname="dl_curl.txt")
+        gb = file_gb(p, "dl_stat.txt")
+    ok = (gb is not None and gb > 80.0) or (gb is None and rc == 0)
+    # a stalled stat (None) with a clean downloader rc still counts as ok: the gate runs
+    # will open the file anyway, and the process watchdog owns the worst case
     DL["path"] = str(p) if ok else None
-    result("download", {"ok": ok, "secs": round(time.time() - t), "gb": round(p.stat().st_size / 1e9, 2) if ok else 0})
+    DL["gb"] = round(gb, 2) if gb is not None else "stat-stalled"
+    result("download", {"ok": ok, "secs": round(time.time() - t), "gb": DL["gb"]})
 
 
 def clocks_monitor():
@@ -188,9 +209,10 @@ def parse_cf(out):
 
 
 def watchdog():
-    """r19 lesson: a child that hangs silently blocks stream()'s readline and the stage
-    never finishes, so the run's incremental results + logs never become fetchable. This
-    thread owns the deadline: at DEADLINE-120 it flags, at DEADLINE it flushes and exits."""
+    """r19b lesson: a child that hangs silently blocks stream()'s readline. This thread
+    owns that case (the GIL is free when a CHILD hangs): at DEADLINE-120 it flags, at
+    DEADLINE it flushes and exits. The GIL-FROZEN case (the v6 wedge: the main blocked
+    inside a non-GIL-releasing syscall) is owned by the process watchdog below."""
     time.sleep(max(60, DEADLINE - 120))
     result("watchdog", "deadline approaching in 120s")
     time.sleep(120)
@@ -199,11 +221,42 @@ def watchdog():
     os._exit(0)
 
 
+def spawn_watchdog_proc():
+    """r19f lesson (the v6 post-mortem): the wedge froze the MAIN inside os.stat on the
+    fresh 82.85 GB file - os.stat does NOT release the GIL, so the thread watchdog above
+    froze with it (it shares the process's single GIL). This one is a separate PROCESS:
+    it cannot be frozen by the parent. At the deadline it kills the (possibly frozen)
+    parent by its baked-in pid so the session ends cleanly and the incremental
+    results.json + the logs become the fetchable output."""
+    ppid = os.getpid()
+    src = (
+        "import os, signal, time\n"
+        f"ppid = {ppid}\n"
+        f"deadline = {DEADLINE}\n"
+        "def mark(msg):\n"
+        "    try:\n"
+        "        with open('/kaggle/working/logs/watchdog_proc.txt', 'a') as f:\n"
+        "            f.write(msg + '\\n')\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "time.sleep(max(120, deadline - 120))\n"
+        "mark('parent still alive at deadline-120')\n"
+        "time.sleep(120)\n"
+        "mark('deadline hit - killing the parent (clean end, output becomes fetchable)')\n"
+        "try:\n"
+        "    os.kill(ppid, signal.SIGKILL)\n"
+        "except (ProcessLookupError, PermissionError):\n"
+        "    pass  # the parent already ended cleanly\n"
+    )
+    subprocess.Popen([sys.executable, "-c", src], start_new_session=True)
+
+
 def main():
     mon = None
     try:
         sh("nvidia-smi", logname="nvidia_smi.txt")
         mon = clocks_monitor()
+        spawn_watchdog_proc()
         threading.Thread(target=watchdog, daemon=True).start()
         t4q = unpack()
         th = threading.Thread(target=downloader, daemon=True)
@@ -233,7 +286,7 @@ def main():
         if not model:
             result("fatal", "download failed")
             return
-        result("model", {"path": model, "gb": round(os.path.getsize(model) / 1e9, 2)})
+        result("model", {"path": model, "gb": DL.get("gb")})  # no fresh getsize: the v6 lesson
         # oracle jobs: the chat template + tokenizer + the tbt tail + the greedy gens
         jobs = []
         for name in PROMPTS:
