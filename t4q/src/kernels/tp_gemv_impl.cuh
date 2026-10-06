@@ -294,6 +294,12 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
     __shared__ float red[128];
     __shared__ int s_flag;
     __shared__ float sa[SQ ? 8 * 8 * RPL * M : 1];  // SQ: silu(g) * u of the block's 8 * tpw * RPL outputs (tpw <= 8)
+    // r16: (col, kb)-derived (moff, xd) for the PRO_NONE P4 path. The x group a.xm[col][kb] is tile-invariant,
+    // yet the M4 SASS baseline recomputed its loads + s0/s1/moff derivation per tile: 40 of 40 LDG.64, ~120
+    // derive ops and ~half the addressing per 1904-instr tile (~10-12% of the tile body, the issue-side roof
+    // at ~254 GB/s while the v45 DRAM probe measured ~277). Staged once per block: same formulas, same values,
+    // bit-identical by construction. (M4: 640 entries / 5 KB smem, ~10 instr per thread once.)
+    __shared__ int2 s_mx[PRO == PRO_NONE && FMT == FAST_P4 ? M * NCH * 16 : 1];
 
     WChunk<FMT, RPL> w[D];
     // SEG: the fp32 rows are work items 0..nrows-1 (first, so their latency is not the kernel tail), quantized
@@ -506,6 +512,14 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
         }
         __syncthreads();
     }
+    if (PRO == PRO_NONE && FMT == FAST_P4) {  // stage the (col, kb) moff/xd table once (see the s_mx comment)
+        for (int i = tid; i < M * NCH * 16; i += blockDim.x) {
+            const int2 mt = __ldg(a.xm + i);  // [M][NB] flat: i = col * NB + kb
+            const int s0 = (int)(short)(mt.y & 0xffff), s1 = mt.y >> 16;
+            s_mx[i] = make_int2(0x4B400000 - (CVT == 2 ? 128 : 8) * (s0 + s1), mt.x);
+        }
+        __syncthreads();
+    }
 
     for (int item = tbeg; item < tend; item++) {
         const int tile = item - nseg;
@@ -561,20 +575,32 @@ __global__ void __launch_bounds__(256, 2) k_gemv(const GemvArgs a, const ArArgs 
 #pragma unroll
             for (int col = 0; col < M; ++col) {
                 int4 xl, xh;
-                int2 mt;
+                float xd;
+                int s0 = 0, s1 = 0, moff = 0x4B400000;
                 if (PRO != PRO_NONE) {
                     xl = ((const int4*)s_lo)[kb];
                     xh = ((const int4*)s_hi)[kb];
-                    mt = s_mt[kb];
+                    const int2 mt = s_mt[kb];
+                    xd = __int_as_float(mt.x);
+                    s0 = (int)(short)(mt.y & 0xffff);
+                    s1 = mt.y >> 16;
+                    moff = FMT == FAST_P4 ? 0x4B400000 - (CVT == 2 ? 128 : 8) * (s0 + s1) : 0x4B400000;
+                } else if (FMT == FAST_P4) {
+                    const int4* xp = (const int4*)(a.xq + (size_t)col * K + kb * 32);
+                    xl = __ldg(xp);
+                    xh = __ldg(xp + 1);
+                    const int2 t = s_mx[col * NB + kb];  // staged (moff, xd bits): the tile-invariant x-derived
+                    moff = t.x;
+                    xd = __int_as_float(t.y);
                 } else {
                     const int4* xp = (const int4*)(a.xq + (size_t)col * K + kb * 32);
                     xl = __ldg(xp);
                     xh = __ldg(xp + 1);
-                    mt = __ldg(a.xm + (size_t)col * NB + kb);
+                    const int2 mt = __ldg(a.xm + (size_t)col * NB + kb);
+                    xd = __int_as_float(mt.x);
+                    s0 = (int)(short)(mt.y & 0xffff);
+                    s1 = mt.y >> 16;
                 }
-                const float xd = __int_as_float(mt.x);
-                const int s0 = (int)(short)(mt.y & 0xffff), s1 = mt.y >> 16;
-                const int moff = FMT == FAST_P4 ? 0x4B400000 - (CVT == 2 ? 128 : 8) * (s0 + s1) : 0x4B400000;
 #pragma unroll
                 for (int r = 0; r < RPL; ++r) acc[r][col] += group_dot_r<FMT, CVT, RPL>(cur, r, xl, xh, xd, s0, s1, moff);
             }

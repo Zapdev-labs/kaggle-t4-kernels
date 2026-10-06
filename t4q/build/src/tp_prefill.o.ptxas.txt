@@ -1,0 +1,1400 @@
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=0, BN=32, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=4, BN=32, GA=64, AB=64]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=4, BN=32, GA=64, AB=64]" at line 937
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+src/kernels/gemm8.cuh(890): warning #128-D: loop is not reachable
+      for (int i = 0; i < 8; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=4, BN=32, GA=64, AB=64]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=4, BN=32, GA=64, AB=64]" at line 937
+
+src/kernels/gemm8.cuh(890): warning #128-D: loop is not reachable
+      for (int i = 0; i < 8; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=2, BN=32, GA=64, AB=64]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=2, BN=32, GA=64, AB=64]" at line 937
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=0, BN=64, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=4, BN=64, GA=64, AB=64]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=4, BN=64, GA=64, AB=64]" at line 938
+
+src/kernels/gemm8.cuh(890): warning #128-D: loop is not reachable
+      for (int i = 0; i < 8; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=4, BN=64, GA=64, AB=64]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=4, BN=64, GA=64, AB=64]" at line 938
+
+src/kernels/gemm8.cuh(890): warning #128-D: loop is not reachable
+      for (int i = 0; i < 8; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=2, BN=64, GA=64, AB=64]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=2, BN=64, GA=64, AB=64]" at line 938
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=0, BN=128, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=4, BN=128, GA=64, AB=64]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=4, BN=128, GA=64, AB=64]" at line 939
+
+src/kernels/gemm8.cuh(890): warning #128-D: loop is not reachable
+      for (int i = 0; i < 8; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=4, BN=128, GA=64, AB=64]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=4, BN=128, GA=64, AB=64]" at line 939
+
+src/kernels/gemm8.cuh(890): warning #128-D: loop is not reachable
+      for (int i = 0; i < 8; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=2, BN=128, GA=64, AB=64]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=2, BN=128, GA=64, AB=64]" at line 939
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=0, BN=256, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=4, BN=256, GA=64, AB=64]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=4, BN=256, GA=64, AB=64]" at line 940
+
+src/kernels/gemm8.cuh(890): warning #128-D: loop is not reachable
+      for (int i = 0; i < 8; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=4, BN=256, GA=64, AB=64]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=4, BN=256, GA=64, AB=64]" at line 940
+
+src/kernels/gemm8.cuh(890): warning #128-D: loop is not reachable
+      for (int i = 0; i < 8; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=2, BN=256, GA=64, AB=64]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=2, BN=256, GA=64, AB=64]" at line 940
+
+src/kernels/gemm8.cuh(763): warning #128-D: loop is not reachable
+                  for (int u = 0; u < 4; ++u)
+                  ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=4, BN=256, GA=0, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=4, BN=256, GA=0, AB=0]" at line 952
+
+src/kernels/gemm8.cuh(763): warning #128-D: loop is not reachable
+                  for (int u = 0; u < 4; ++u)
+                  ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=4, BN=128, GA=0, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=4, BN=128, GA=0, AB=0]" at line 952
+
+src/kernels/gemm8.cuh(763): warning #128-D: loop is not reachable
+                  for (int u = 0; u < 4; ++u)
+                  ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=2, BN=256, GA=0, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=2, BN=256, GA=0, AB=0]" at line 952
+
+src/kernels/gemm8.cuh(763): warning #128-D: loop is not reachable
+                  for (int u = 0; u < 4; ++u)
+                  ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=0, RPL=2, BN=128, GA=0, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=0, RPL=2, BN=128, GA=0, AB=0]" at line 952
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=3, BN=256, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=3, RPL=4, BN=256, GA=64, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=3, RPL=4, BN=256, GA=64, AB=0]" at line 953
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=3, BN=64, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=3, RPL=4, BN=64, GA=64, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=3, RPL=4, BN=64, GA=64, AB=0]" at line 953
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=3, BN=32, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=3, RPL=4, BN=32, GA=64, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=3, RPL=4, BN=32, GA=64, AB=0]" at line 953
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=3, BN=128, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=3, RPL=4, BN=128, GA=64, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=3, RPL=4, BN=128, GA=64, AB=0]" at line 953
+
+src/kernels/gemm8.cuh(763): warning #128-D: loop is not reachable
+                  for (int u = 0; u < 4; ++u)
+                  ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=3, RPL=4, BN=256, GA=0, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=3, RPL=4, BN=256, GA=0, AB=0]" at line 953
+
+src/kernels/gemm8.cuh(763): warning #128-D: loop is not reachable
+                  for (int u = 0; u < 4; ++u)
+                  ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=3, RPL=4, BN=128, GA=0, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=3, RPL=4, BN=128, GA=0, AB=0]" at line 953
+
+src/kernels/gemm8.cuh(763): warning #128-D: loop is not reachable
+                  for (int u = 0; u < 4; ++u)
+                  ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=3, RPL=2, BN=256, GA=0, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=3, RPL=2, BN=256, GA=0, AB=0]" at line 953
+
+src/kernels/gemm8.cuh(763): warning #128-D: loop is not reachable
+                  for (int u = 0; u < 4; ++u)
+                  ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=3, RPL=2, BN=128, GA=0, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=3, RPL=2, BN=128, GA=0, AB=0]" at line 953
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=4, BN=256, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=4, RPL=4, BN=256, GA=64, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=4, RPL=4, BN=256, GA=64, AB=0]" at line 954
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=4, BN=64, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=4, RPL=4, BN=64, GA=64, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=4, RPL=4, BN=64, GA=64, AB=0]" at line 954
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=4, BN=32, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=4, RPL=4, BN=32, GA=64, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=4, RPL=4, BN=32, GA=64, AB=0]" at line 954
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=4, BN=128, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=4, RPL=4, BN=128, GA=64, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=4, RPL=4, BN=128, GA=64, AB=0]" at line 954
+
+src/kernels/gemm8.cuh(763): warning #128-D: loop is not reachable
+                  for (int u = 0; u < 4; ++u)
+                  ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=4, RPL=4, BN=256, GA=0, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=4, RPL=4, BN=256, GA=0, AB=0]" at line 954
+
+src/kernels/gemm8.cuh(763): warning #128-D: loop is not reachable
+                  for (int u = 0; u < 4; ++u)
+                  ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=4, RPL=4, BN=128, GA=0, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=4, RPL=4, BN=128, GA=0, AB=0]" at line 954
+
+src/kernels/gemm8.cuh(763): warning #128-D: loop is not reachable
+                  for (int u = 0; u < 4; ++u)
+                  ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=4, RPL=2, BN=256, GA=0, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=4, RPL=2, BN=256, GA=0, AB=0]" at line 954
+
+src/kernels/gemm8.cuh(763): warning #128-D: loop is not reachable
+                  for (int u = 0; u < 4; ++u)
+                  ^
+          detected during:
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=4, RPL=2, BN=128, GA=0, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=4, RPL=2, BN=128, GA=0, AB=0]" at line 954
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=2, BN=32, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=2, RPL=2, BN=32, GA=64, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=2, RPL=2, BN=32, GA=64, AB=0]" at line 958
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=2, BN=64, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=2, RPL=2, BN=64, GA=64, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=2, RPL=2, BN=64, GA=64, AB=0]" at line 958
+
+src/kernels/gemm8.cuh(303): warning #128-D: loop is not reachable
+      for (int i = 0; i < C::NXA; ++i) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemm8::stage_store<FMT,BN,MODE,PART>(const t4q::gemm8::Stage<BN> &, unsigned char *, float, float2 &, int, int) [with FMT=2, BN=128, MODE=0, PART=1]" at line 743
+            instantiation of "void t4q::gemm8::gemm9_kernel<FMT,RPL,BN,GA,AB>(t4q::gemm8::Args) [with FMT=2, RPL=2, BN=128, GA=64, AB=0]" at line 917
+            instantiation of "cudaError_t t4q::gemm8::launch9_t<FMT,RPL,BN,GA,AB>(const t4q::gemm8::Args &, cudaStream_t) [with FMT=2, RPL=2, BN=128, GA=64, AB=0]" at line 959
+
+src/kernels/gemm_r.cuh(281): warning #128-D: loop is not reachable
+      for (int m = 0; m < MT; ++m) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemmr::gemmr_kernel<RPL,BN,MT,EPI,ABL>(t4q::gemm8::Args) [with RPL=4, BN=32, MT=2, EPI=64, ABL=0]" at line 305
+            instantiation of "cudaError_t t4q::gemmr::launchr_t<RPL,BN,MT,EPI,ABL>(const t4q::gemm8::Args &, cudaStream_t) [with RPL=4, BN=32, MT=2, EPI=64, ABL=0]" at line 328
+
+src/kernels/gemm_r.cuh(281): warning #128-D: loop is not reachable
+      for (int m = 0; m < MT; ++m) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemmr::gemmr_kernel<RPL,BN,MT,EPI,ABL>(t4q::gemm8::Args) [with RPL=4, BN=64, MT=2, EPI=64, ABL=0]" at line 305
+            instantiation of "cudaError_t t4q::gemmr::launchr_t<RPL,BN,MT,EPI,ABL>(const t4q::gemm8::Args &, cudaStream_t) [with RPL=4, BN=64, MT=2, EPI=64, ABL=0]" at line 328
+
+src/kernels/gemm_r.cuh(281): warning #128-D: loop is not reachable
+      for (int m = 0; m < MT; ++m) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemmr::gemmr_kernel<RPL,BN,MT,EPI,ABL>(t4q::gemm8::Args) [with RPL=2, BN=32, MT=2, EPI=64, ABL=0]" at line 305
+            instantiation of "cudaError_t t4q::gemmr::launchr_t<RPL,BN,MT,EPI,ABL>(const t4q::gemm8::Args &, cudaStream_t) [with RPL=2, BN=32, MT=2, EPI=64, ABL=0]" at line 328
+
+src/kernels/gemm_r.cuh(281): warning #128-D: loop is not reachable
+      for (int m = 0; m < MT; ++m) {
+      ^
+          detected during:
+            instantiation of "void t4q::gemmr::gemmr_kernel<RPL,BN,MT,EPI,ABL>(t4q::gemm8::Args) [with RPL=2, BN=64, MT=2, EPI=64, ABL=0]" at line 305
+            instantiation of "cudaError_t t4q::gemmr::launchr_t<RPL,BN,MT,EPI,ABL>(const t4q::gemm8::Args &, cudaStream_t) [with RPL=2, BN=64, MT=2, EPI=64, ABL=0]" at line 328
+
+src/tp_prefill.cu(560): warning #128-D: loop is not reachable
+          for (int tt = 0; tt < n; tt++) {
+          ^
+          detected during instantiation of "void <unnamed>::k_pf_gdn<V2>(const float *, const float *, int, int, const float *, const float *, float *, float *) [with V2=1]" at line 2176
+
+ptxas info    : 24 bytes gmem, 8 bytes cmem[4]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_bd_gdnIfEEvPKfiS2_iPKiPfS2_S2_S2_PT_S5_' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_bd_gdnIfEEvPKfiS2_iPKiPfS2_S2_S2_PT_S5_
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, 1184 bytes smem, 440 bytes cmem[0], 8 bytes cmem[2]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_bd_gdnI6__halfEEvPKfiS3_iPKiPfS3_S3_S3_PT_S6_' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_bd_gdnI6__halfEEvPKfiS3_iPKiPfS3_S3_S3_PT_S6_
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, 1184 bytes smem, 440 bytes cmem[0], 8 bytes cmem[2]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_bd_f2hEPKfP6__halfm' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_bd_f2hEPKfP6__halfm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 12 registers, 376 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7911k_bd_argmaxEPKfiiiP6float2' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7911k_bd_argmaxEPKfiiiP6float2
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 47 registers, 256 bytes smem, 384 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7917k_bd_attn_combineEPKfS1_iPKiiiPf' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7917k_bd_attn_combineEPKfS1_iPKiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 36 registers, 272 bytes smem, 400 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7915k_bd_attn_splitEPKfPK6__halfS4_PfiPKiii' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7915k_bd_attn_splitEPKfPK6__halfS4_PfiPKiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 92 registers, 8384 bytes smem, 408 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7914k_bd_attn_prepEPKfiS1_S1_PfP6__halfS4_iPKif' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7914k_bd_attn_prepEPKfiS1_S1_PfP6__halfS4_iPKif
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 35 registers, 1056 bytes smem, 428 bytes cmem[0], 8 bytes cmem[2]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_gdncILi1EEEvPKfS2_iiS2_S2_PfS3_PKh' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_gdncILi1EEEvPKfS2_iiS2_S2_PfS3_PKh
+    144 bytes stack frame, 140 bytes spill stores, 160 bytes spill loads
+ptxas info    : Used 255 registers, 144 bytes cumulative stack size, 416 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_gdncILi0EEEvPKfS2_iiS2_S2_PfS3_PKh' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_gdncILi0EEEvPKfS2_iiS2_S2_PfS3_PKh
+    56 bytes stack frame, 52 bytes spill stores, 60 bytes spill loads
+ptxas info    : Used 255 registers, 56 bytes cumulative stack size, 416 bytes cmem[0], 16 bytes cmem[2]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_pf_gdnILi1EEEvPKfS2_iiS2_S2_PfS3_' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_pf_gdnILi1EEEvPKfS2_iiS2_S2_PfS3_
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 104 registers, 18560 bytes smem, 408 bytes cmem[0], 8 bytes cmem[2]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_pf_gdnILi0EEEvPKfS2_iiS2_S2_PfS3_' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_pf_gdnILi0EEEvPKfS2_iiS2_S2_PfS3_
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 80 registers, 18560 bytes smem, 408 bytes cmem[0], 8 bytes cmem[2]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7913k_pf_add_normIfEEvPfPKT_S4_iiPKfS1_' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7913k_pf_add_normIfEEvPfPKT_S4_iiPKfS1_
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 51 registers, 32 bytes smem, 400 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7913k_pf_add_normI6__halfEEvPfPKT_S5_iiPKfS2_' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7913k_pf_add_normI6__halfEEvPfPKT_S5_iiPKfS2_
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 52 registers, 32 bytes smem, 400 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7916k_pf_add_norm_q8IfEEvPfPKT_S4_iiPKfS1_NS_5Q8OutE' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7916k_pf_add_norm_q8IfEEvPfPKT_S4_iiPKfS1_NS_5Q8OutE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, 672 bytes smem, 448 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7916k_pf_add_norm_q8I6__halfEEvPfPKT_S5_iiPKfS2_NS_5Q8OutE' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7916k_pf_add_norm_q8I6__halfEEvPfPKT_S5_iiPKfS2_NS_5Q8OutE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, 672 bytes smem, 448 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7917k_pf_add_norm_rotIfEEvPfPKT_S4_iiPKfS1_PaS1_S1_i' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7917k_pf_add_norm_rotIfEEvPfPKT_S4_iiPKfS1_PaS1_S1_i
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 62 registers, 112 bytes smem, 428 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7917k_pf_add_norm_rotI6__halfEEvPfPKT_S5_iiPKfS2_PaS2_S2_i' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7917k_pf_add_norm_rotI6__halfEEvPfPKT_S5_iiPKfS2_PaS2_S2_i
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 62 registers, 112 bytes smem, 428 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_fq_uniEPhPKhiiPy' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_fq_uniEPhPKhiiPy
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 26 registers, 32 bytes smem, 384 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7911k_fq_smoothEPfi' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7911k_fq_smoothEPfi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 12 registers, 364 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7910k_fq_applyEPaPfiiifiPKhPhPy' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7910k_fq_applyEPaPfiiifiPKhPhPy
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 45 registers, 96 bytes smem, 416 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_fq_topnEPKfiiPh' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_fq_topnEPKfiiPh
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 19 registers, 256 bytes smem, 376 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_fq_amaxEPKaPKfiiPf' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_fq_amaxEPKaPKfiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, 384 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_siluEPKfiPf' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_siluEPKfiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, 376 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d797k_pf_faEPKfPK6__halfS4_S1_iiiiPf' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d797k_pf_faEPKfPK6__halfS4_S1_iiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 253 registers, 16384 bytes smem, 408 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_attnEPKfPK6__halfS4_S1_iiiPf' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_attnEPKfPK6__halfS4_S1_iiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 56 registers, 408 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7914k_pf_attn_prepEPKfiS1_S1_PfP6__halfS4_iif' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7914k_pf_attn_prepEPKfiS1_S1_PfP6__halfS4_iif
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 30 registers, 1056 bytes smem, 420 bytes cmem[0], 8 bytes cmem[2]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7910k_pf_gnormEPKfS1_iS1_Pf' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7910k_pf_gnormEPKfS1_iS1_Pf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 31 registers, 16 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_maxdiffEPKfS1_mPj' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_maxdiffEPKfS1_mPj
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 15 registers, 384 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_gdnpEPKfS1_iiS1_S1_Ph' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_gdnpEPKfS1_iiS1_S1_Ph
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 92 registers, 400 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_ringEPKfiiiPf' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_ringEPKfiiiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, 384 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_convEPKfiS1_S1_iPf' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d799k_pf_convEPKfiS1_S1_iPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 28 registers, 16 bytes smem, 400 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d797k_pf_abEPKfS1_iPfi' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d797k_pf_abEPKfS1_iPfi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 142 registers, 23552 bytes smem, 388 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7913k_pf_gnorm_q8EPKfS1_iS1_NS_5Q8OutE' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7913k_pf_gnorm_q8EPKfS1_iS1_NS_5Q8OutE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 31 registers, 32 bytes smem, 432 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7912k_pf_silu_q8EPKfiNS_5Q8OutE' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7912k_pf_silu_q8EPKfiNS_5Q8OutE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 24 registers, 32 bytes smem, 416 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_i8diffEPKaS1_mPj' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d798k_i8diffEPKaS1_mPj
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, 384 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7914k_pf_gnorm_rotEPKfS1_iS1_PaPfS3_i' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7914k_pf_gnorm_rotEPKfS1_iS1_PaPfS3_i
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 62 registers, 112 bytes smem, 412 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7912k_q8_64_halfEPK6__halfiiiPaPf' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7912k_q8_64_halfEPK6__halfiiiPaPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 23 registers, 392 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7910k_pf_embedEPKhPKiPf' for 'sm_75'
+ptxas info    : Function properties for _ZN46_GLOBAL__N__04db50cb_13_tp_prefill_cu_e4b65d7910k_pf_embedEPKhPKiPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, 376 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot16quant_rot_kernelI6__halfEEvPKT_iiiPaPfS7_i' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot16quant_rot_kernelI6__halfEEvPKT_iiiPaPfS7_i
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 71 registers, 112 bytes smem, 404 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot16quant_rot_kernelIfEEvPKT_iiiPaPfS6_i' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot16quant_rot_kernelIfEEvPKT_iiiPaPfS6_i
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 72 registers, 112 bytes smem, 404 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot18w8r_convert_kernelILi4ELi2EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot18w8r_convert_kernelILi4ELi2EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 91 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot18w8r_convert_kernelILi4ELi4EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot18w8r_convert_kernelILi4ELi4EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 90 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot18w8r_convert_kernelILi3ELi2EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot18w8r_convert_kernelILi3ELi2EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 91 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot18w8r_convert_kernelILi3ELi4EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot18w8r_convert_kernelILi3ELi4EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 91 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot18w8r_convert_kernelILi0ELi2EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot18w8r_convert_kernelILi0ELi2EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 94 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot18w8r_convert_kernelILi0ELi4EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot18w8r_convert_kernelILi0ELi4EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 94 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot21w8r_convert_h2_kernelILi3ELi2EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot21w8r_convert_h2_kernelILi3ELi2EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 50 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot21w8r_convert_h2_kernelILi3ELi4EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot21w8r_convert_h2_kernelILi3ELi4EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 50 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot21w8r_convert_h2_kernelILi0ELi2EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot21w8r_convert_h2_kernelILi0ELi2EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 50 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot21w8r_convert_h2_kernelILi0ELi4EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot21w8r_convert_h2_kernelILi0ELi4EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 50 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot15rot_invr_kernelILi4ELi2EEEvNS_5gemm84ArgsEPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot15rot_invr_kernelILi4ELi2EEEvNS_5gemm84ArgsEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 90 registers, 520 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot15rot_invr_kernelILi4ELi4EEEvNS_5gemm84ArgsEPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot15rot_invr_kernelILi4ELi4EEEvNS_5gemm84ArgsEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 94 registers, 520 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot15rot_invr_kernelILi3ELi2EEEvNS_5gemm84ArgsEPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot15rot_invr_kernelILi3ELi2EEEvNS_5gemm84ArgsEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 96 registers, 520 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot15rot_invr_kernelILi3ELi4EEEvNS_5gemm84ArgsEPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot15rot_invr_kernelILi3ELi4EEEvNS_5gemm84ArgsEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 96 registers, 520 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot15rot_invr_kernelILi0ELi2EEEvNS_5gemm84ArgsEPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot15rot_invr_kernelILi0ELi2EEEvNS_5gemm84ArgsEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 97 registers, 520 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot15rot_invr_kernelILi0ELi4EEEvNS_5gemm84ArgsEPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot15rot_invr_kernelILi0ELi4EEEvNS_5gemm84ArgsEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 97 registers, 520 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3rot14w8r_f32_kernelEPKfiiiPfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3rot14w8r_f32_kernelEPKfiiiPfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 103 registers, 392 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemmr12gemmr_kernelILi2ELi64ELi2ELi0ELi0EEEvNS_5gemm84ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemmr12gemmr_kernelILi2ELi64ELi2ELi0ELi0EEEvNS_5gemm84ArgsE
+    8 bytes stack frame, 16 bytes spill stores, 8 bytes spill loads
+ptxas info    : Used 255 registers, 8 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemmr12gemmr_kernelILi2ELi64ELi1ELi0ELi0EEEvNS_5gemm84ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemmr12gemmr_kernelILi2ELi64ELi1ELi0ELi0EEEvNS_5gemm84ArgsE
+    8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
+ptxas info    : Used 128 registers, 8 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemmr12gemmr_kernelILi2ELi64ELi2ELi64ELi0EEEvNS_5gemm84ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemmr12gemmr_kernelILi2ELi64ELi2ELi64ELi0EEEvNS_5gemm84ArgsE
+    8 bytes stack frame, 8 bytes spill stores, 4 bytes spill loads
+ptxas info    : Used 255 registers, 8 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemmr12gemmr_kernelILi2ELi32ELi2ELi0ELi0EEEvNS_5gemm84ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemmr12gemmr_kernelILi2ELi32ELi2ELi0ELi0EEEvNS_5gemm84ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemmr12gemmr_kernelILi2ELi32ELi1ELi0ELi0EEEvNS_5gemm84ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemmr12gemmr_kernelILi2ELi32ELi1ELi0ELi0EEEvNS_5gemm84ArgsE
+    8 bytes stack frame, 8 bytes spill stores, 8 bytes spill loads
+ptxas info    : Used 128 registers, 8 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemmr12gemmr_kernelILi2ELi32ELi2ELi64ELi0EEEvNS_5gemm84ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemmr12gemmr_kernelILi2ELi32ELi2ELi64ELi0EEEvNS_5gemm84ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemmr12gemmr_kernelILi4ELi64ELi2ELi0ELi0EEEvNS_5gemm84ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemmr12gemmr_kernelILi4ELi64ELi2ELi0ELi0EEEvNS_5gemm84ArgsE
+    8 bytes stack frame, 16 bytes spill stores, 8 bytes spill loads
+ptxas info    : Used 255 registers, 8 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemmr12gemmr_kernelILi4ELi64ELi1ELi0ELi0EEEvNS_5gemm84ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemmr12gemmr_kernelILi4ELi64ELi1ELi0ELi0EEEvNS_5gemm84ArgsE
+    8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
+ptxas info    : Used 128 registers, 8 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemmr12gemmr_kernelILi4ELi64ELi2ELi64ELi0EEEvNS_5gemm84ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemmr12gemmr_kernelILi4ELi64ELi2ELi64ELi0EEEvNS_5gemm84ArgsE
+    8 bytes stack frame, 8 bytes spill stores, 4 bytes spill loads
+ptxas info    : Used 255 registers, 8 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemmr12gemmr_kernelILi4ELi32ELi2ELi0ELi0EEEvNS_5gemm84ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemmr12gemmr_kernelILi4ELi32ELi2ELi0ELi0EEEvNS_5gemm84ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemmr12gemmr_kernelILi4ELi32ELi1ELi0ELi0EEEvNS_5gemm84ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemmr12gemmr_kernelILi4ELi32ELi1ELi0ELi0EEEvNS_5gemm84ArgsE
+    8 bytes stack frame, 8 bytes spill stores, 8 bytes spill loads
+ptxas info    : Used 128 registers, 8 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemmr12gemmr_kernelILi4ELi32ELi2ELi64ELi0EEEvNS_5gemm84ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemmr12gemmr_kernelILi4ELi32ELi2ELi64ELi0EEEvNS_5gemm84ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi0ELi0ELi1EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi0ELi0ELi1EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 235 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi1ELi0ELi1EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi1ELi0ELi1EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 235 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi0ELi2ELi1EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi0ELi2ELi1EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 229 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi1ELi2ELi1EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi1ELi2ELi1EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 224 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi3ELi0ELi1EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi3ELi0ELi1EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 235 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi3ELi2ELi1EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi3ELi2ELi1EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 243 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi2ELi0ELi1EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi2ELi0ELi1EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 235 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi2ELi2ELi1EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi0ELi0ELi4ELi2ELi2ELi1EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 243 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi4ELi2ELi0ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi4ELi2ELi0ELi0ELi0EEEvNS0_4ArgsE
+    32 bytes stack frame, 32 bytes spill stores, 32 bytes spill loads
+ptxas info    : Used 255 registers, 32 bytes cumulative stack size, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi4ELi2ELi1ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi4ELi2ELi1ELi0ELi0EEEvNS0_4ArgsE
+    32 bytes stack frame, 32 bytes spill stores, 32 bytes spill loads
+ptxas info    : Used 255 registers, 32 bytes cumulative stack size, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi4ELi2ELi0ELi1ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi4ELi2ELi0ELi1ELi0EEEvNS0_4ArgsE
+    24 bytes stack frame, 24 bytes spill stores, 24 bytes spill loads
+ptxas info    : Used 255 registers, 24 bytes cumulative stack size, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi4ELi2ELi1ELi1ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi4ELi2ELi1ELi1ELi0EEEvNS0_4ArgsE
+    24 bytes stack frame, 24 bytes spill stores, 24 bytes spill loads
+ptxas info    : Used 255 registers, 24 bytes cumulative stack size, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi4ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi4ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE
+    32 bytes stack frame, 32 bytes spill stores, 32 bytes spill loads
+ptxas info    : Used 255 registers, 32 bytes cumulative stack size, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi4ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi4ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE
+    32 bytes stack frame, 32 bytes spill stores, 32 bytes spill loads
+ptxas info    : Used 255 registers, 32 bytes cumulative stack size, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi4ELi4ELi0ELi1ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi4ELi4ELi0ELi1ELi0EEEvNS0_4ArgsE
+    24 bytes stack frame, 24 bytes spill stores, 24 bytes spill loads
+ptxas info    : Used 255 registers, 24 bytes cumulative stack size, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi4ELi4ELi1ELi1ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi4ELi4ELi1ELi1ELi0EEEvNS0_4ArgsE
+    24 bytes stack frame, 24 bytes spill stores, 24 bytes spill loads
+ptxas info    : Used 255 registers, 24 bytes cumulative stack size, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi3ELi2ELi0ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi3ELi2ELi0ELi0ELi0EEEvNS0_4ArgsE
+    24 bytes stack frame, 24 bytes spill stores, 24 bytes spill loads
+ptxas info    : Used 255 registers, 24 bytes cumulative stack size, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi3ELi2ELi1ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi3ELi2ELi1ELi0ELi0EEEvNS0_4ArgsE
+    24 bytes stack frame, 24 bytes spill stores, 24 bytes spill loads
+ptxas info    : Used 255 registers, 24 bytes cumulative stack size, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi3ELi2ELi0ELi1ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi3ELi2ELi0ELi1ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi3ELi2ELi1ELi1ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi3ELi2ELi1ELi1ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi3ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi3ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE
+    24 bytes stack frame, 24 bytes spill stores, 24 bytes spill loads
+ptxas info    : Used 255 registers, 24 bytes cumulative stack size, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi3ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi3ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE
+    24 bytes stack frame, 24 bytes spill stores, 24 bytes spill loads
+ptxas info    : Used 255 registers, 24 bytes cumulative stack size, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi3ELi4ELi0ELi1ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi3ELi4ELi0ELi1ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi3ELi4ELi1ELi1ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi3ELi4ELi1ELi1ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi0ELi2ELi0ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi0ELi2ELi0ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi0ELi2ELi1ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi0ELi2ELi1ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi0ELi2ELi0ELi1ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi0ELi2ELi0ELi1ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi0ELi2ELi1ELi1ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi0ELi2ELi1ELi1ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi0ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi0ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi0ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi0ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi0ELi4ELi0ELi1ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi0ELi4ELi0ELi1ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm17_kernelILi1ELi0ELi4ELi1ELi1ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm17_kernelILi1ELi0ELi4ELi1ELi1ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi1ELi4ELi2ELi0ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi1ELi4ELi2ELi0ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 254 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi1ELi4ELi2ELi1ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi1ELi4ELi2ELi1ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 254 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi1ELi4ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi1ELi4ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 254 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi1ELi4ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi1ELi4ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 254 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi1ELi3ELi2ELi0ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi1ELi3ELi2ELi0ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 246 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi1ELi3ELi2ELi1ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi1ELi3ELi2ELi1ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 246 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi1ELi3ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi1ELi3ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 246 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi1ELi3ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi1ELi3ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 246 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi1ELi0ELi2ELi0ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi1ELi0ELi2ELi0ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 242 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi1ELi0ELi2ELi1ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi1ELi0ELi2ELi1ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 242 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi1ELi0ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi1ELi0ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 242 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi1ELi0ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi1ELi0ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 242 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi0ELi0ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi0ELi0ELi4ELi0ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 240 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1613gemm16_kernelILi0ELi0ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1613gemm16_kernelILi0ELi0ELi4ELi1ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 240 registers, 608 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1616quant_gsh_kernelIfEEvPKT_iiiiPaS5_Pfi' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1616quant_gsh_kernelIfEEvPKT_iiiiPaS5_Pfi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 49 registers, 176 bytes smem, 404 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1617w8_convert_kernelILi4ELi2EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1617w8_convert_kernelILi4ELi2EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 28 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1617w8_convert_kernelILi4ELi4EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1617w8_convert_kernelILi4ELi4EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 27 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1617w8_convert_kernelILi3ELi2EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1617w8_convert_kernelILi3ELi2EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 25 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1617w8_convert_kernelILi3ELi4EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1617w8_convert_kernelILi3ELi4EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 25 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1617w8_convert_kernelILi0ELi2EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1617w8_convert_kernelILi0ELi2EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 26 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q3g1617w8_convert_kernelILi0ELi4EEEvNS_5gemm84ArgsEPKfPa' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q3g1617w8_convert_kernelILi0ELi4EEEvNS_5gemm84ArgsEPKfPa
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 26 registers, 528 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi4ELi2ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi4ELi2ELi128ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi4ELi2ELi256ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi4ELi2ELi256ELi0EEEvNS0_4ArgsE
+    8 bytes stack frame, 8 bytes spill stores, 8 bytes spill loads
+ptxas info    : Used 255 registers, 8 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi4ELi4ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi4ELi4ELi128ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi4ELi4ELi256ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi4ELi4ELi256ELi0EEEvNS0_4ArgsE
+    8 bytes stack frame, 8 bytes spill stores, 8 bytes spill loads
+ptxas info    : Used 255 registers, 8 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi3ELi2ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi3ELi2ELi128ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi3ELi2ELi256ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi3ELi2ELi256ELi0EEEvNS0_4ArgsE
+    56 bytes stack frame, 60 bytes spill stores, 52 bytes spill loads
+ptxas info    : Used 255 registers, 56 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi3ELi4ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi3ELi4ELi128ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi3ELi4ELi256ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi3ELi4ELi256ELi0EEEvNS0_4ArgsE
+    56 bytes stack frame, 60 bytes spill stores, 52 bytes spill loads
+ptxas info    : Used 255 registers, 56 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi0ELi2ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi0ELi2ELi128ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi0ELi2ELi256ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi0ELi2ELi256ELi0EEEvNS0_4ArgsE
+    48 bytes stack frame, 52 bytes spill stores, 48 bytes spill loads
+ptxas info    : Used 255 registers, 48 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi0ELi4ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi0ELi4ELi128ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi0ELi4ELi256ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi0ELi4ELi256ELi0EEEvNS0_4ArgsE
+    48 bytes stack frame, 52 bytes spill stores, 48 bytes spill loads
+ptxas info    : Used 255 registers, 48 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm15_kernelILi4ELi2EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm15_kernelILi4ELi2EEEvNS0_4ArgsE
+    16 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
+ptxas info    : Used 255 registers, 16 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm15_kernelILi4ELi4EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm15_kernelILi4ELi4EEEvNS0_4ArgsE
+    16 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
+ptxas info    : Used 255 registers, 16 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm15_kernelILi3ELi2EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm15_kernelILi3ELi2EEEvNS0_4ArgsE
+    16 bytes stack frame, 16 bytes spill stores, 16 bytes spill loads
+ptxas info    : Used 255 registers, 16 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm15_kernelILi3ELi4EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm15_kernelILi3ELi4EEEvNS0_4ArgsE
+    16 bytes stack frame, 16 bytes spill stores, 16 bytes spill loads
+ptxas info    : Used 255 registers, 16 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm15_kernelILi0ELi2EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm15_kernelILi0ELi2EEEvNS0_4ArgsE
+    24 bytes stack frame, 20 bytes spill stores, 20 bytes spill loads
+ptxas info    : Used 255 registers, 24 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm15_kernelILi0ELi4EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm15_kernelILi0ELi4EEEvNS0_4ArgsE
+    24 bytes stack frame, 20 bytes spill stores, 20 bytes spill loads
+ptxas info    : Used 255 registers, 24 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm14_kernelILi4ELi2EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm14_kernelILi4ELi2EEEvNS0_4ArgsE
+    272 bytes stack frame, 780 bytes spill stores, 528 bytes spill loads
+ptxas info    : Used 255 registers, 272 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm14_kernelILi4ELi4EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm14_kernelILi4ELi4EEEvNS0_4ArgsE
+    272 bytes stack frame, 780 bytes spill stores, 528 bytes spill loads
+ptxas info    : Used 255 registers, 272 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm14_kernelILi3ELi2EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm14_kernelILi3ELi2EEEvNS0_4ArgsE
+    264 bytes stack frame, 740 bytes spill stores, 496 bytes spill loads
+ptxas info    : Used 255 registers, 264 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm14_kernelILi3ELi4EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm14_kernelILi3ELi4EEEvNS0_4ArgsE
+    264 bytes stack frame, 740 bytes spill stores, 496 bytes spill loads
+ptxas info    : Used 255 registers, 264 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm14_kernelILi0ELi2EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm14_kernelILi0ELi2EEEvNS0_4ArgsE
+    256 bytes stack frame, 720 bytes spill stores, 476 bytes spill loads
+ptxas info    : Used 255 registers, 256 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm14_kernelILi0ELi4EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm14_kernelILi0ELi4EEEvNS0_4ArgsE
+    256 bytes stack frame, 720 bytes spill stores, 476 bytes spill loads
+ptxas info    : Used 255 registers, 256 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi4ELi2ELi2EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi4ELi2ELi2EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi4ELi2ELi3EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi4ELi2ELi3EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi4ELi4ELi2EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi4ELi4ELi2EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi4ELi4ELi3EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi4ELi4ELi3EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi3ELi2ELi2EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi3ELi2ELi2EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi3ELi2ELi3EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi3ELi2ELi3EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi3ELi4ELi2EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi3ELi4ELi2EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi3ELi4ELi3EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi3ELi4ELi3EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi0ELi2ELi2EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi0ELi2ELi2EEEvNS0_4ArgsE
+    16 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
+ptxas info    : Used 255 registers, 16 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi0ELi2ELi3EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi0ELi2ELi3EEEvNS0_4ArgsE
+    16 bytes stack frame, 12 bytes spill stores, 24 bytes spill loads
+ptxas info    : Used 255 registers, 16 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi0ELi4ELi2EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi0ELi4ELi2EEEvNS0_4ArgsE
+    16 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
+ptxas info    : Used 255 registers, 16 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi0ELi4ELi3EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi0ELi4ELi3EEEvNS0_4ArgsE
+    16 bytes stack frame, 12 bytes spill stores, 24 bytes spill loads
+ptxas info    : Used 255 registers, 16 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi4ELi2ELi128ELi256EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi4ELi2ELi128ELi256EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi4ELi2ELi256ELi128EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi4ELi2ELi256ELi128EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi4ELi4ELi128ELi256EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi4ELi4ELi128ELi256EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi4ELi4ELi256ELi128EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi4ELi4ELi256ELi128EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi3ELi2ELi128ELi256EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi3ELi2ELi128ELi256EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 254 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi3ELi2ELi256ELi128EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi3ELi2ELi256ELi128EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi3ELi4ELi128ELi256EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi3ELi4ELi128ELi256EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 254 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi3ELi4ELi256ELi128EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi3ELi4ELi256ELi128EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi0ELi2ELi128ELi256EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi0ELi2ELi128ELi256EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi0ELi2ELi256ELi128EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi0ELi2ELi256ELi128EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi0ELi4ELi128ELi256EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi0ELi4ELi128ELi256EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi0ELi4ELi256ELi128EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi0ELi4ELi256ELi128EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi4ELi2ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi4ELi2ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 254 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi4ELi2ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi4ELi2ELi128ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 250 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi4ELi4ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi4ELi4ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 254 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi4ELi4ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi4ELi4ELi128ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 250 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi3ELi2ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi3ELi2ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 246 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi3ELi2ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi3ELi2ELi128ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 243 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi3ELi4ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi3ELi4ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 246 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi3ELi4ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi3ELi4ELi128ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 243 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi0ELi2ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi0ELi2ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 241 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi0ELi2ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi0ELi2ELi128ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 239 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi0ELi4ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi0ELi4ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 241 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi0ELi4ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi0ELi4ELi128ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 239 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi2ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi2ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 215 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi2ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi2ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi2ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi2ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi128ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi128ELi32ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi256ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi256ELi32ELi0EEEvNS0_4ArgsE
+    32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 32 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi128ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi128ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 166 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi256ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi256ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 242 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 216 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi256ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi256ELi64ELi0EEEvNS0_4ArgsE
+    16 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
+ptxas info    : Used 255 registers, 16 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi128ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi128ELi32ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi256ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi256ELi32ELi0EEEvNS0_4ArgsE
+    32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 32 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi128ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi128ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 166 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi256ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi256ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 242 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi128ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 216 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi32ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi64ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE
+    16 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
+ptxas info    : Used 255 registers, 16 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi128ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi128ELi32ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi256ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi256ELi32ELi0EEEvNS0_4ArgsE
+    32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 32 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi128ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi128ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 144 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi256ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi256ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 238 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 218 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE
+    8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
+ptxas info    : Used 128 registers, 8 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi256ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi256ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi128ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi128ELi32ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi256ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi256ELi32ELi0EEEvNS0_4ArgsE
+    32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 32 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi128ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi128ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 144 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi256ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi256ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 238 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi128ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 218 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi32ELi64ELi0EEEvNS0_4ArgsE
+    8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
+ptxas info    : Used 128 registers, 8 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi64ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi32ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi32ELi0EEEvNS0_4ArgsE
+    48 bytes stack frame, 48 bytes spill stores, 44 bytes spill loads
+ptxas info    : Used 255 registers, 48 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 142 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 236 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 214 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 127 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi32ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi32ELi0EEEvNS0_4ArgsE
+    48 bytes stack frame, 48 bytes spill stores, 44 bytes spill loads
+ptxas info    : Used 255 registers, 48 bytes cumulative stack size, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 142 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi0ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 236 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 214 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi32ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 127 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi64ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi64ELi64EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi64ELi64EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi64ELi64EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 216 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi64ELi64EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 216 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi64ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi64ELi64ELi64EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi64ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi64ELi64ELi64EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi32ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi32ELi64ELi64EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 127 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi32ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi32ELi64ELi64EEEvNS0_4ArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 127 registers, 512 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813quant8_kernelILi32EEEvPKfiiiiPaPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813quant8_kernelILi32EEEvPKfiiiiPaPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 54 registers, 392 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm813quant8_kernelILi64EEEvPKfiiiiPaPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm813quant8_kernelILi64EEEvPKfiiiiPaPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 84 registers, 392 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm818quant8_g128_kernelEPKfiiiiPaPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm818quant8_g128_kernelEPKfiiiiPaPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 62 registers, 392 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi2ELi2EEEvNS0_4ArgsEPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi2ELi2EEEvNS0_4ArgsEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 45 registers, 520 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi4ELi2EEEvNS0_4ArgsEPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi4ELi2EEEvNS0_4ArgsEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 48 registers, 520 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi4ELi4EEEvNS0_4ArgsEPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi4ELi4EEEvNS0_4ArgsEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 48 registers, 520 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi3ELi2EEEvNS0_4ArgsEPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi3ELi2EEEvNS0_4ArgsEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, 520 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi3ELi4EEEvNS0_4ArgsEPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi3ELi4EEEvNS0_4ArgsEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, 520 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi0ELi2EEEvNS0_4ArgsEPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi0ELi2EEEvNS0_4ArgsEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 45 registers, 520 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi0ELi4EEEvNS0_4ArgsEPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi0ELi4EEEvNS0_4ArgsEPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 45 registers, 520 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm817quant8_tok_kernelEPKfiiiPaPf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm817quant8_tok_kernelEPKfiiiPaPf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 61 registers, 32 bytes smem, 392 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q5gemm811ksum_kernelEPKfxiiPfP6__halfS5_' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q5gemm811ksum_kernelEPKfxiiPfP6__halfS5_
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 42 registers, 400 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemm16gemm_w4a8_kernelILi3ELi2ELi3EEEvNS0_8GemmArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemm16gemm_w4a8_kernelILi3ELi2ELi3EEEvNS0_8GemmArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 448 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemm16gemm_w4a8_kernelILi3ELi4ELi3EEEvNS0_8GemmArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemm16gemm_w4a8_kernelILi3ELi4ELi3EEEvNS0_8GemmArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 448 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemm16gemm_w4a8_kernelILi0ELi2ELi3EEEvNS0_8GemmArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemm16gemm_w4a8_kernelILi0ELi2ELi3EEEvNS0_8GemmArgsE
+    8 bytes stack frame, 8 bytes spill stores, 8 bytes spill loads
+ptxas info    : Used 255 registers, 8 bytes cumulative stack size, 448 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemm16gemm_w4a8_kernelILi0ELi4ELi3EEEvNS0_8GemmArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemm16gemm_w4a8_kernelILi0ELi4ELi3EEEvNS0_8GemmArgsE
+    16 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
+ptxas info    : Used 255 registers, 16 bytes cumulative stack size, 448 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemm16gemm_w4a8_kernelILi4ELi2ELi2EEEvNS0_8GemmArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemm16gemm_w4a8_kernelILi4ELi2ELi2EEEvNS0_8GemmArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 215 registers, 448 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemm16gemm_w4a8_kernelILi3ELi2ELi2EEEvNS0_8GemmArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemm16gemm_w4a8_kernelILi3ELi2ELi2EEEvNS0_8GemmArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 448 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemm16gemm_w4a8_kernelILi0ELi2ELi2EEEvNS0_8GemmArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemm16gemm_w4a8_kernelILi0ELi2ELi2EEEvNS0_8GemmArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 448 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemm16gemm_w4a8_kernelILi4ELi4ELi2EEEvNS0_8GemmArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemm16gemm_w4a8_kernelILi4ELi4ELi2EEEvNS0_8GemmArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 218 registers, 448 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemm16gemm_w4a8_kernelILi3ELi4ELi2EEEvNS0_8GemmArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemm16gemm_w4a8_kernelILi3ELi4ELi2EEEvNS0_8GemmArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 448 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemm16gemm_w4a8_kernelILi0ELi4ELi2EEEvNS0_8GemmArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemm16gemm_w4a8_kernelILi0ELi4ELi2EEEvNS0_8GemmArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, 448 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemm20quant_rows_i4_kernelEPKfiiiiPaP6float2Pf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemm20quant_rows_i4_kernelEPKfiiiiPaP6float2Pf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 58 registers, 400 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemm17quant_rows_kernelEPKfiiiiPaP6float2Pf' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemm17quant_rows_kernelEPKfiiiiPaP6float2Pf
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 55 registers, 400 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemm18to_f16_perm_kernelEPKfiiiiP6__half' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemm18to_f16_perm_kernelEPKfiiiiP6__half
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 44 registers, 384 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi8ELi10ELi1ELb0EEEvNS0_8GemvArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi8ELi10ELi1ELb0EEEvNS0_8GemvArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 432 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi7ELi10ELi1ELb0EEEvNS0_8GemvArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi7ELi10ELi1ELb0EEEvNS0_8GemvArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 432 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi6ELi10ELi1ELb0EEEvNS0_8GemvArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi6ELi10ELi1ELb0EEEvNS0_8GemvArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 432 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi5ELi10ELi1ELb0EEEvNS0_8GemvArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi5ELi10ELi1ELb0EEEvNS0_8GemvArgsE
+    8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
+ptxas info    : Used 128 registers, 8 bytes cumulative stack size, 432 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi4ELi10ELi1ELb0EEEvNS0_8GemvArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi4ELi10ELi1ELb0EEEvNS0_8GemvArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 432 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi3ELi10ELi1ELb0EEEvNS0_8GemvArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi3ELi10ELi1ELb0EEEvNS0_8GemvArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 432 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi2ELi10ELi1ELb0EEEvNS0_8GemvArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi2ELi10ELi1ELb0EEEvNS0_8GemvArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 432 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi1ELi10ELi1ELb0EEEvNS0_8GemvArgsE' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemv16gemv_fast_kernelILi2ELi2ELi1ELi10ELi1ELb0EEEvNS0_8GemvArgsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 128 registers, 432 bytes cmem[0]
+ptxas info    : Compiling entry function '_ZN3t4q4gemv13repack_kernelEiiiiimmmPKhPhii' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemv13repack_kernelEiiiiimmmPKhPhii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 80 registers, 424 bytes cmem[0], 12 bytes cmem[2]
+ptxas info    : Compiling entry function '_ZN3t4q4gemv18quantize_q8_kernelEPKfiiPaP4int2' for 'sm_75'
+ptxas info    : Function properties for _ZN3t4q4gemv18quantize_q8_kernelEPKfiiPaP4int2
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 19 registers, 384 bytes cmem[0]

@@ -1424,3 +1424,53 @@ count the real instructions per 16 B per shape/M, and rank the cut candidates (t
 folding, the x-load hoisting across the RPL rows, the mask constants, the M4 register pressure)
 against the ~9% (qkvz) to ~25% (out) per-shape instruction budgets. Only cuts that keep the
 bit-identical FFMA chains count (the V4/V5 gates).
+
+## 2026-10-05 - M5 round 16 (r16): the SASS census and the first instruction cut - the
+## tile-invariant x-derived (moff, xd) staged in smem
+
+### The census (nvdisasm on the locally-built cubin, sm_75/nvcc 12.8.1 = the node's pair)
+The engine's per-launch dp4a kernel is k_gemv<FMT,RPL,NCH,AR,SEG,PRO,SQ,CVX,M> (tp_gemv_impl.cuh,
+NOT gemv_fast_kernel - that is the older persistent family). The bench's DK instantiates the exact
+verify config: k_gemv<FAST_P4, RPL 2, NCH 10, no AR, no SEG, PRO_NONE, no SQ, CVX 2, M 4>
+(the engine's T4Q_GM launches the same shapes). The loop analysis (the backward-BRA regions of
+the disassembly) is the honest frame: the whole (c, col, r) nest is unrolled INSIDE the item/tile
+loop, so the tile-loop body IS the per-tile instruction stream:
+- baseline: 1808 instructions inside the tile loop per tile - 640 IDP.4A (the 10 c x 4 col x 2 r
+  x 8 - the whole arithmetic core, unrolled), 100 LDG.E.128 (80 of them the xq xl/xh re-loads +
+  20 the weight rows), 40 LDG.E.64 (the x a.xm loads), ~120 derive ops (PRMT/LEA.HI/SHF/I2F: the
+  s0/s1/moff chain), ~200+ addressing LEA/IADD3/IMAD (about half of it x-side).
+- the x-side total (the loads + the derive + the addressing): ~25% of the per-tile stream - and
+  it is ALL TILE-INVARIANT (the x activations are the same vector for every weight tile the block
+  touches; only the weights change per tile). The r14 source reading was right, and nvcc does NOT
+  hoist it: the 40 LDG.E.64 and the derive chain sit INSIDE the loop (the 128-register cap blocks
+  hoisting 40 int2s), so the full x-side re-executes every tile.
+- the cut candidate: the (moff, xd) pairs are pure functions of a.xm[col][kb] (10 int2 groups
+  per column: mt.x -> xd bits, mt.y -> s0/s1 -> the folded moff constant; the CVT1/CVT2 paths
+  pre-fold -8/-128*(s0+s1) into moff, so s0/s1 themselves are dead after the fold). Staging them
+  in smem once per block removes the per-tile LDG.64s, the derive chain and their addressing,
+  bit-identically (same formulas, same values, the FFMA/dp4a chains untouched).
+
+### The cut (tp_gemv_impl.cuh)
+- s_mx[PRO_NONE && FAST_P4 ? M * NCH * 16 : 1] int2 (the packed (moff, xd-bits); M4: 5 KB) next
+  to the other PRO smem arrays.
+- staged once per block right before the item loop (tid-strided fill + one __syncthreads(); ~10
+  instructions per thread once), gated to PRO_NONE && FAST_P4 (all M; the PRO paths keep their
+  own s_mt staging, the Q8/K6/K5 paths keep their raw loads - their moff is the constant).
+- the column loop's read side restructured into three branches (PRO / staged-P4 / other), each
+  deriving its own (xd, s0, s1, moff): the PRO paths unchanged, the P4 PRO_NONE reads s_mx (one
+  LDS.U.64 per (col, kb) replaces the LDG.E.64 + the derive chain).
+- the SASS after: the tile loop body drops 1808 -> 1691 per tile (-6.5%), the 40 LDG.E.64 leave
+  the loop (replaced by 40 LDS.U.64 - no L2 round trip, no address chain), registers stay 128
+  (the occupancy/launch_bounds(256,2) unchanged), all TUs compile clean (tp_spec, tp_kernels,
+  tp_engine, tc_bench; no ptxas spill).
+- the xq xl/xh re-loads (80 LDG.E.128/tile) are L2-served (the same 1280 B per block every tile)
+  and stay: staging them saves no instruction slots (the loads become LDS at the same count);
+  the L2 is not the binding side at ~254 GB/s DRAM streams.
+
+### The v46 run (the A/B is the same matrix vs v45, plus the same-run dramprobe)
+The stage script is unchanged from v45: the engine spec_check (V4/V5 bit-identity + k3_dv1) first,
+then the dramprobe (the same-run ceiling read), then the matrix anchors (2, 4, 5, 6, 3, ...).
+The expectations, if the issue roof was really the binding side: qkvz M4 254.9 -> ~270+ (the
+-6.5% instruction cut plus the LDG->LDS swap), down/gateup/out proportionally; the engine
+~70.8 -> ~71-73 tok/s. If the anchors do NOT move, the instruction stream was not the binding
+constraint per shape and the closure at ~66-71 stands with the census on record.
