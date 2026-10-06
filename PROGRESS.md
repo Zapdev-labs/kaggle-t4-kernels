@@ -1733,3 +1733,54 @@ is a hard chain, there is NO window to prefetch into in the greedy loop (the war
 row cost is ~20-50 us/token, measurable at the round's mean_ms). The bigger remaining
 launch lever is the cf-m3 CUDA-graph capture (the static-shape sections), not more
 kernel fusions.
+
+### r19f: the v6 wedge DECODED + the process-level hardening (7d4cf09)
+The wedged v6 turned CANCEL_ACKNOWLEDGED at the 12 h session cap and the output became
+fetchable: dl.txt rc=0 in 379 s (the 82.85 GB download SUCCEEDED), then 12 h of clocks
+0 % util / 0 MiB (the GPUs never ran anything). The wedge: the downloader's own
+p.stat().st_size on the fresh 82.85 GB file - os.stat does NOT release the GIL in
+CPython, so a D-state metadata stall on the nearly-full overlayfs volume froze the
+ENTIRE process, the r19b thread watchdog included (same GIL). The cancel-save returned
+only the logs/ subdir; the root results.json (incrementally written since the first
+result) was lost. Hardened in-tree for v7: spawn_watchdog_proc (a SEPARATE-PROCESS
+watchdog that kills the frozen parent at the deadline by its baked-in pid - immune to
+the parent's GIL, ProcessLookupError-guarded), file_gb (the only size probe left: the
+stat runs in a child with a 180 s timeout; a stalled stat with a clean downloader rc
+still counts ok), and the main's redundant post-download getsize removed. The thread
+watchdog stays for the hanging-child case. Truth table validated (82.85 -> ok, stalled
++ rc 0 -> ok, 70 GB -> the curl fallback, stalled + rc != 0 -> fail). The regenerated
+payload carries the r19e batching too, so v7 gates base + batching together (bit-exact
+by construction; a one-commit revert isolates the base if it fails).
+
+### r19g: the fast q8-activation paths landed (c3fb34c, the r18 worklist closed)
+The last r18 worklist item: every K-quant/P4 gemv now pairs the activation with the
+oracle's OWN activation quantization (the CPU side quantizes the activations for these
+dots - same arithmetic, not an approximation bolted on). The exact pairings from the
+ggml CPU type traits: Q2_K and Q4_K <-> Q8_K (per-256 super-block), Q5_1 <-> Q8_1,
+Q4_0 <-> Q8_0. Landed: quantize_row_q8_K_ref verbatim (the signed max-abs, iscale =
+-127/max - the NEGATIVE quirk, nearest_int's 12582912 magic, MIN(127,v), the 16 int16
+bsums, d = 1/iscale; the butterfly + sh[9] broadcast carry the first-occurrence
+tie-break), dot_q8k<K2|K4> (the ggml generic bodies in group form: K2's byte window
+32*((g&7)>>2) + the +16 half at one shared shift 2*(g&3), the subs 2g/2g+1, the
+dall*isum - dmin*(bs0*m0 + bs1*m1) fold; K4's nibble plane at 32*((g&7)>>1), plane g&1,
+dev_scale_min_k4, the (bs0+bs1)*mi min fold), the FMT_Q51 case in dot_q8 (the qh LE-u32
+bit fold to 0x10, the SPLIT nibble layout = the validated deq32, (dx*dy)*sumi + mx*sy),
+quantize_row_q8_0_ref + dot_q8_0_p4 (the PLAIN nib-8 form), and k_gemv_q80_b (the
+batched down-expert variant: grid.y = the expert, the xq/xd/y/codes/d planes advanced
+per expert, cs = rows*cols/2, ds = rows*(cols/32)*2). The engine's gemv(s, ...) helper
+routes per format; all 21 call sites rewritten; moe()'s down = one flat quantize over
+the ffa [TOPK*EE] + the one batched launch. VERIFIED THREE WAYS before the commit: the
+full podman build (0 errors, k_gemv_q8k K2/K4 64/63 regs, q80/q80_b 39, quantizes
+16/21, ZERO spill); the ggml primary on disk (the q2_K generic's k/j/q2/q8 loop decoded:
+window 32*(s>>3) + 16*(s&1), shift 2*((s>>1)&3), is = 2*(4k+j) - the kernel's group
+form is the same formula); and tools/sim_q8_dots.py - all four dot bodies vs the
+dequant reference over 120 random trials under the honest bound |B-A| <= 1.6*(sum
+|w_i| d_i/2 + the f16-d slack) + the three quantize round-trips (the negative-d quirk
+and the bsum identity included). ALL OK. The sim's first draft caught two of its own
+generator bugs (the K2 per-s window/shift, the Q51/Q40 raw-GGUF interleave vs the
+packed SPLIT) - the kernels were right against both primaries. The v7 payload
+regenerated (565 kB, the tree blobs byte-verified vs the working tree), so the quota
+round now gates base + batching + census + the q8 fast paths together; the commit
+history (2f33431 base+census, 35d8c2d batching, c3fb34c q8) is the bisect ladder if
+the gates fail.
+
