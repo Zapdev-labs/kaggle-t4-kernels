@@ -85,6 +85,17 @@ struct CfScratch {
     float *conv = nullptr, *qn = nullptr, *kn = nullptr, *o = nullptr, *on = nullptr, *a = nullptr;
     float *ffg = nullptr, *ffu = nullptr, *ffa = nullptr;    // routed experts: gate/up/act [TOPK*EE]
     float *logits = nullptr;
+    // the q8 fast-path activation planes (the r18 repack worklist): the Q2_K/Q4_K tensors dot
+    // against the Q8_K quantization, the Q5_1 against the Q8_1 - the exact activation
+    // arithmetic the ggml CPU oracle itself computes. Sized for the largest gemv input
+    // (HCD = 10240: the hc mixers' down/inject columns; the lm_head's 2560 is smaller).
+    int8_t* xq1 = nullptr;               // [HCD] the q8_1 codes
+    float *xq1_d = nullptr, *xq1_s = nullptr;  // [HCD/32] the fp16-rounded d and sum
+    int8_t* xqk = nullptr;               // [HCD] the q8_K codes
+    int16_t* xqk_b = nullptr;            // [HCD/16] the bsums
+    float* xqk_d = nullptr;              // [HCD/256] the per-super-block d
+    int8_t* xq0 = nullptr;               // [TOPK*EE] the q8_0 codes (the down experts, flat [TOPK][EE])
+    float* xd0 = nullptr;                // [TOPK*EE/32] the fp16-rounded d
 };
 
 struct CfCtx {

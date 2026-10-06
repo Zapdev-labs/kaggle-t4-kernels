@@ -14,7 +14,27 @@ using namespace cf;
 
 namespace {
 
-void gemv(const PackedW& W, const float* x, float* y, cudaStream_t st) { launch_gemv(W, x, y, st); }
+// the r18 repack worklist fast path: the Q2_K/Q4_K/Q5_1 tensors dot against the ggml's own
+// activation quantizations (Q8_K for the K-quants, Q8_1 for the Q5_1) - the exact arithmetic
+// the CPU oracle itself computes, so the gates compare the same quantization, and the dots run
+// at the dp4a-class rates the r18 probes measured instead of the fp32 reference path. The
+// quantize (~5 us) rides the same stream before the dot. The traffic it covers: the Q2_K trunk
+// (~1.5 GB/token: attn_qkv/gate, ssm_out, the routers, the shexp, the ple key/value), the Q5_1
+// hc mixers (~0.44 GB/token), the Q4_K lm_head (~0.34 GB/token).
+void gemv(CfScratch& sc, const PackedW& W, const float* x, float* y, cudaStream_t st) {
+    if (W.fmt == FMT_K2 || W.fmt == FMT_K4) {
+        launch_quantize_q8_K(x, (int)W.cols, sc.xqk, sc.xqk_b, sc.xqk_d, st);
+        launch_gemv_q8k(W, sc.xqk, sc.xqk_b, sc.xqk_d, y, st);
+    } else if (W.fmt == FMT_Q51) {
+        launch_quantize_q8_1(x, (int)W.cols, sc.xq1, sc.xq1_d, sc.xq1_s, st);
+        launch_gemv_q8(W, sc.xq1, sc.xq1_d, sc.xq1_s, y, st);
+    } else if (W.fmt == FMT_P4) {
+        launch_quantize_q8_0(x, (int)W.cols, sc.xq0, sc.xd0, st);
+        launch_gemv_q8_0(W, sc.xq0, sc.xd0, y, st);
+    } else {
+        launch_gemv(W, x, y, st);
+    }
+}
 
 void check_launch(const char* what) {
     cudaError_t e = cudaGetLastError();
@@ -27,11 +47,11 @@ void hc_mix(CfCtx* c, const float* res, const float* w_norm, const PackedW& down
             const PackedW* inject, CfScratch& s) {
     cudaStream_t st = c->st;
     launch_cf_hc_norm(res, w_norm, s.xn, st);
-    gemv(down, s.xn, s.lo, st);
+    gemv(s, down, s.xn, s.lo, st);
     launch_cf_hc_lo(s.lo, s.lo, st);  // in-place: reads y[i] writes lo[i], identity-safe
-    gemv(up, s.lo, s.gate, st);       // gate buffer = y_up [HCD]
+    gemv(s, up, s.lo, s.gate, st);       // gate buffer = y_up [HCD]
     launch_cf_hc_mixed(s.xn, s.gate, s.mixed, st);
-    if (inject) gemv(*inject, s.xn, s.inj, st);  // [HC]
+    if (inject) gemv(s, *inject, s.xn, s.inj, st);  // [HC]
 }
 
 // res += 2*sigmoid(inj/HC) * block
@@ -41,10 +61,10 @@ void hc_combine(CfCtx* c, float* res, const float* block, const float* inj) {
 
 void deltanet(CfCtx* c, CfLayer& L, CfScratch& s) {
     cudaStream_t st = c->st;
-    gemv(L.qkv, s.xn, s.qkv, st);
-    gemv(L.z, s.xn, s.zz, st);
-    gemv(L.beta, s.xn, s.braw, st);
-    gemv(L.alpha, s.xn, s.araw, st);
+    gemv(s, L.qkv, s.xn, s.qkv, st);
+    gemv(s, L.z, s.xn, s.zz, st);
+    gemv(s, L.beta, s.xn, s.braw, st);
+    gemv(s, L.alpha, s.xn, s.araw, st);
     check_launch("gdn proj");
     launch_gdn_gates(s.braw, s.araw, L.ssm_a, L.ssm_dt, s.beta, s.g, HV, st);
     launch_gdn_conv(s.qkv, L.conv_state, L.conv_w, s.conv, CONV, st);
@@ -52,22 +72,22 @@ void deltanet(CfCtx* c, CfLayer& L, CfScratch& s) {
     launch_gdn_recur(L.S, s.qn, s.kn, s.conv + 2 * HK * DK, s.beta, s.g, s.o, 1.0f / sqrtf((float)DK), st);
     check_launch("gdn recur");
     launch_cf_gdn_gnorm(s.o, s.zz, L.ssm_norm, s.on, EPS, st);
-    gemv(L.ssm_out, s.on, s.block, st);
+    gemv(s, L.ssm_out, s.on, s.block, st);
     check_launch("ssm_out");
 }
 
 void attention(CfCtx* c, CfLayer& L, CfScratch& s, int pos) {
     cudaStream_t st = c->st;
-    gemv(L.wq, s.xn, s.qfull, st);
-    gemv(L.wk, s.xn, s.k, st);
-    gemv(L.wv, s.xn, s.v, st);
+    gemv(s, L.wq, s.xn, s.qfull, st);
+    gemv(s, L.wk, s.xn, s.k, st);
+    gemv(s, L.wv, s.xn, s.v, st);
     check_launch("attn proj");
     launch_cf_qk_norm_rope(s.qfull, s.k, L.q_norm, L.k_norm, s.aq, s.ak, pos, EPS, ROPE_BASE, NROT, st);
     launch_cf_kv_store(s.ak, s.v, L.kc, L.vc, pos, c->max_ctx, st);
     launch_cf_attn_decode(s.aq, L.kc, L.vc, s.att, s.scores, pos + 1, c->max_ctx, 1.0f / 16.0f, st);
     check_launch("attn");
     launch_gate_sigmoid(s.att, s.qfull, s.attg, st);  // 24 blocks, [24][512]: same layout
-    gemv(L.wo, s.attg, s.block, st);
+    gemv(s, L.wo, s.attg, s.block, st);
     check_launch("attn out");
 }
 
@@ -97,8 +117,8 @@ void ple(CfCtx* c, int token) {
         }
     }
     CK(cudaMemcpyAsync(s.mixed, c->h_ple, (size_t)D * 4, cudaMemcpyHostToDevice, st));
-    gemv(c->ple.key, s.mixed, c->ple_key, st);
-    gemv(c->ple.value, s.mixed, s.block, st);
+    gemv(s, c->ple.key, s.mixed, c->ple_key, st);
+    gemv(s, c->ple.value, s.mixed, s.block, st);
     // grouped norms: key in place, query from the current wide residual
     launch_cf_hc_norm(c->ple_key, c->ple.norm_key, c->ple_key, st);
     launch_cf_hc_norm(s.h, c->ple.norm_query, c->ple_query, st);
@@ -114,7 +134,7 @@ void ple(CfCtx* c, int token) {
 // The MoE: router -> host softmax/top-10/renorm -> stage 10 experts -> repack -> gemv -> combine
 void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
     cudaStream_t st = c->st;
-    gemv(L.router, s.xn, s.logits, st);  // borrow the logits scratch [512 of V]
+    gemv(s, L.router, s.xn, s.logits, st);  // borrow the logits scratch [512 of V]
     CK(cudaMemcpyAsync(c->h_router, s.logits, (size_t)NE * 4, cudaMemcpyDeviceToHost, st));
     CK(cudaStreamSynchronize(st));
     // host softmax over 512 (fp32, exact formula), then top-10 renormalized
@@ -164,19 +184,22 @@ void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
     // gate|up gemv over the stacked staging, then the batched silu*up and the batched down gemv
     // (the r18 verdict: the batched launches are mandatory - one launch each instead of 10
     // underfilled ones, the measured 112.2 -> 144.2 GB/s family)
-    gemv(c->up_stage, s.xn, s.logits, st);  // y_gu [TOPK*2*EE = 12800], borrowing the logits scratch
+    gemv(s, c->up_stage, s.xn, s.logits, st);  // y_gu [TOPK*2*EE = 12800], borrowing the logits scratch
     launch_cf_silu_mul_b(s.logits, s.ffa, EE, TOPK, st);  // [gate n | up n] per expert, stride 2n
-    {  // the down gemv as one batched launch over the 10-expert SoA staging
+    {  // the down gemv as one batched launch over the 10-expert SoA staging, on the Q8_0
+        // pairing (the oracle's own arithmetic for the Q4_0 down experts); the ffa [TOPK][EE]
+        // is flat and the expert boundaries are the 32-group boundaries, so one flat quantize
         PackedW W = c->dn_stage;  // the per-expert view: rows = D, planes stay at the staging base
         W.rows = D;
-        launch_gemv_batched(W, s.ffa, c->ye, EE, D, TOPK, st);
+        launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, st);
+        launch_gemv_q8_0_b(W, s.xq0, s.xd0, c->ye, EE, D, EE / 32, TOPK, st);
     }
     // shared expert + its sigmoid gate, then the weighted combine
-    gemv(L.sh_gate, s.xn, s.ffg, st);
-    gemv(L.sh_up, s.xn, s.ffu, st);
+    gemv(s, L.sh_gate, s.xn, s.ffg, st);
+    gemv(s, L.sh_up, s.xn, s.ffu, st);
     launch_silu_mul(s.ffg, s.ffu, s.ffa, EE, st);
-    gemv(L.sh_down, s.ffa, c->ysh, st);
-    gemv(L.sh_ginp, s.xn, c->sh_gate_raw, st);
+    gemv(s, L.sh_down, s.ffa, c->ysh, st);
+    gemv(s, L.sh_ginp, s.xn, c->sh_gate_raw, st);
     launch_cf_moe_out(c->ye, c->we, c->ysh, c->sh_gate_raw, s.block, st);
     check_launch("moe");
 }
@@ -213,7 +236,7 @@ bool cf_step(CfCtx* c, int token) {
         }
         // the final mixer is the output norm, then the lm_head
         hc_mix(c, s.h, c->o_norm, c->o_down, c->o_up, nullptr, s);
-        gemv(c->output, s.mixed, s.logits, st);
+        gemv(s, c->output, s.mixed, s.logits, st);
         check_launch("lm_head");
         CK(cudaMemcpyAsync(c->h_logits, s.logits, (size_t)V * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
