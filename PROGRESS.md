@@ -1371,9 +1371,12 @@ THE EXACT-NUMERICS SINGLE-REQUEST CEILING ON 2xT4 IS THEREFORE CLOSED AT ~66-71 
 step is ~64% GEMV at the DRAM x issue coincidence, ~10% AR at the PCIe floor, ~4.5% gdn (rb 1 net
 loss), ~4% head at the K6 instruction ratio, ~2% attn at the launch floor, ~0.5% draft. Every >1 ms
 bucket is measured- or roof-closed. The paths out (low-bit, tree) are roof-dead on this chip; the
-s4-activation requant loses even breaking numerics (r13 roof math). What remains is the deferred
+s4-activation requant loses even breaking numerics (r13 roof math). What remained was the deferred
 8000 fresh-process race fix (robustness) and the rb1 config-history mechanism (a curiosity - the
-best config does not use rb 1).
+best config does not use rb 1). BOTH CLOSED r19h (5fb7bf8): the 8000 fix landed as the safe variant
+(the AR-wait watchdog becomes the device global d_watchdog_ns, extended to 30 s until the process's
+first spec verify completes, then restored to 4 s - a genuine first-step hang now costs 30 s once
+instead of a hard error); the rb1 mechanism is declined by design (a curiosity, not a lever).
 
 ## 2026-10-05 - M5 round 15 (r15): the one honest unknown left in the dominant cost - is the dp4a
 ## GEMV's ~254 GB/s actually the node's DRAM ceiling, or just the best GEMV rate ever measured?
