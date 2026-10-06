@@ -1351,3 +1351,26 @@ Q6_K unpack reaches ~220), the k_seg_m fusion into the verify GEMV epilogue (~1.
 config does not use rb 1). The 47.6 ms step is ~65% GEMV (capped at the DRAM x issue coincidence),
 ~10% AR (the platform floor), ~9% gdn/seg/attn machinery. The exact-numerics ceiling on 2xT4 stays
 the ~75-80 tok/s architecture fully tuned.
+
+### r14 tail census correction: the seg is TC-only, the head is ratio-closed, the attn is launch-floor
+Two corrections to the "still live" list above, from reading the code paths (no v-run needed):
+- k_seg_m is launched ONLY on the spec_tc path (tp_spec.cu: the gemv_mt TC branch; the TcArgs has no
+  seg) - the dp4a path (every best config, k3_dv1) fuses the 48 alpha/beta rows into launch_gemv via
+  SegArgs, so the 1.44 ms/step k_seg_m cost never runs at the goal config. The seg fusion is dead
+  for the goal; it would only tune the losing TC configs.
+- The FAST_K6 head at ~161 GB/s is at its instruction/byte roof: the group_dot K6 path already uses
+  the OR-trick (the lo nibble in place + the hi 2 bits pre-shifted through 0x30303030 masks, no
+  per-element extraction), so the ~40 int ops/group vs the P4's ~20 with 26.25 vs 18 B/group puts
+  the issue-side rate at ~63% of the P4 class - exactly the measured 161/254. A launch retune might
+  buy +5-10% of 2 ms (~+0.2% tok/s), inside the node band; not worth a run.
+- The attn trio (prep/split/combine, ~1.07 ms/step at 16 layers) is ~48 small-kernel launches at
+  the graph-launch floor (~7-22 us each staging <100 KB); fusing the trio saves ~2 launches x 16
+  layers x ~5 us ~ 0.16 ms (+0.3%), also inside the band. The draft (250 us/iter) is a single MTP
+  block (not 64 layers) and is already at the graph-launch floor.
+THE EXACT-NUMERICS SINGLE-REQUEST CEILING ON 2xT4 IS THEREFORE CLOSED AT ~66-71 tok/s: the 47.6 ms
+step is ~64% GEMV at the DRAM x issue coincidence, ~10% AR at the PCIe floor, ~4.5% gdn (rb 1 net
+loss), ~4% head at the K6 instruction ratio, ~2% attn at the launch floor, ~0.5% draft. Every >1 ms
+bucket is measured- or roof-closed. The paths out (low-bit, tree) are roof-dead on this chip; the
+s4-activation requant loses even breaking numerics (r13 roof math). What remains is the deferred
+8000 fresh-process race fix (robustness) and the rb1 config-history mechanism (a curiosity - the
+best config does not use rb 1).
