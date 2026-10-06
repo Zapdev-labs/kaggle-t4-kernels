@@ -1,13 +1,22 @@
-# t4q — a from-scratch dual-T4 inference engine for Qwen3.8-27B
+# t4q — from-scratch dual-T4 inference engines for the Qwen3.8 family (dense 27B done; CYBER-FROST-3.8 MoE underway)
 
-`t4q` is a custom CUDA inference stack for the Qwen3.8-27B (hybrid DeltaNet +
-attention) model on quantized GGUF weights, targeting Kaggle's dual Tesla T4
-(2 x 16 GB, 70 W power cap each). It includes custom dp4a GEMV and int8
-tensor-core GEMM kernels, tensor-parallel (TP=2) execution, CUDA-graph decode,
-batched prefill, continuous batching, and MTP speculative decoding — validated
-token-for-token and logit-for-logit against a llama.cpp oracle.
+`t4q` is a custom CUDA inference stack for the Qwen3.8 hybrid (DeltaNet + full attention)
+models on quantized GGUF weights, targeting Kaggle's dual Tesla T4 (2 x 16 GB, 70 W power
+cap each). No llama.cpp engine, no vendored kernels: custom dp4a GEMV and int8 tensor-core
+GEMM kernels, tensor-parallel (TP=2) execution, a P2P mailbox all-reduce that beats NCCL ~2x
+on the AR critical path, CUDA-graph decode, batched prefill, continuous batching, and MTP
+speculative decoding — validated token-for-token and logit-for-logit against a llama.cpp
+oracle built in the same session on the same box.
 
-## Headline speedups (vs llama.cpp `-sm tensor`, same GGUF, same session)
+Two programs live here:
+
+1. **Qwen3.8-27B (dense, `qwen35`)** — complete through M5: the engine, the spec-decode
+   closure, and a fully measured performance roofline (see below).
+2. **CYBER-FROST-3.8 (MoE, `qwen4exp`, 177B/6B-active)** — the active program: the same
+   method (exact decode math from real GGUF bytes, custom kernels, measured everything)
+   applied to the fine-tune of Qwen3.8-Flash-Next. Recon is done, the plan is written.
+
+## Qwen3.8-27B: headline speedups (vs llama.cpp `-sm tensor`, same GGUF, same session)
 
 | workload | t4q | llama.cpp | speedup |
 |---|---|---|---|
@@ -19,49 +28,99 @@ token-for-token and logit-for-logit against a llama.cpp oracle.
 | Batched decode, B=32 (tok/s aggregate) | **314.7** | 129.2 | **2.4x** |
 | Batched decode, B=64 (tok/s aggregate) | **443.0** | 146.0 | **3.0x** |
 
-Numbers from an independent verification audit (`research/VERIFY.md`) run on a
-P2P box with llama.cpp a4cb4c61 measured in the same session on the same model
-file and token ids.
+Numbers from an independent verification audit (`research/VERIFY.md`) on a P2P box with
+llama.cpp a4cb4c61 measured in the same session, same model file, same token ids. On
+Kaggle's 2x T4 nodes (the development target, ~9% slower GPUs than the audit box), the
+M5 engine holds **66-71 tok/s MTP spec** (k3_dv1, best min-over-prompts 66.35).
 
-Milestone highlights:
+### The measured roofline (r14-r16): why the dense engine closes at ~66-71 tok/s on Kaggle
 
-- **Decode engine**: ~30 tok/s single-stream, byte-identical greedy output to
-  the validated reference path.
-- **Speculative decoding (MTP)**: **73.7 tok/s** — 2.4x plain t4q decode on the
-  same box, with output **byte-identical** to plain greedy (zero quality loss).
-  Acceptance 0.73-0.82 per draft, 3.2-3.5 tokens per verify step at k=3.
-- **Batched prefill**: W4A8 int8 tensor-core GEMM (`mma.m8n8k16`) reading the
-  decode P4/P4M/K5 weight layouts in place; ~1000 tok/s at pp2048.
-- **Continuous batching**: an OpenAI-compatible server with a
-  continuous-batching scheduler; 32 concurrent coding requests completed at
-  **436 total tok/s** (226 generated tok/s, 72.5 s wall).
-- **Custom all-reduce**: a P2P mailbox (remote stores + epoch flags) beating
-  NCCL by ~2x on the AR critical path, with an automatic host-mapped fallback
-  for boxes without P2P.
+Every claim below is a direct measurement, not a model (PROGRESS.md, rounds 14-16):
 
-## Correctness (validated, not just benchmarked)
+- **The node's sustained DRAM read ceiling is ~277 GB/s** (275.0/277.0/277.6 at 80/160/240
+  blocks, a pure-read probe in the same run as the anchors). The dp4a GEMV anchors run at
+  208-259 GB/s per shape = 75-93% of that ceiling.
+- **The instruction-count lever is refuted by direct experiment**: the SASS census found the
+  tile loop at 1808 instructions/tile with ~25% tile-invariant x-side overhead; staging the
+  `(moff, xd)` table in smem cut the loop to 1691 (-6.5%) bit-identically — and the
+  controlled A/B measured **8/8 matrix anchors slower** (-1.3 to -6.3%): the removed ops
+  were stall filler inside the dp4a accumulator dependency chains, and the loop is
+  latency/dependency-bound, not issue-count-bound. The 277 GB/s ceiling is unreachable by
+  instruction cuts; the cut was reverted.
+- Every >1 ms step bucket is measured- or roof-closed: AR all-reduce at the PCIe gen3 x16
+  floor (~11 us fixed protocol + ~8.4 GB/s marginal), the lm head ratio-closed on the K6
+  OR-trick (~161 GB/s at 63% of the P4 class), the attention trio at the graph-launch floor,
+  the seg rows fused into the dp4a GEMV at the goal config; tree/ngram/low-bit speculative
+  levers refuted on measured roofs.
 
-- Greedy output matches the llama.cpp layer-split oracle 256/256 tokens on the
-  coding prompt; the one divergence is a near-tie where llama's own two paths
-  (batch vs token-by-token) disagree with each other more than t4q does.
+Milestones (all gated on correctness before speed):
+
+- **Decode engine**: ~30 tok/s single-stream, byte-identical greedy output to the reference.
+- **MTP speculative decoding**: 66-73 tok/s — 2.2-2.4x plain, output **byte-identical** to
+  plain greedy (zero quality loss), acceptance 0.73-0.82 per draft, 3.2-3.5 tokens/verify.
+- **Batched prefill**: W4A8 int8 tensor-core GEMM (`mma.m8n8k16`) reading the decode P4
+  layouts in place; ~1000 tok/s at pp2048.
+- **Continuous batching**: OpenAI-compatible server; 32 concurrent coding requests at
+  **436 total tok/s** (226 generated, 72.5 s wall).
+
+## CYBER-FROST-3.8 (qwen4exp): the active program
+
+`freakyskittle/CYBER-FROST-3.8-GGUF` (a Blackfrost-AI fine-tune of `Qwen/Qwen3.8-Flash-Next`):
+177B params, ~6B active, 48 layers (36 DeltaNet + 12 full attention), 512 experts x 640 with
+top-10 routing + a shared expert, hyper-connection residuals (4 streams, LoRA mixers, no
+layer norms), a 26.85 GiB hashed n-gram PLE embedding table, and an in-file Q8_0 MTP draft
+block. The only runnable trunk on 2x T4 class hardware is the 77.15 GiB Q2_K_S.
+
+The recon is complete and written up:
+
+- **`research/cf-arch.md`** — the exact decode math, verified against the real GGUF header
+  (parsed over HTTP Range reads: every tensor name/dims/type/offset), the HF config,
+  transformers main, and llama.cpp b10975 + master's MTP graph. Includes the complete tensor
+  map, the per-token byte budget (~3.02 GB/token), and the gotchas checklist (sigmoid gates,
+  the PLE hash multipliers, the dilated PLE conv, the per-stream MTP `eh_proj`).
+- **`research/PLAN_CF.md`** — the honest ceiling ladder and the milestone plan. The
+  arithmetic ceiling is **~168 tok/s dense / ~125-135 tok/s MTP k=3** if every touched byte
+  is VRAM-resident — but the 77.15 GiB pool cannot be, so the game is the tiering: hot
+  experts in VRAM, warm tier in pinned host RAM over PCIe (~8.4 GB/s measured), the PLE
+  table on disk with a 16-row async prefetch (1440 B/token). The two gating unknowns — the
+  Kaggle disk bandwidth and the router concentration curve — are measured first (cf-m0,
+  cf-m2), never assumed. Milestones: cf-m0 probes -> cf-m1 the exact-forward port with the
+  llama.cpp oracle -> cf-m2 the router census -> cf-m3 the tiered engine (gate: >= 25 tok/s,
+  vs the 6-9 tok/s mmap floor) -> cf-m4 MTP (gate: >= 40-60) -> cf-m5 closure rounds.
+
+## Correctness (the 27B engine; the same gates apply to CYBER-FROST)
+
+- Greedy output matches the llama.cpp layer-split oracle 256/256 tokens on the coding
+  prompt; the one divergence is a near-tie where llama's own two paths disagree with each
+  other more than t4q does.
 - Logits: mean KL 1.55e-3 vs llama's batch path — 0.29x llama's own internal
   batch-vs-token disagreement floor.
 - Repack: 497 tensors, 30272 rows checked, bit-exact on every quant format.
-- Batched rows are bit-identical regardless of batch composition.
-- Speculative decoding output is byte-identical to plain greedy at every k.
+- Batched rows bit-identical regardless of batch composition.
+- Speculative decoding output byte-identical to plain greedy at every k; the M4/M8 verify
+  columns bit-identical between the dp4a and tensor-core paths.
 
 ## Repository layout
 
-- `t4q/` — the engine: CUDA kernels (`src/kernels/`), GGUF loader, TP engine,
-  prefill, batched and speculative decode paths, C ABI, Python driver and tests.
-- `research/` — design docs, per-milestone result tables, the verification audit.
-- `kaggle/` — Kaggle kernel staging (metadata + packed driver scripts).
-- `PROGRESS.md` — dated per-session handoff log with all measured numbers.
+- `t4q/` — the engine: CUDA kernels (`src/kernels/`), GGUF loader, TP engine, prefill,
+  batched and speculative decode, C ABI, Python driver and tests.
+- `research/` — the method, in reading order: `arch.md` (qwen35 exact decode math),
+  `cf-arch.md` (qwen4exp / CYBER-FROST exact decode math), `DESIGN.md` (the 27B design),
+  `PLAN_500.md` (the 27B spec-decode plan), `PLAN_CF.md` (the CYBER-FROST plan),
+  `gguf.md`, `kernels.md`, `baseline.md` (the llama.cpp baseline + binaries),
+  `VERIFY.md` (the independent speed audit), and the per-round result tables.
+- `kaggle/` — Kaggle kernel staging per milestone (metadata + packed driver scripts).
+- `PROGRESS.md` — the dated per-session handoff log: every measured number, every A/B,
+  every refutation, rounds 1-16 so far.
 - `t4q/tools/mkkernel.py` — packs the tree into a Kaggle kernel per stage.
 
-## Hardware notes
+## Hardware notes (measured on Kaggle 2x T4)
 
-The 70 W software power cap on Kaggle T4s is the dominant constraint: under
-sustained tensor-core load the SM clock drops to 300-1050 MHz, so prefill speed
-is energy-bound, not occupancy-bound. The decode GEMV path (dp4a) stays
-memory-bound and holds 250-260 GB/s of packed weight bytes even when throttled.
+The 70 W software power cap is the dominant constraint: under sustained tensor-core load
+the SM clock drops to 300-1050 MHz, so prefill is energy-bound. Decode is bound by the
+measured roofs: **~277 GB/s sustained DRAM reads per GPU** (the GEMV anchors at 75-93% of
+it), **~8.4 GB/s per direction sustained over PCIe gen3 x16** (the all-reduce and any
+host-tier traffic), and dp4a group loops that are latency/dependency-bound (the r16
+instruction-cut experiment). P2P remote stores work between the T4s; the custom AR mailbox
+sits on them. The account allows 2 concurrent GPU sessions; stage scripts retry every 60 s
+on the session cap.

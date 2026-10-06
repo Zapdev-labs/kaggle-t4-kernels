@@ -1505,3 +1505,50 @@ instruction-cut class directly A/B'd and negative (r16); (d) the shape/occupancy
 threads/launch levers all A/B'd across r4-r13. The exact-numerics engine stands at ~66-71
 tok/s, and the ~500 tok/s goal is unreachable on 2xT4 at exact numerics by every measured
 route. The revert restores the v45-identical code, so the v45 engine numbers stand.
+
+## 2026-10-05 - the CYBER-FROST round (r17): the new program - run CYBER-FROST-3.8
+## (qwen4exp MoE, 177B/6B active) as fast as the 2x T4 allows, fully custom kernels
+
+### The directive and the ground rules
+Run freakyskittle/CYBER-FROST-3.8-GGUF (the Blackfrost-AI fine-tune of Qwen/Qwen3.8-Flash-Next)
+with THIS repo's own kernel stack - no llama.cpp engine, no borrowed codebase. The method
+carries over unchanged: exact decode math from real bytes first, correctness gates before
+speed, every claim measured.
+
+### The recon (all primary sources, no assumptions)
+- The full GGUF v3 header of CYBER-FROST-3.8-Q2_K_S.gguf (82.85 GB; the only trunk with the
+  MTP head in-file) parsed over HTTP Range reads with our own research/gguf_remote.py ->
+  research/cf_tensors_Q2_K_S.txt: 1256 tensors, every name/dims/type/offset.
+- The architecture (research/cf-arch.md, verified against the header bytes + the HF config +
+  transformers main modeling_qwen4_exp.py + llama.cpp b10975 and upstream master's graph_mtp):
+  hidden 2560, 48 layers (36 DeltaNet + 12 full attention), 512 experts x 640 with top-10
+  softmax routing + a sigmoid-gated shared expert, hyper-connection residuals (4 streams,
+  LoRA mixers, no layer norms at all), the PLE n-gram hash table ([160, 320001536] Q4_0 =
+  26.85 GiB = 35% of the file, 1440 B/token random rows, 3-gram hash with u64 multipliers,
+  the EOS reset, the dilated depthwise conv), dense attention here (compress_ratios all 0 ->
+  the QSA indexer is inert), the DeltaNet identical to qwen35 except the SIGMOID output gate,
+  and the MTP draft reading the wide [10240] residual pre-final-mixer with a per-stream
+  eh_proj and its own Q8_0 MoE block (2.49 GiB).
+- The byte budget (real types): ~3.02 GB/token touched (experts 1.16 GiB incl. routers/shared,
+  DeltaNet 651 MiB, hc mixers 461 MiB, attention 187 MiB, PLE 10.3 MiB, lm_head 341 MiB).
+
+### The honest ceiling ladder (research/PLAN_CF.md)
+- All-active-resident: ~168 tok/s dense / ~125-135 MTP k=3 (2x254 GB/s measured).
+- The residency wall: the pool is 77.15 GiB (experts 50.6, the PLE table 26.85, the rest
+  ~2.6) vs 30.7 GiB VRAM + ~29 GB host RAM + /tmp disk. The game is tiering: the must-resident
+  core is only ~2.36 GiB; hot experts per layer live in VRAM (~24 GiB ~= 250-300/512), the
+  warm tier in pinned host RAM (~8.4 GB/s per direction measured), the PLE table on disk
+  with a 16-row async prefetch (known right after sampling), the coldest tail on /tmp.
+- Equilibrium: ~78 tok/s at 90% VRAM hit, ~150 at 95%; the mmap floor to beat is 6-9 tok/s.
+- The two gating unknowns, to be measured before any design is frozen (cf-m0, cf-m2): the
+  Kaggle /tmp disk bandwidth (seq/rand4k/2 MiB) and the router concentration curve
+  P(top-H resident covers the routed mass) on real text. The requant stretch (a ~1.6-2.0
+  bit custom expert format streamed from the BF16 checkpoint over HTTP range reads, packed
+  once into a Kaggle Dataset) exists only if the census shows a flat router.
+
+### The plan (milestone ladder)
+cf-m0 probes (disk/RAM/Q2_K+Q5_1 GEMV at the expert shapes) -> cf-m1 the exact-forward port
+(loader/repack/hc/PLE/DeltaNet/dense-attn/MoE gather-GEMV/lm_head/MTP) with the llama.cpp
+oracle on the box -> cf-m2 the router census -> cf-m3 the tiered engine (gate >= 25 tok/s) ->
+cf-m4 MTP on the tiers (gate >= 40-60) -> cf-m5 the closure rounds. README.md rewritten around
+both programs and pushed.
