@@ -81,12 +81,31 @@ The recon is complete and written up:
 - **`research/PLAN_CF.md`** — the honest ceiling ladder and the milestone plan. The
   arithmetic ceiling is **~168 tok/s dense / ~125-135 tok/s MTP k=3** if every touched byte
   is VRAM-resident — but the 77.15 GiB pool cannot be, so the game is the tiering: hot
-  experts in VRAM, warm tier in pinned host RAM over PCIe (~8.4 GB/s measured), the PLE
+  experts in VRAM, warm tier in pinned host RAM over PCIe (a SHARED 11.53 GB/s wall,
+  5.76 each when both GPUs read — corrected by the cf-m0 measurement), the PLE
   table on disk with a 16-row async prefetch (1440 B/token). The two gating unknowns — the
   Kaggle disk bandwidth and the router concentration curve — are measured first (cf-m0,
   cf-m2), never assumed. Milestones: cf-m0 probes -> cf-m1 the exact-forward port with the
   llama.cpp oracle -> cf-m2 the router census -> cf-m3 the tiered engine (gate: >= 25 tok/s,
   vs the 6-9 tok/s mmap floor) -> cf-m4 MTP (gate: >= 40-60) -> cf-m5 closure rounds.
+
+**cf-m0 is closed (measured, `kaggle/cf0`)** and **cf-m1 is built**: the format layer
+(FMT_K2/FMT_K4/FMT_Q51 through the whole packed/deq/repack/gemv/cpu-dequant chain, the
+exact-u64 KV parse for the PLE hash constants) and the complete model layer
+(`t4q/src/cf_model.h`, `cf_kernels.cu`, `cf_loader.cu`, `cf_engine.cu`, `tools/cf_run.cu`)
+— the full qwen4exp decode path in this repo's own kernels: the stream-major [4][2560]
+hyper-connection residual with the LoRA mixers, the sigmoid-gated DeltaNet, the 24q/2kv
+dense attention (its rope decodes to the same partial NeoX as the 27B's), the host-exact
+PLE n-gram hash + dilated conv, and the MoE router with the 10-expert pinned staging ->
+one upload -> two repack launches -> the gemv combine. Build-validated (0 errors,
+zero spill); the Kaggle correctness round (`kaggle/cf1`) is gated by the platform: five
+oracle-side issues were found and fixed across v1-v6 (the 26.3 GiB PLE-table prefetch
+OOM, the CPU repack OOM, a chatw path bug), and the v6 run wedged past every designed
+timeout and consumed the weekly 30h GPU quota — the v7 hardening (a deadline watchdog so
+every future round yields its logs, live progress prints, a trimmed oracle scope) plus
+the cf-m2 census ride-along are committed and ready to push when the quota resets. The
+tokenizer stays owned by the oracle (a `chatw` job writes the ids), so no t4q tokenizer
+port exists. No pass or speed claim is made for the engine until the gate runs.
 
 ## Correctness (the 27B engine; the same gates apply to CYBER-FROST)
 
