@@ -28,6 +28,9 @@ int fmt_for(uint32_t t) {
         case GT_Q8_0: return FMT_Q8;
         case GT_Q5_K: return FMT_K5;
         case GT_Q6_K: return FMT_K6;
+        case GT_Q2_K: return FMT_K2;
+        case GT_Q4_K: return FMT_K4;
+        case GT_Q5_1: return FMT_Q51;
         default: return -1;
     }
 }
@@ -43,6 +46,9 @@ void alloc_packed(PackedW& W, int gpu, int fmt, int64_t rows, int64_t cols) {
         case FMT_Q8: sz[0] = n; sz[2] = n / 32 * 2; break;
         case FMT_K5: sz[0] = n / 2; sz[1] = n / 8; sz[4] = n / 256 * 16; break;
         case FMT_K6: sz[0] = n / 2; sz[1] = n / 4; sz[2] = n / 256 * 2; sz[4] = n / 16; break;
+        case FMT_K2: sz[0] = n / 4; sz[4] = n / 256 * 20; break;   // r17 CF: qs 64 B + meta 20 B per 256
+        case FMT_K4: sz[0] = n / 2; sz[4] = n / 256 * 16; break;   // r17 CF: qs 128 B + meta 16 B per 256
+        case FMT_Q51: sz[0] = n / 2; sz[1] = n / 8; sz[2] = n / 32 * 2; sz[3] = n / 32 * 2; break;  // per 32
     }
     size_t tot = 0;
     for (size_t s : sz) tot += al256(s);

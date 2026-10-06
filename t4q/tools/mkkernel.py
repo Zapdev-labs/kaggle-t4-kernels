@@ -51,10 +51,10 @@ def main():
     code = f"t4q-{stage}.py"
     (out / code).write_text(text.replace("__T4Q_TGZ_B64__", b64))
     meta = {
-        "id": f"t4q-{stage}", "title": f"t4q-{stage}", "code_file": code, "language": "python",
+        "id": f"otdoges/otdoges-t4q-{stage}", "title": f"otdoges/t4q-{stage}", "code_file": code, "language": "python",
         "kernel_type": "script", "is_private": True, "enable_gpu": True, "enable_tpu": False, "enable_internet": True,
-        "keywords": [], "dataset_sources": [], "kernel_sources": sources, "competition_sources": [],
-        "model_sources": [], "docker_image": DOCKER, "machine_shape": "NvidiaTeslaT4",
+        "keywords": [], "dataset_sources": [], "kernel_sources": [f"otdoges/{s}" for s in sources],
+        "competition_sources": [], "model_sources": [], "docker_image": DOCKER, "machine_shape": "NvidiaTeslaT4",
     }
     (out / "kernel-metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
     print(f"wrote {out / code} ({len(b64) / 1e3:.0f} kB payload) and kernel-metadata.json (sources={sources})")

@@ -1,0 +1,7 @@
+src/cf_loader.cu(224): warning #177-D: variable "st" was declared but never referenced
+          cudaStream_t st = c->st;
+                       ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+ptxas info    : 0 bytes gmem

@@ -9,6 +9,8 @@
 //   dump <name> <ids.i32> <layers>     -> <name>.dump.bin: named intermediates (cb_eval) for layers (comma list),
 //                                         token-by-token, captured at positions 0, 1 and n-1
 //   tok  <name> <text.txt> <ids.i32>   -> compares llama_tokenize(text, parse_special) with the id file
+//   chatw <name> <user_text.txt> <out.i32>  -> applies the GGUF chat template (add_ass), tokenizes,
+//                                              writes the ids (cf-m1: the oracle owns the CF tokenizer)
 //   last <name> <ids.i32> <unused>     -> <name>.last.f32: logits of the last position (prompt in 512-token batches)
 #include <algorithm>
 #include <cfloat>
@@ -124,6 +126,15 @@ int main(int argc, char** argv) {
     llama_backend_init();
     auto mp = llama_model_default_params();
     mp.n_gpu_layers = 999;
+    // cf-m1: the qwen4exp PLE hash table is 26.3 GiB and llama.cpp prefetches it to the GPU,
+    // which OOMs a 15 GiB T4; T4Q_ORACLE_NGPU=0 runs the whole oracle CPU-side. The CPU side
+    // then repacks every quant tensor into the 8x8 layouts (~80 GiB of extra anon RAM), which
+    // OOMs the ~77 GiB host too, so the CPU-only oracle also drops the extra buffer types
+    // (the repack is a bit-identical layout change; the plain quant ops are the reference).
+    if (const char* ng = getenv("T4Q_ORACLE_NGPU")) {
+        mp.n_gpu_layers = atoi(ng);
+        if (mp.n_gpu_layers == 0) mp.use_extra_bufts = false;
+    }
     mp.split_mode = tensor ? LLAMA_SPLIT_MODE_TENSOR : LLAMA_SPLIT_MODE_LAYER;
     auto t0 = std::chrono::steady_clock::now();
     llama_model* model = llama_model_load_from_file(argv[1], mp);
@@ -286,6 +297,30 @@ int main(int argc, char** argv) {
             }
             printf("ORACLE tok %s llama_n=%zu hf_n=%zu match=%d first_diff=%d\n", name.c_str(), toks.size(), ref.size(),
                    first_diff < 0, first_diff);
+        } else if (kind == "chatw") {
+            // cf-m1: apply the GGUF chat template to a raw user text, tokenize, write the ids.
+            // The template and the vocab both come from the model, so the oracle owns both.
+            std::ifstream tf(file, std::ios::binary);
+            std::string text((std::istreambuf_iterator<char>(tf)), std::istreambuf_iterator<char>());
+            const char* tmpl = llama_model_chat_template(model, nullptr);
+            if (!tmpl) { fprintf(stderr, "ORACLE_ERROR chatw: no chat template\n"); return 1; }
+            llama_chat_message msg[1] = {"user", text.c_str()};
+            int32_t need = llama_chat_apply_template(tmpl, msg, 1, true, nullptr, 0);
+            if (need <= 0) { fprintf(stderr, "ORACLE_ERROR chatw: template size %d\n", need); return 1; }
+            std::vector<char> chat((size_t)need + 1);
+            if (llama_chat_apply_template(tmpl, msg, 1, true, chat.data(), (int32_t)chat.size()) != need) {
+                fprintf(stderr, "ORACLE_ERROR chatw: template apply failed\n"); return 1;
+            }
+            std::vector<llama_token> toks((size_t)need / 2 + 16);
+            int nt = llama_tokenize(vocab, chat.data(), need, toks.data(), (int32_t)toks.size(), false, true);
+            if (nt <= 0) { fprintf(stderr, "ORACLE_ERROR chatw: tokenize failed\n"); return 1; }
+            toks.resize(nt);
+            const std::string outp = (!arg.empty() && arg.front() == '/') ? arg : out + "/" + arg;
+            FILE* f = fopen(outp.c_str(), "wb");
+            if (!f) { fprintf(stderr, "ORACLE_ERROR chatw: open %s\n", outp.c_str()); return 1; }
+            fwrite(toks.data(), 4, toks.size(), f);
+            fclose(f);
+            printf("ORACLE chatw %s n=%zu wrote=%s\n", name.c_str(), toks.size(), outp.c_str());
         }
         printf("ORACLE job %s %s done %.1f s\n", kind.c_str(), name.c_str(),
                std::chrono::duration<double>(std::chrono::steady_clock::now() - tj).count());

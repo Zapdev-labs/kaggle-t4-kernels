@@ -10,6 +10,10 @@ enum PackFmt : int {
     FMT_Q8 = 3,    // Q8_0: int8 codes [rows][cols], d fp16 [rows][cols/32]
     FMT_K5 = 4,    // Q5_K: qs [rows][cols/2] (128 B / 256), qh [rows][cols/8] (32 B / 256), meta 16 B / 256 (d, dmin, scales[12])
     FMT_K6 = 5,    // Q6_K: ql [rows][cols/2], qh [rows][cols/4], sc int8 [rows][cols/16] (meta), d fp16 [rows][cols/256]
+    // r17 CYBER-FROST (qwen4exp) formats
+    FMT_K2 = 6,    // Q2_K: qs [rows][cols/4] (64 B / 256), meta 20 B / 256 (d, dmin fp16, scales[16])
+    FMT_K4 = 7,    // Q4_K: qs [rows][cols/2] (128 B / 256), meta 16 B / 256 (d, dmin, scales[12]; same meta shape as K5)
+    FMT_Q51 = 8,   // Q5_1: codes [rows][cols/2] (16 B / 32), hi [rows][cols/8] (4 B / 32), d/m fp16 [rows][cols/32]
 };
 
 struct PackedW {

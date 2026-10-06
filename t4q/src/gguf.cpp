@@ -14,6 +14,7 @@ bool ggml_block_info(uint32_t type, int& be, int& bb) {
         case GT_BF16: be = 1; bb = 2; return true;
         case GT_Q4_0: be = 32; bb = 18; return true;
         case GT_Q4_1: be = 32; bb = 20; return true;
+        case GT_Q5_1: be = 32; bb = 24; return true;
         case GT_Q8_0: be = 32; bb = 34; return true;
         case GT_IQ4_NL: be = 32; bb = 18; return true;
         case GT_Q2_K: be = 256; bb = 84; return true;
@@ -29,8 +30,8 @@ bool ggml_block_info(uint32_t type, int& be, int& bb) {
 const char* ggml_type_name(uint32_t t) {
     switch (t) {
         case GT_F32: return "F32"; case GT_F16: return "F16"; case GT_BF16: return "BF16";
-        case GT_Q4_0: return "Q4_0"; case GT_Q4_1: return "Q4_1"; case GT_Q8_0: return "Q8_0";
-        case GT_IQ4_NL: return "IQ4_NL"; case GT_Q2_K: return "Q2_K"; case GT_Q3_K: return "Q3_K";
+        case GT_Q4_0: return "Q4_0"; case GT_Q4_1: return "Q4_1"; case GT_Q5_0: return "Q5_0";
+        case GT_Q5_1: return "Q5_1"; case GT_Q8_0: return "Q8_0"; case GT_IQ4_NL: return "IQ4_NL"; case GT_Q2_K: return "Q2_K"; case GT_Q3_K: return "Q3_K";
         case GT_Q4_K: return "Q4_K"; case GT_Q5_K: return "Q5_K"; case GT_Q6_K: return "Q6_K";
         case GT_IQ4_XS: return "IQ4_XS";
         default: return "?";
@@ -100,8 +101,12 @@ bool GgufFile::open(const std::string& p, std::string& err) {
             else {
                 size_t es = scalar_size(et);
                 if (!es) { err = "nested array unsupported"; return false; }
-                if (n <= 64) { for (uint64_t j = 0; j < n; j++) v.arr.push_back(read_num(r, et)); }
-                else { if (r.p + es * n > r.end) { r.ok = false; break; } r.p += es * n; }
+                if (n <= 64) {
+                    for (uint64_t j = 0; j < n; j++) {
+                        if (et == 10) v.u64.push_back(r.get<uint64_t>());  // exact, cf PLE hash needs u64
+                        else v.arr.push_back(read_num(r, et));
+                    }
+                } else { if (r.p + es * n > r.end) { r.ok = false; break; } r.p += es * n; }
             }
         } else v.num = read_num(r, v.type);
         kv[key] = v;
@@ -147,4 +152,11 @@ double GgufFile::num(const std::string& key, double def) const {
     auto it = kv.find(key);
     if (it == kv.end() || it->second.type == 8 || it->second.type == 9) return def;
     return it->second.num;
+}
+
+const std::vector<uint64_t>& GgufFile::u64_arr(const std::string& key) const {
+    static const std::vector<uint64_t> empty;
+    auto it = kv.find(key);
+    if (it == kv.end()) return empty;
+    return it->second.u64;
 }

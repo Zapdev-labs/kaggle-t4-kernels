@@ -120,6 +120,68 @@ bool dequant_row_cpu(uint32_t type, const uint8_t* x, float* y, int64_t n) {
             }
             return true;
         }
+        // ---- r17 CF formats (bit-exact transcriptions of ggml dequantize_row_*) ----
+        case GT_Q2_K: {
+            for (int64_t i = 0; i < n / 256; i++) {
+                const uint8_t* b = x + 84 * i;
+                const float d = fp16_to_fp32(rd16(b + 80));
+                const float min = fp16_to_fp32(rd16(b + 82));
+                const uint8_t* q = b + 16;
+                float* yy = y + i * 256;
+                int is = 0;
+                for (int nn = 0; nn < 256; nn += 128) {
+                    for (int j = 0; j < 4; ++j) {
+                        const int shift = 2 * j;
+                        float dl = d * (b[is] & 0xF), ml = min * (b[is] >> 4);
+                        for (int l = 0; l < 16; ++l) *yy++ = dl * ((q[l] >> shift) & 3) - ml;
+                        dl = d * (b[is + 1] & 0xF); ml = min * (b[is + 1] >> 4);
+                        for (int l = 0; l < 16; ++l) *yy++ = dl * ((q[l + 16] >> shift) & 3) - ml;
+                        is += 2;
+                    }
+                    q += 32;
+                }
+            }
+            return true;
+        }
+        case GT_Q4_K: {
+            for (int64_t i = 0; i < n / 256; i++) {
+                const uint8_t* b = x + 144 * i;
+                const float d = fp16_to_fp32(rd16(b + 140));
+                const float min = fp16_to_fp32(rd16(b + 142));
+                const uint8_t* q = b + 12;
+                float* yy = y + i * 256;
+                int is = 0;
+                uint8_t sc, m;
+                for (int j = 0; j < 256; j += 64) {
+                    get_scale_min_k4(is + 0, b, &sc, &m);
+                    const float d1 = d * sc; const float m1 = min * m;
+                    get_scale_min_k4(is + 1, b, &sc, &m);
+                    const float d2 = d * sc; const float m2 = min * m;
+                    for (int l = 0; l < 32; ++l) *yy++ = d1 * (q[l] & 0xF) - m1;
+                    for (int l = 0; l < 32; ++l) *yy++ = d2 * (q[l] >> 4) - m2;
+                    q += 32; is += 2;
+                }
+            }
+            return true;
+        }
+        case GT_Q5_1: {
+            for (int64_t i = 0; i < n / 32; i++) {
+                const uint8_t* b = x + 24 * i;
+                const float d = fp16_to_fp32(rd16(b));
+                const float m = fp16_to_fp32(rd16(b + 2));
+                uint32_t qh;
+                memcpy(&qh, b + 4, 4);
+                for (int j = 0; j < 16; ++j) {
+                    const uint8_t xh_0 = ((qh >> (j + 0)) << 4) & 0x10;
+                    const uint8_t xh_1 = ((qh >> (j + 12))     ) & 0x10;
+                    const int x0 = (b[8 + j] & 0x0F) | xh_0;
+                    const int x1 = (b[8 + j] >> 4) | xh_1;
+                    y[i * 32 + j + 0] = x0 * d + m;
+                    y[i * 32 + j + 16] = x1 * d + m;
+                }
+            }
+            return true;
+        }
         default: return false;
     }
 }

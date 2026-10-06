@@ -7,8 +7,8 @@
 #include <vector>
 
 enum GgmlType : uint32_t {
-    GT_F32 = 0, GT_F16 = 1, GT_Q4_0 = 2, GT_Q4_1 = 3, GT_Q8_0 = 8, GT_Q2_K = 10, GT_Q3_K = 11,
-    GT_Q4_K = 12, GT_Q5_K = 13, GT_Q6_K = 14, GT_IQ4_NL = 20, GT_IQ4_XS = 23, GT_BF16 = 30,
+    GT_F32 = 0, GT_F16 = 1, GT_Q4_0 = 2, GT_Q4_1 = 3, GT_Q5_0 = 6, GT_Q5_1 = 7, GT_Q8_0 = 8, GT_Q2_K = 10,
+    GT_Q3_K = 11, GT_Q4_K = 12, GT_Q5_K = 13, GT_Q6_K = 14, GT_IQ4_NL = 20, GT_IQ4_XS = 23, GT_BF16 = 30,
 };
 
 struct GgufTensor {
@@ -28,6 +28,7 @@ struct GgufKV {
     double num = 0;           // numeric scalar
     std::string str;          // string scalar
     std::vector<double> arr;  // numeric array (only when short)
+    std::vector<uint64_t> u64;  // exact u64 array entries (only when short and et==10)
     uint64_t arr_n = 0;
 };
 
@@ -46,6 +47,7 @@ struct GgufFile {
     void close();
     const GgufTensor* find(const std::string& name) const;
     double num(const std::string& key, double def) const;
+    const std::vector<uint64_t>& u64_arr(const std::string& key) const;
     ~GgufFile() { close(); }
 };
 

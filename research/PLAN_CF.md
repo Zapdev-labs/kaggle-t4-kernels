@@ -87,19 +87,25 @@ dequant rates and the platform paths are measured, no more assumptions**:
   gate marginally missed at the first cut - the mask-dp4a path is correct, the headroom is in
   the derive/load engineering at cf-m1), the launch geometry verdict (per-expert N=640 launches
   are grid-underfilled: the batched gather is mandatory, 102.7 -> 178.8 same kernel).
-- **cf-m1 - the exact-forward port, correctness-first**: GGUF loader for the Q2_K_S trunk
-  (Q2_K/Q4_0/Q5_1/Q4_K/F16), the repack into the engine layout (experts stored per-expert
-  contiguous for the gather + the tier manager; the PLE table split out; the inert indexer
-  tensors dropped), and the kernel set: hc mixer/combine, PLE (gather + signed-sqrt gate +
-  dilated conv), DeltaNet (the 27B port at D=2560 + sigmoid gate), dense GQA flash-decode
-  (24q/2kv, head 256), the MoE router + 10-expert gather-GEMV + gated shared expert, the
-  final hc mixer + lm_head, the MTP draft + verify + rollback (DeltaNet S, conv, PLE
-  history). Slow-but-correct tiering (synchronous misses). Oracle: llama.cpp b10975+master
-  built on the Kaggle box (the baseline kernel pattern), greedy 256-token byte-compare +
-  logits KL on a short prompt, plus the arch.md section-6-style cross-checks (tiled V
-  permutation, ssm row order) against the BF16 safetensors via HTTP range reads.
-  Gate: byte-identical greedy vs llama.cpp; a working tok/s number (expected single digits,
-  the mmap class).
+- **cf-m1 - the exact-forward port, correctness-first** (BUILT r19, the Kaggle gate round
+  pushed as kaggle/cf1): the format layer landed (FMT_K2/K4/Q51 in packed.h/deq.cuh/
+  repack.cu/gemv_ref.cu/quant_cpu.cpp, all bit-exact transcriptions; the exact-u64 KV parse
+  for the PLE hash constants) and the model layer landed (cf_model.h / cf_kernels.cu /
+  cf_loader.cu / cf_engine.cu / tools/cf_run.cu, the full podman nvcc build 0 errors,
+  8-53 regs zero spill). The layout decisions verified against the ggml semantics: the
+  wide residual is stream-major flat [4][2560]; the rope decodes to the SAME partial NeoX
+  as the 27B (rope_multi sections [11,11,10,0] with indep_sects=false carries no restart);
+  the GDN output gate is sigmoid; the dense attention is 24q/2kv GQA 12. The 512 experts +
+  the PLE table stay in the host mmap (cf-m1a is the correctness gate: per token the 10
+  experts' raw slabs stage into pinned RAM, one upload, two repack launches into the
+  [12800,2560]/[25600,640] staging PackedWs, then the gemvs); the PLE hash runs host-side
+  exact-u64 (EOS 248044 cuts predecessors at-or-before it, heads 0-7 bigram 8-15 trigram).
+  The tokenizer is owned by the ORACLE (the new chatw job: the GGUF chat template +
+  llama_tokenize write the ids), so no t4q tokenizer port exists at all. The Kaggle round
+  (kaggle/cf1): the 82.85 GB download, the build, the oracle jobs (chatw x2, seq tail-48
+  x2, gen 32 x2), then cf_run seq (rel < 1e-3 + 48/48 top1 agree vs the oracle's own
+  tbt), gen (byte-compare the greedy), time (the steady tok/s). Gate: byte-identical
+  greedy vs llama.cpp b10975 on both prompts.
 - **cf-m2 - the census**: the router concentration curve (section 3.2) + the per-bucket step
   trace (the 27B trace method). Verdict: the tier split for cf-m3. Gate: the curve + the
   chosen H per layer recorded, the projected tok/s with a measured miss model.

@@ -79,6 +79,65 @@ T4Q_HD void deq32(const PackedW& W, int64_t row, int64_t g, float* w) {
             const int q = lo + (((qh[l] >> s) & 1) ? 16 : 0);
             w[l] = __fsub_rn(__fmul_rn(d1, (float)q), m1);
         }
+    } else if constexpr (FMT == FMT_K2) {
+        // Q2_K (r17 CF): 84 B / 256. Sub s (16 elems [16s,+16)): bytes qs[32*(s>>3) + 16*(s&1) .. +16)
+        // at ONE shared shift 2*((s&7)>>1); a = d*(scales[s]&15), m = dmin*(scales[s]>>4); w = a*q - m.
+        // The 32-elem group g covers subs 2g, 2g+1 = the 32 bytes at qs[32*((g&7)>>2) .. +32), shift 2*(g&3).
+        const int64_t nb = W.cols / 256;
+        const int64_t blk = row * nb + (g >> 3);
+        const uint8_t* meta = W.meta + blk * 20;
+        const float d = h2f((uint16_t)(meta[0] | (meta[1] << 8)));
+        const float dmin = h2f((uint16_t)(meta[2] | (meta[3] << 8)));
+        const uint8_t* sc = meta + 4;
+        const uint8_t* qs = W.codes + blk * 64 + 32 * ((g & 7) >> 2);
+        const int sh = (g & 3) << 1;
+        const int s0 = 2 * (g & 7), s1 = s0 + 1;
+        const float a0 = __fmul_rn(d, (float)(sc[s0] & 15));
+        const float m0 = __fmul_rn(dmin, (float)(sc[s0] >> 4));
+        const float a1 = __fmul_rn(d, (float)(sc[s1] & 15));
+        const float m1 = __fmul_rn(dmin, (float)(sc[s1] >> 4));
+#pragma unroll
+        for (int l = 0; l < 16; l++) {
+            const int q0 = (qs[l] >> sh) & 3;
+            const int q1 = (qs[l + 16] >> sh) & 3;
+            w[l] = __fsub_rn(__fmul_rn(a0, (float)q0), m0);
+            w[l + 16] = __fsub_rn(__fmul_rn(a1, (float)q1), m1);
+        }
+    } else if constexpr (FMT == FMT_K4) {
+        // Q4_K (r17 CF): 144 B / 256. Sub s (32 elems [32s,+32)) = nibble plane s&1 of the 32 bytes
+        // qs[32*((g&7)>>1) .. +32); sc/mi 6-bit from scales[12] (same decode as K5); w = d*sc*(nib) - dmin*mi.
+        const int64_t nb = W.cols / 256;
+        const int64_t blk = row * nb + (g >> 3);
+        const uint8_t* meta = W.meta + blk * 16;
+        const float d = h2f((uint16_t)(meta[0] | (meta[1] << 8)));
+        const float dmin = h2f((uint16_t)(meta[2] | (meta[3] << 8)));
+        int sc, mi;
+        dev_scale_min_k4((int)(g & 7), meta + 4, sc, mi);
+        const float d1 = __fmul_rn(d, (float)sc);
+        const float m1 = __fmul_rn(dmin, (float)mi);
+        const uint8_t* qs = W.codes + blk * 128 + 32 * ((g & 7) >> 1);
+        const int hin = g & 1;
+#pragma unroll
+        for (int l = 0; l < 32; l++) {
+            const int lo = hin ? (qs[l] >> 4) : (qs[l] & 15);
+            w[l] = __fsub_rn(__fmul_rn(d1, (float)lo), m1);
+        }
+    } else if constexpr (FMT == FMT_Q51) {
+        // Q5_1 (r17 CF): 24 B / 32. w = d*(nib | qhbit<<4) + m; lo nibble = elems 0..15, hi = 16..31;
+        // qh[4] as a LE u32: bit e = elem e's 5th bit.
+        const int64_t b = row * (W.cols / 32) + g;
+        const uint8_t* c = W.codes + b * 16;
+        const uint8_t* qh = W.hi + b * 4;
+        const float d = h2f(W.d[b]);
+        const float m = h2f(W.m[b]);
+        const uint32_t qhw = (uint32_t)qh[0] | ((uint32_t)qh[1] << 8) | ((uint32_t)qh[2] << 16) | ((uint32_t)qh[3] << 24);
+#pragma unroll
+        for (int l = 0; l < 16; l++) {
+            const int q0 = (c[l] & 15) + (int)(((qhw >> l) & 1) << 4);
+            const int q1 = (c[l] >> 4) + (int)(((qhw >> (16 + l)) & 1) << 4);
+            w[l] = __fadd_rn(__fmul_rn(d, (float)q0), m);
+            w[l + 16] = __fadd_rn(__fmul_rn(d, (float)q1), m);
+        }
     } else if constexpr (FMT == FMT_K6) {
         const int64_t nb = W.cols / 256;
         const int64_t blk = row * nb + (g >> 3);
@@ -122,4 +181,30 @@ T4Q_HD void repack_q6k_block(const PackedW& W, const uint8_t* src, int64_t dst) 
     for (int j = 0; j < 64; j++) W.hi[dst * 64 + j] = src[128 + j];
     for (int j = 0; j < 16; j++) W.meta[dst * 16 + j] = src[192 + j];
     W.d[dst] = (uint16_t)(src[208] | (src[209] << 8));
+}
+// ---- r17 CF blocks ----
+// Q2_K source block: scales[16] (lo = d-index, hi = dmin-index), qs[64], d, dmin (fp16) = 84 B.
+T4Q_HD void repack_q2k_block(const PackedW& W, const uint8_t* src, int64_t dst) {
+    W.meta[dst * 20 + 0] = src[80];
+    W.meta[dst * 20 + 1] = src[81];
+    W.meta[dst * 20 + 2] = src[82];
+    W.meta[dst * 20 + 3] = src[83];
+    for (int j = 0; j < 16; j++) W.meta[dst * 20 + 4 + j] = src[j];
+    for (int j = 0; j < 64; j++) W.codes[dst * 64 + j] = src[16 + j];
+}
+// Q4_K source block: scales[12], qs[128], d, dmin (fp16) = 144 B. meta = [d, dmin, scales[12]] (same as K5).
+T4Q_HD void repack_q4k_block(const PackedW& W, const uint8_t* src, int64_t dst) {
+    W.meta[dst * 16 + 0] = src[140];
+    W.meta[dst * 16 + 1] = src[141];
+    W.meta[dst * 16 + 2] = src[142];
+    W.meta[dst * 16 + 3] = src[143];
+    for (int j = 0; j < 12; j++) W.meta[dst * 16 + 4 + j] = src[j];
+    for (int j = 0; j < 128; j++) W.codes[dst * 128 + j] = src[12 + j];
+}
+// Q5_1 source block: d, m (fp16), qh[4], qs[16] = 24 B.
+T4Q_HD void repack_q51_block(const PackedW& W, const uint8_t* src, int64_t dst) {
+    W.d[dst] = (uint16_t)(src[0] | (src[1] << 8));
+    W.m[dst] = (uint16_t)(src[2] | (src[3] << 8));
+    for (int j = 0; j < 4; j++) W.hi[dst * 4 + j] = src[4 + j];
+    for (int j = 0; j < 16; j++) W.codes[dst * 16 + j] = src[8 + j];
 }

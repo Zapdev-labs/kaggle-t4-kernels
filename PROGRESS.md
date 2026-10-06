@@ -1620,3 +1620,65 @@ Q5_1 ~0.465, PLE 10.3 MB, misc)
    batched - the graph/persistent work is a cf-m1+ lever measured against the first cut.
 5. cf-m2 next (the router census on real text) - it decides the tier split; cf-m3's gate
    >= 25 tok/s is now obviously conservative against the ~48 first-cut all-resident number.
+
+## r19: cf-m1 built - the CYBER-FROST engine exists (the format layer + the model layer,
+## build-validated 0 errors, 8-53 regs zero spill; the Kaggle correctness round pushed)
+
+The cf-m0 worklist said "correctness-first exact-forward port" and this round is it. Every
+piece landed in-tree, the full podman nvcc build (libt4q.so + tools/cf_run) compiles clean
+at sm_75, and the exact decode math was transcribed from the two primary sources only:
+the real GGUF header bytes (r17, research/cf_tensors_Q2_K_S.txt) and the local llama.cpp
+b10975 qwen4exp graph read verbatim - no format or formula was assumed.
+
+### The format layer (the three missing qwen4exp formats, all bit-exact by construction)
+- packed.h: FMT_K2 (qs 64 B/256 + meta 20 B/256 = [d, dmin fp16, scales[16]]),
+  FMT_K4 (qs 128 B/256 + meta 16 B/256, same meta shape as K5), FMT_Q51 (codes 16 B/32 +
+  hi 4 B/32 + d/m fp16 planes). deq.cuh: deq32 branches + repack blocks; repack.cu:
+  k_repack_q2k/q4k (one thread per 256-elem super-block, raw strides 84/144 B) and
+  k_repack_q51 (per 32-group, 24 B) + the launch dispatch + the dequant_rows cases.
+  gemv_ref.cu: the reference k_gemv covers all three (the q8_1 dot folds deferred:
+  measure-first, the fp32 greedy compare decides). quant_cpu.cpp: the bit-exact ggml
+  transcriptions (Q2_K crossed-qs, Q4_K nibble planes per 64-elem sub, Q5_1 qh LE-bit).
+  gguf: GT_Q5_1=7 added; the u64 KV arrays now parse EXACT (ggml_block_info Q5_1 32/24).
+
+### The model layer (cf_model.h / cf_kernels.cu / cf_loader.cu / cf_engine.cu)
+- The layout decisions, all verified against the ggml semantics: the wide residual is
+  STREAM-major flat [4][2560] ((c,s) at s*2560+c, the ggml [n_embd, hc] row-major); the
+  hc norm gamma is the same flat [10240]; hc mix = per-stream rmsnorm x gamma -> lo =
+  silu((down@xn)*(1/4)) -> gate = sigmoid(up@lo) -> mixed = (1/4)*sum_s xn*gate -> the
+  per-stream inject = w_inject@xn; hc combine: res[s] += 2*sigmoid(inj[s]/4)*block[c].
+- The exact qwen4exp differences from the qwen35 the 27B runs: the GDN output gate is
+  SIGMOID(z) not silu (k_cf_gdn_gnorm); the dense attention has 2 kv heads (GQA 12,
+  26-block norm+rope kernel) and its rope decodes to the SAME partial NeoX as the 27B
+  (rope_multi with sections [11,11,10,0]: for text all four section positions equal, and
+  with indep_sects=false the sections carry no frequency restart - the standard
+  theta = pos*base^(-j/32) over the first 64 dims, verified in the ggml CPU body).
+- The MoE: the router gemv -> HOST softmax/top-10/renorm (fp32, the exact llama.cpp
+  formula) -> the 10 experts' raw slabs (gate 640|up 640 Q2_K rows of 840 B + 2560
+  Q4_0 rows of 360 B, ~19.5 MB) memcpy'd from the MMAP into pinned staging -> one upload
+  -> TWO repack launches into the [12800, 2560] / [25600, 640] staging PackedWs -> one
+  gate|up gemv + 10 silu_mul slices + 10 down gemvs on SoA slice views + the shared
+  expert (sigmoid-gated) + one combine kernel. The 512 experts and the PLE table stay
+  in the host mmap (cf-m1a is the correctness gate; the tiering is cf-m3).
+- The PLE (layer 1): the u64 hash host-side EXACT (mixed = t[p]*m[0] ^ t[p-1]*m[1] ^
+  t[p-2]*m[2], u64 wraparound; EOS 248044 cuts predecessors at-or-before it; heads 0-7
+  bigram, 8-15 trigram; row = mixed % head_vocab[h] + head_off[h] - the KV arrays are
+  parsed as exact u64, NOT the lossy double path) -> the 16x160 Q4_0 rows dequantized
+  host-side -> key/value gemvs -> grouped norms -> s = sum_c(key*query)/sqrt(2560) ->
+  gate = sigmoid(sgn(s)*sqrt(clamp(|s|,1e-6))) -> gated = value broadcast x gate[s] ->
+  norm -> the dilated depthwise conv (kernel 4, dilation 3, the 9-column ring state,
+  exact tap lag (3-k)*3, tap k of channel i at raw [i*4+k] - the ggml [4,10240] layout
+  decoded) -> silu -> res += gated + conv (the exact fp add order).
+- The engine: single GPU (the ~2.4 GiB trunk + 0.34 lm_head + ~170 MB states + ~40 MB
+  staging all fit one T4), the trunk loop PLE@1 -> hc_mix(attn) -> GDN|attn -> combine
+  -> hc_mix(ffn) -> MoE -> combine, the final mixer (the output norm is the hc mixer)
+  -> the lm_head. The tokenizer is OWNED BY THE ORACLE: oracle_dump grew a chatw job
+  (llama_chat_apply_template from the GGUF + llama_tokenize -> the ids file), so no
+  tokenizer port exists on the t4q side at all.
+
+### The cf-m1 Kaggle round (kaggle/cf1, pushed)
+stage_cf1.py: download the 82.85 GB Q2_K_S (~6.5 min write-bound) -> make -j4 ->
+cf_run + oracle_dump -> the oracle jobs (chatw x2, seq tail-48 x2, gen 32 x2) ->
+cf_run seq (the last-48 logits vs the oracle's own tbt: max rel diff + top1 agree) +
+gen (byte-compare vs the oracle greedy) + time (the steady tok/s). The gate: rel
+< 1e-3 with 48/48 top1 agree AND the 32-token greedy identical on both prompts.

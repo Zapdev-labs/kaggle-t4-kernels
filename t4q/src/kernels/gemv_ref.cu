@@ -34,6 +34,9 @@ void launch_gemv(const PackedW& W, const float* x, float* y, cudaStream_t s) {
         case FMT_Q8: k_gemv<FMT_Q8><<<G, 256, 0, s>>>(W, x, y); break;
         case FMT_K5: k_gemv<FMT_K5><<<G, 256, 0, s>>>(W, x, y); break;
         case FMT_K6: k_gemv<FMT_K6><<<G, 256, 0, s>>>(W, x, y); break;
+        case FMT_K2: k_gemv<FMT_K2><<<G, 256, 0, s>>>(W, x, y); break;
+        case FMT_K4: k_gemv<FMT_K4><<<G, 256, 0, s>>>(W, x, y); break;
+        case FMT_Q51: k_gemv<FMT_Q51><<<G, 256, 0, s>>>(W, x, y); break;
     }
 }
 
