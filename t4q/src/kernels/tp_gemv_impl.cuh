@@ -48,14 +48,21 @@ __device__ __forceinline__ unsigned epoch_of(const StepState* st, int idx) {
     return *(volatile const uint32_t*)&st->step * (unsigned)NAR + (unsigned)idx + 1u;
 }
 __device__ int d_spin_ns = 0;  // > 0: __nanosleep between polls of a spin wait (option spin_ns; power under the cap)
+// the AR-wait watchdog as a device global (the r13 deferred 8000-race fix): the default is the
+// old 4 s; the spec driver extends it to 30 s for a fresh process's FIRST spec step only (the
+// v42 flake: the previous process's driver-global CUDA teardown races this process's first spec
+// graph launches, and the first AR wait tripped the 4-s watchdog, st.err = 8000+idx). Load once
+// per wait_flag call; it is only ever set/restored between steps, never mid-wait.
+__device__ unsigned long long d_watchdog_ns = WATCHDOG_NS;
 // spin until flag >= e (wrap-safe); returns false on watchdog
 __device__ __forceinline__ bool wait_flag(const unsigned* flag, unsigned e) {
     const unsigned long long t0 = gtimer();
+    const unsigned long long wd = d_watchdog_ns;
     unsigned spins = 0;
     const int ns = d_spin_ns;
     while ((int)(ld_vol_u32(flag) - e) < 0) {
         if (ns) __nanosleep(ns);
-        if ((++spins & 1023u) == 0 && gtimer() - t0 > WATCHDOG_NS) return false;
+        if ((++spins & 1023u) == 0 && gtimer() - t0 > wd) return false;
     }
     return true;
 }

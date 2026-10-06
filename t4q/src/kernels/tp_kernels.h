@@ -56,6 +56,9 @@ void pull_arn(const float* h, float* h_out, const float* own, float* rx, const f
               cudaStream_t s, float* pub_peer_hrx, unsigned* pub_peer_hflag, const Pf* pf = nullptr);
 // spin-wait backoff (ns) for flag waits on the current device
 void set_spin_ns(int ns);
+// AR-wait watchdog (ns) for the current device (the 8000-race fix: the spec driver extends it
+// to 30 s for a fresh process's FIRST spec step only, then restores the 4 s default)
+void set_watchdog_ns(unsigned long long ns);
 void set_attn2(int v);  // 1: split attention v2 (reduce-scatter scores, separate softmax and P.V)
 // phase-timing buffer (u64[128], nullptr = off) for the current device
 void set_dbg(unsigned long long* p);

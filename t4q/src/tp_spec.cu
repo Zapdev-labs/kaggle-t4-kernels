@@ -1173,6 +1173,17 @@ int tp_spec_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop,
     }
     auto t0 = Clock::now();
     spec_enter(c, P);
+    // the r13 deferred 8000-race fix: a fresh process's FIRST spec step can race the previous
+    // process's driver-global CUDA teardown (v42: the first AR wait tripped the 4-s watchdog,
+    // st.err = 8000+idx, right after the main process's 8.6 GB x 2 teardown). Extend the
+    // AR-wait watchdog to 30 s until this process's FIRST verify completes; the restore below
+    // (after that verify) puts every later step back on the 4-s watchdog. A genuine first-step
+    // hang now costs 30 s once instead of a hard error; every later hang is unchanged.
+    static bool wd_first = true;
+    if (wd_first) {
+        for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); tp::set_watchdog_ns(30000000000ull); }
+        CK(cudaSetDevice(0));
+    }
     tp::StepState st;
     CK(cudaSetDevice(0));
     CK(cudaMemcpy(&st, S.G[0].st, sizeof st, cudaMemcpyDeviceToHost));
@@ -1297,6 +1308,11 @@ int tp_spec_generate(t4q_ctx* c, int32_t* out, int max_new, const int32_t* stop,
             P->iters_timed++;
         }
         iters = launched;
+        if (wd_first) {  // this process's first verify completed clean: back to the 4-s watchdog
+            wd_first = false;
+            for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); tp::set_watchdog_ns(4000000000ull); }
+            CK(cudaSetDevice(0));
+        }
         const int cnt = *(volatile int*)P->h_cnt;
         if (dbg) {
             // logits of the accepted columns of the last verify (GPU0 rows 0..124159 and GPU1 rows of each column)

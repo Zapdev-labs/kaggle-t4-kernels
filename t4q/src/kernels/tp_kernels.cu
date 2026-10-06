@@ -1098,6 +1098,7 @@ void ar_norm_ll(const float* h, float* h_out, const float* own, const float2* rx
 }
 
 void set_spin_ns(int ns) { cudaMemcpyToSymbol(d_spin_ns, &ns, sizeof ns); }
+void set_watchdog_ns(unsigned long long ns) { cudaMemcpyToSymbol(d_watchdog_ns, &ns, sizeof ns); }
 void set_dbg(unsigned long long* p) { cudaMemcpyToSymbol(d_dbg, &p, sizeof p); }
 
 void gnorm_q8(const float* o, const float* z, const float* w, int8_t* xq, int2* xm, cudaStream_t s, const Pf* pf) {
