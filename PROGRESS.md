@@ -1474,3 +1474,34 @@ The expectations, if the issue roof was really the binding side: qkvz M4 254.9 -
 -6.5% instruction cut plus the LDG->LDS swap), down/gateup/out proportionally; the engine
 ~70.8 -> ~71-73 tok/s. If the anchors do NOT move, the instruction stream was not the binding
 constraint per shape and the closure at ~66-71 stands with the census on record.
+
+### v46 verdict: the instruction cut is NEGATIVE - the issue-roof model is refuted by the
+### direct experiment; the staging is reverted
+All gates pass (V4/V5/tc, identical everywhere - the bit-identity construction held). The
+same-run dramprobe: 275.6/278.1/277.4 GB/s (the v45 ceiling re-confirmed, same band). The
+matrix, the controlled A/B (same shapes, same process, v0 old vs v46 new):
+- qkvz: M2 258.3 -> 252.0 (-2.4%), M4 254.9 -> 243.3 (-4.6%)
+- gateup: M2 250.6 -> 247.3 (-1.3%), M4 222.0 -> 216.7 (-2.4%)
+- down: M2 259.2 -> 254.1 (-2.0%), M4 231.1 -> 227.1 (-1.7%)
+- out: M2 224.3 -> 217.9 (-2.9%), M4 208.7 -> 195.6 (-6.3%)
+8/8 cells in the clean M2/M4 regime: SLOWER. The M7/M8 cells swing both ways (down M7 +19.5%,
+gateup M8 +17.9%, down M8 -15.7%) - the r13-established tail regime, not a clean instrument.
+The engine: k3_dv1 71.10/66.35/71.38 vs v45's 70.8/66.05/70.96 (+0.30/+0.30/+0.42) - INSIDE
+the measured no-code-change drift band (v44 -> v45, identical engine code, drifted
++0.19/+0.28/+0.65), so the engine delta is not attributable to the cut. The matrix is the
+controlled instrument and it says negative; the staging is REVERTED (tp_gemv_impl.cuh restored
+to the r15 state, bit-identical to v45).
+The mechanism reading: the removed x-derive instructions (~120/tile) were STALL FILLER - the
+dp4a accumulator dependency chains leave issue slots open and the derive work hid inside them;
+removing it tightens the schedule without reducing the issue time. The LDG.E.64 -> LDS.U.64
+swap likely adds MIO-pipe pressure (an async, fully-pipelined L2 load replaced by a
+synchronous smem read) on top. So the dp4a group loop is LATENCY/DEPENDENCY-bound, not
+instruction-count-bound: "254 GB/s" is the measured rate of THIS dependency structure at these
+clocks, and the 277 DRAM ceiling is not reachable by cutting instructions from it.
+This closes the last open lever class with a direct negative measurement. The full closure on
+this node at exact numerics: (a) every >1 ms step bucket measured- or roof-closed (r14);
+(b) the DRAM ceiling measured at ~277 with the GEMV anchors at 75-93% (r15); (c) the
+instruction-cut class directly A/B'd and negative (r16); (d) the shape/occupancy/rpl/nch/
+threads/launch levers all A/B'd across r4-r13. The exact-numerics engine stands at ~66-71
+tok/s, and the ~500 tok/s goal is unreachable on 2xT4 at exact numerics by every measured
+route. The revert restores the v45-identical code, so the v45 engine numbers stand.
