@@ -106,13 +106,21 @@ dequant rates and the platform paths are measured, no more assumptions**:
   x2, gen 8 x2), then cf_run seq (rel < 1e-3 + top1 agree vs the oracle's own tbt), gen
   (byte-compare the greedy), time (the steady tok/s), census (the router top-10 dump +
   the local analysis). Gate: byte-identical greedy vs llama.cpp b10975 on both prompts.
-  Round state (r19b-e): five oracle-side platform bugs fixed v1-v5; v6 WEDGED past every
-  timeout and burned the weekly 30 h GPU quota (readline blocks on a silent child - the
-  v7 watchdog hardening in-tree); the v7 payload (the watchdog + the census ride-along)
-  is frozen as committed and pushed by the local 6-hourly automation when the quota
-  resets; the moe launch batching (10 launches, was 28: one batched silu_mul grid.y=10 +
-  one batched down gemv grid.y=10, bodies verbatim/bit-identical, 0 errors 64/19 regs)
-  landed r19e for the v8 round so the base failure localizes cleanly on v7.
+  Round state (r19b-g): five oracle-side platform bugs fixed v1-v5; v6 WEDGED 12 h past
+  every timeout and burned the weekly 30 h GPU quota - DECODED (r19f): the downloader's own
+  p.stat() on the fresh 82.85 GB file held the GIL through a D-state overlayfs stall and
+  froze the whole process (thread watchdog included; the GPUs never ran); hardened with a
+  separate-process watchdog + a child-stat size probe. The v7 payload (regenerated 8c2969a,
+  byte-verified) now gates base + census + the r19e moe launch batching + the r19g q8
+  fast-activation paths in one quota-scarce round, with the bisect ladder 2f33431 ->
+  35d8c2d -> c3fb34c localizing a failure. The r18 worklist is CLOSED: every K-quant/P4 gemv
+  pairs the activation with the oracle's own activation quantization (Q2_K/Q4_K <-> Q8_K,
+  Q5_1 <-> Q8_1, Q4_0 <-> Q8_0, the exact ggml arithmetic, sim-verified 120/120). Next
+  speed levers, in order, all AFTER the base gates: (1) the dp4a rewrite of the q8 dot
+  integer partials (the T4 sm_75 has __dp4a; today's dots are scalar IMADs - the nibble
+  unpack makes the plain Q4_0 path the clean first candidate); (2) the cf-m3 CUDA-graph
+  capture of the static-shape sections; (3) the census-gated tiered engine (cf-m3) and
+  MTP (cf-m4).
 - **cf-m2 - the census**: the router concentration curve (section 3.2) + the per-bucket step
   trace (the 27B trace method). Verdict: the tier split for cf-m3. Gate: the curve + the
   chosen H per layer recorded, the projected tok/s with a measured miss model.
