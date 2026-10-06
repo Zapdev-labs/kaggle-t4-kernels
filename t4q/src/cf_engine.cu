@@ -208,6 +208,8 @@ bool cf_step(CfCtx* c, int token) {
             hc_mix(c, s.h, L.hc_norm[1], L.hc_down[1], L.hc_up[1], &L.hc_inject[1], s);
             moe(c, L, s);
             hc_combine(c, s.h, s.block, s.inj);
+            // live progress: the stage log shows the rate even when a run never finishes
+            if ((il & 15) == 15) fprintf(stderr, "[cf] step %d: layer %d done\n", c->pos, il);
         }
         // the final mixer is the output norm, then the lm_head
         hc_mix(c, s.h, c->o_norm, c->o_down, c->o_up, nullptr, s);

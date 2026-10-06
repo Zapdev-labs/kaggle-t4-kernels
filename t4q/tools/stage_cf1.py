@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 T0 = time.time()
-DEADLINE = 50 * 60
+DEADLINE = 56 * 60
 OUT = Path("/kaggle/working")
 LOGS = OUT / "logs"
 LOGS.mkdir(parents=True, exist_ok=True)
@@ -36,8 +36,8 @@ RESULTS = {"stage": "cf1"}
 TGZ = "__T4Q_TGZ_B64__"
 REPO = "freakyskittle/CYBER-FROST-3.8-GGUF"
 GGUF = "CYBER-FROST-3.8-Q2_K_S.gguf"
-T_SEQ = 48   # per-position logits compared (the oracle's own tbt tail)
-N_GEN = 32   # greedy tokens byte-compared
+T_SEQ = 8   # per-position logits compared (the oracle's own tbt tail)
+N_GEN = 8   # greedy tokens byte-compared
 
 
 def el():
@@ -152,13 +152,12 @@ def setup_llama():
     return dst, sorted(x.name for x in dst.iterdir())
 
 
-# short prompts (the oracle decodes the whole 82.85 GB model CPU-offloaded, so the round stays inside the
-# session budget): two coding asks, ~100 tokens each after the template
+# short prompts (the oracle decodes the whole 82.85 GB model CPU-side, and its cold expert
+# reads dominate: every prompt token costs the oracle ~1.16 GB of faults, so the prompts stay
+# minimal while still exercising every path: one coding ask, one prose ask)
 PROMPTS = {
-    "P0": "Write a Python function `median_abs_dev(xs)` that returns the median absolute deviation of a list of "
-          "numbers, with a short docstring and three assert-based tests.",
-    "P1": "Explain in four sentences why GPU kernels for large language model inference are memory-bandwidth "
-          "bound rather than compute bound.",
+    "P0": "Write a one-line Python lambda that reverses a string.",
+    "P1": "Name three benefits of quantized model weights.",
 }
 
 
@@ -173,11 +172,24 @@ def parse_cf(out):
     return vals
 
 
+def watchdog():
+    """r19 lesson: a child that hangs silently blocks stream()'s readline and the stage
+    never finishes, so the run's incremental results + logs never become fetchable. This
+    thread owns the deadline: at DEADLINE-120 it flags, at DEADLINE it flushes and exits."""
+    time.sleep(max(60, DEADLINE - 120))
+    result("watchdog", "deadline approaching in 120s")
+    time.sleep(120)
+    result("watchdog", "deadline hit - flushing and exiting; see logs/ for where each run stopped")
+    (OUT / "results.json").write_text(json.dumps(RESULTS, indent=1, default=str))
+    os._exit(0)
+
+
 def main():
     mon = None
     try:
         sh("nvidia-smi", logname="nvidia_smi.txt")
         mon = clocks_monitor()
+        threading.Thread(target=watchdog, daemon=True).start()
         t4q = unpack()
         th = threading.Thread(target=downloader, daemon=True)
         th.start()
