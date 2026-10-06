@@ -1552,3 +1552,71 @@ cf-m0 probes (disk/RAM/Q2_K+Q5_1 GEMV at the expert shapes) -> cf-m1 the exact-f
 oracle on the box -> cf-m2 the router census -> cf-m3 the tiered engine (gate >= 25 tok/s) ->
 cf-m4 MTP on the tiers (gate >= 40-60) -> cf-m5 the closure rounds. README.md rewritten around
 both programs and pushed.
+
+## r18: cf-m0 CLOSED - all four gates measured (v47, kaggle/cf0, probe-only, no model download)
+
+The cfprobe round: disk (write/seq/rand-2MiB/rand-4KiB/mmap-fault on the filesystem the GGUF
+lands on), pinned-RAM zero-copy per GPU and both, the r15 dramprobe re-run on both GPUs, and
+the first-cut dequant-GEMV kernels at the real qwen4exp shapes, each spot-checked against a
+host model on the same quantized x (all chk 2e-07..3e-05, report-only as designed). All GB/s
+are PACKED weight bytes, min-window burst, both GPUs Tesla T4 (40 SMs). Kernels: 43-52 regs,
+zero spill (tc_build.txt).
+
+### The measured map (kaggle/cf0/out/results.json, v47)
+- disk (/tmp = overlayfs on the host's 8 TB volume, 87% full, 1.1 TB free; the write and the
+  seq read are O_DIRECT): write 0.22 GB/s, seq read 0.25 GB/s (both plausibly contended by the
+  co-tenant - the 82.85 GB download will be ~6+ min write-bound; the parallel agent's 352 s
+  for 80 GB at 0.23 GB/s was exactly this), random 2 MiB pread 1.51 GB/s (1.3 ms each),
+  random 4 KiB pread ~91 us (11.0k IOPS), mmap first-fault ~98 us/row (the 16-row PLE gather
+  = 1.56 ms/token serial - must be a 1-step-ahead async prefetch pipeline, the hash rows for
+  the accepted token are known at sample time). The 1.51 GB/s rand-2M may be host-cache-warm;
+  the honest cold-tail number gets re-measured at cf-m3 against the real file.
+- pinned warm tier: zero-copy reads 11.5 GB/s per GPU, BUT both concurrently = 5.76 each =
+  11.53 total; cudaMemcpyAsync 11.37 GB/s - identical, so the path is the shared PCIe/host
+  controller at ~11.5 GB/s AGGREGATE, not a kernel or copy-choice issue. This corrects the r17
+  assumption of ~8.4 GB/s per direction per GPU: the warm tier is a SHARED 11.5 GB/s wall.
+- dramprobe re-run: 278.2-279.9 GB/s at 80-240 blocks on BOTH GPUs (the r15 277 stands, both
+  cards healthy, the ceiling for anything VRAM-resident).
+- Q2_K (84 B/256, the 0x03030303 mask-dp4a first cut, the qs layout decoded byte-exact from
+  ggml: sub s reads 16 consecutive bytes at ONE shift 2*((s&7)>>1)): 102.7 GB/s at the real
+  expert gate/up launch [2560->640] (80 blocks - grid-underfilled, 2 blocks/SM) but 178.8
+  GB/s at [2560->12288] (1536 blocks) - THE SAME KERNEL. The per-expert N=640 launch can never
+  fill the machine: the 10-expert gate/up MUST be one grid.z=10 batched gather (800 blocks).
+- Q4_0 expert-down [640->2560] x 10: 112.2 GB/s as 10 separate launches, 144.2 as ONE
+  grid.z=10 batched gather (both directions of the same verdict; the K=640 short row also
+  leaves 12 of 32 lanes idle in this row-per-warp geometry - the cf-m1 repack fixes the
+  lane mapping).
+- Q4_K lm_head class [2560->6208]: 88.6 GB/s first cut (the 6-bit scale derive + 8 u32 loads +
+  the lo/hi plane pair redundancy per 64-elem group - the repack pre-derives the per-sub
+  (a, b) and interleaves the planes; expect the 150-200 class).
+- Q5_1 hc LoRA [10240->320]: 127.7 GB/s first cut (the nibble planes + the qh 8-mask dp4a
+  against the 8-strided x table all correct).
+
+### The recalibrated ceiling ladder (per-token split: Q2_K ~1.30 GB, Q4_0 ~0.45, Q4_K ~0.34,
+Q5_1 ~0.465, PLE 10.3 MB, misc)
+- All-resident M=1 with the first-cut kernels + batched gathers: ~7.3 (Q2_K @179) + 3.1
+  (Q4_0 @144) + 3.9 (Q4_K @88.6) + 3.6 (Q5_1 @128) + ~3 misc/launches = ~21 ms/token =
+  ~48 tok/s. With the cf-m1 repack (Q2_K ~200+, Q4_K ~180, Q5_1 ~180, launch batching):
+  ~13-15 ms = ~65-75 tok/s. MTP k=2-3 adds the draft's own Q8 MoE + the shared lm_head at
+  M: the stretch is ~55-80 tok/s. The mmap floor to beat: 6-9 tok/s.
+- The tier verdict: VRAM carries the must-resident core (~3 GiB incl. the lm_head) + as many
+  hot experts as fit (~27 GiB of the 47.7 GiB expert pool); at 60 tok/s the expert traffic
+  is ~70 GB/s so the warm tier (11.5 GB/s SHARED) can only carry ~10-15% of the expert reads
+  even fully pipelined - the router census (cf-m2) decides whether the top-~250
+  experts/layer capture ~90% of the routed mass. The PLE table (26.85 GiB) stays on disk
+  with the async prefetch; the coldest expert tail on disk at the measured 0.25-1.5 GB/s.
+- Two probe report bugs (raw ms fields were correct, labels wrong - fixed in-tree): the seq
+  gbps divided MiB by 2^30 (true seq 0.244 GB/s), and the mmap16 us_per_round printed the
+  ms value (true 97.7 us/row).
+
+### r18 -> the cf-m1 worklist (all measured, nothing assumed)
+1. The batched-gather GEMV family (grid.z experts): gate/up Q2_K [2560->640] x10, down Q4_0
+   [640->2560] x10, the shexp, the draft's MoE - one launch per layer-family, not per expert.
+2. The Q4_K/Q5_1 repack: pre-derived per-sub (a, b) pairs (kills the 6-bit derive + the
+   nibble-plane redundancy), 16-B aligned loads, the rpl packing for the row tiles.
+3. The Q2_K lane mapping at K=2560 (10 blocks = 5 pairs/iter: fine) and the K=640 down-row
+   lane remap (12 idle lanes) - both engine-side, not format-side.
+4. The launch census: the trunk is ~1500 kernel launches/token at 2-3 us each unless
+   batched - the graph/persistent work is a cf-m1+ lever measured against the first cut.
+5. cf-m2 next (the router census on real text) - it decides the tier split; cf-m3's gate
+   >= 25 tok/s is now obviously conservative against the ~48 first-cut all-resident number.

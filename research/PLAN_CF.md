@@ -29,16 +29,37 @@ game is WHICH bytes are resident where, and what streams over PCIe/disk at miss 
 
 ## 2. The honest ceiling ladder
 
-Every number below uses measured T4 facts (254 GB/s per GPU at the real shapes, ~8.4 GB/s
-sustained PCIe per direction, 15.36 GiB usable VRAM each). The two unknowns that gate the
-ladder are measured at cf-m0/cf-m2, never assumed:
+Every number below uses measured T4 facts. **cf-m0 is CLOSED (r18, v47): the first-cut
+dequant rates and the platform paths are measured, no more assumptions**:
 
-- **All-active-resident dense**: 3.02 GB/token -> 5.95 ms -> **~168 tok/s**.
-- **All-active-resident + MTP k=3**: ~4.3 GB per ~3.4 accepted tokens -> **~125-135 tok/s**.
-- **Two-tier (VRAM hot experts + host-RAM warm tier)**: miss bytes cross PCIe at ~8.4 GB/s.
-  Equilibrium: ~78 tok/s at 90% VRAM hit, ~150 at 95%, disk-floor below that.
-- **The mmap floor** (what naive streaming gives, the pack author's laptop and llama.cpp
-  mmap on the same Kaggle box: 6-9 tok/s): the floor to beat 5-15x.
+- DRAM per GPU: 278-280 GB/s (re-confirmed on both cards, 80-240 blocks).
+- Pinned warm tier (zero-copy, cudaHostAllocMapped): 11.5 GB/s per GPU, **11.53 GB/s
+  AGGREGATE when both GPUs read concurrently** (5.76 each); cudaMemcpyAsync 11.37 - the
+  shared PCIe/host controller is the wall, not the copy choice. (Corrects the r17
+  "~8.4 GB/s per direction per GPU" assumption.)
+- Disk (/tmp = overlayfs on the host's 8 TB volume, 87% full): write 0.22 GB/s, seq read
+  0.25 GB/s (possibly co-tenant-contended; the 82.85 GB download is ~6+ min write-bound),
+  random 2 MiB 1.51 GB/s (may be host-cache-warm; re-measured against the real file at
+  cf-m3), random 4 KiB ~91 us (11.0k IOPS), mmap first-fault ~98 us/row (the 16-row PLE
+  gather = 1.56 ms/token serial -> the 1-step-ahead async prefetch pipeline is mandatory).
+- First-cut dequant GEMV at the real shapes (packed weight bytes, host-model-checked):
+  Q2_K 178.8 GB/s at a full grid (102.7 at the underfilled per-expert N=640 launch),
+  Q4_0 expert-down 144.2 batched (112.2 as 10 separate launches), Q4_K lm_head class
+  88.6 (the repack target is the 150-200 class), Q5_1 127.7.
+
+- **All-active-resident dense, first-cut kernels**: ~21 ms/token = **~48 tok/s**
+  (Q2_K 1.30 GB @179 + Q4_0 0.45 @144 + Q4_K 0.34 @88.6 + Q5_1 0.465 @128 + ~3 misc).
+- **All-active-resident, cf-m1 kernels** (batched gathers + the Q4_K/Q5_1 repack + launch
+  batching): ~13-15 ms/token = **~65-75 tok/s**.
+- **All-active-resident + MTP k=2-3** (the draft's own Q8 MoE + the shared lm_head at M):
+  the stretch is **~55-80 tok/s**.
+- **Two-tier (VRAM hot + pinned warm)**: the warm tier's 11.5 GB/s SHARED ceiling can carry
+  only ~10-15% of the expert traffic at 60 tok/s even fully pipelined - the census decides
+  whether the top-~250 experts/layer capture enough of the routed mass for the VRAM tier
+  to close the rest. Disk-tier misses at the measured 0.25-1.5 GB/s cap the flat-router
+  fallback at ~10-25 tok/s (the requant path, section 5, is the escape).
+- **The mmap floor** (the pack author's laptop and llama.cpp mmap on the same Kaggle box:
+  6-9 tok/s): the floor to beat 5-10x.
 
 ## 3. The two gating unknowns (cf-m0 and cf-m2)
 
@@ -58,12 +79,14 @@ ladder are measured at cf-m0/cf-m2, never assumed:
 
 ## 4. The milestone ladder
 
-- **cf-m0 - platform probes, no model**: tc_bench grows `--cfprobe`: /tmp disk (seq/rand4k/
-  2 MiB), pinned-host-RAM read bandwidth from each GPU, and the new dequant GEMV shapes:
-  Q2_K and Q5_1 kernels (the engine has Q4_0/Q4_K-class paths already) at the real expert
-  shapes ([2560,640] gate/up, [640,2560] down, the 10-expert gather-GEMV pattern, the
-  [2560,512] router, the hc LoRA [10240,320]/[320,10240] pair). Gate: Q2_K GEMV >= ~200
-  GB/s at the gate/up shapes; disk + host-RAM numbers recorded.
+- **cf-m0 - platform probes, no model** (CLOSED r18, v47, kaggle/cf0): tc_bench grew `--cfprobe`
+  (disk write/seq/rand-2MiB/rand-4KiB/mmap-fault, pinned zero-copy per GPU + both + memcpy, the
+  dramprobe re-run on both, and the Q2_K/Q4_K/Q5_1/Q4_0 dequant GEMV at the real shapes with
+  host-model checks). Verdict: the platform numbers in section 2 + the two probe report-label
+  bugs (the raw ms fields were right) fixed in-tree; Q2_K at a full grid 178.8 GB/s (the ~200
+  gate marginally missed at the first cut - the mask-dp4a path is correct, the headroom is in
+  the derive/load engineering at cf-m1), the launch geometry verdict (per-expert N=640 launches
+  are grid-underfilled: the batched gather is mandatory, 102.7 -> 178.8 same kernel).
 - **cf-m1 - the exact-forward port, correctness-first**: GGUF loader for the Q2_K_S trunk
   (Q2_K/Q4_0/Q5_1/Q4_K/F16), the repack into the engine layout (experts stored per-expert
   contiguous for the gather + the tier manager; the PLE table split out; the inert indexer

@@ -14,14 +14,19 @@
 #include "../src/kernels/tp_gemv_impl.cuh"
 #include "../src/kernels/tp_gemv_tc.cuh"
 
-#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <fcntl.h>
 #include <functional>
 #include <string>
+#include <unistd.h>
 #include <vector>
+
+#include <sys/mman.h>
+#include <sys/statvfs.h>
 
 using namespace t4q::gemv;
 
@@ -288,6 +293,722 @@ static int dram_probe(int dev, int reps) {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// r17 cf-m0: the CYBER-FROST probes (--cfprobe). The qwen4exp decode pipeline streams Q2_K/Q4_K/Q5_1
+// (the 82.85 GB freakyskittle Q2_K_S GGUF) at M=1 on 2xT4, and the tier design (hot VRAM / pinned-RAM
+// warm / the 26.85 GiB PLE table + cold tail on disk) plus the honest ceiling ladder hang on rates this
+// node has never measured. All GB/s are PACKED weight bytes (the formats as they sit in the file),
+// min-window burst (time_burst), every kernel spot-checked against a host model on the same quantized x
+// (report-only diff: the device folds integers and sums fp32 in different orders):
+//   cfdisk - the filesystem the GGUF will land on: write, sequential read, random 2 MiB (an expert tail
+//            row), random 4 KiB (a PLE hash page), and the mmap first-fault cost of a 16-row PLE gather
+//            (the PLE's per-token traffic is 16 scattered 90 B rows in a 26.85 GiB file);
+//   cfpinned - zero-copy reads of cudaHostAllocMapped memory from each GPU and both concurrently (the
+//            warm tier's read ceiling), plus the cudaMemcpyAsync copy leg for comparison;
+//   cfq2k - THE cf wall: 84 B/256 elems = 3.05 elems/B vs the P4's 1.78. The Q2_K layout (from the ggml
+//            dequant, byte-exact): sub s (16 elems) reads its 16 quants from the 16 consecutive bytes
+//            qs[32*(s>>3) + 16*(s&1)] at ONE shared shift 2*((s&7)>>1), so one (w>>sh)&0x03030303 mask
+//            per u32 spreads 4 CONSECUTIVE elems - natural x order, the same dp4a shape as q4_0.
+//            Probed at the expert gate/up shape [2560->640] and the big-N class [2560->12288];
+//   cfq4k - the lm_head class [2560->248320] (probed at N 6208 to fit VRAM; the grid fills either way).
+//            Sub s (32 elems) = nibble plane s&1 of the 32 bytes qs[32*(s>>1)], w = d*sc*(nib) - dmin*m
+//            with the 6-bit scale/min pairs from scales[12];
+//   cfq51 - the hc LoRA shape [10240->320]: w = d*(nib | qhbit<<4) + m, qh as a LE u32 with bit e =
+//            elem e's 5th bit (8 masks x 4 bytes), the qh half dp4a'd against an 8-strided x table;
+//   cfp4d - the Q4_0 expert-down [640->2560] as 10 separate launches vs ONE grid.z=10 batched gather
+//            (48 layers x 10 experts = the launch-count line item). The 18-B rows put the qs u32s at
+//            2 mod 4 on odd blocks - assembled with __funnelshift_r from the enclosing aligned words.
+// ---------------------------------------------------------------------------
+
+static double now_ms() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
+
+static void rand_bytes(std::vector<uint8_t>& v) {
+    for (size_t i = 0; i + 8 <= v.size(); i += 8) {
+        uint64_t r = rnd();
+        memcpy(v.data() + i, &r, 8);
+    }
+    for (size_t i = (v.size() / 8) * 8; i < v.size(); ++i) v[i] = (uint8_t)rnd();
+}
+
+// the x side: s8 groups (g = 16 for q2k, 32 for the rest) with an fp16 scale, plus the per-group s8 sums
+// (the min folds) and the 8-strided u32 table for the q51 qh masks
+struct XQ {
+    int K = 0, g = 0;
+    std::vector<int8_t> s8;
+    std::vector<uint16_t> d;
+    std::vector<int32_t> t;
+    std::vector<uint8_t> x8;  // [K/32][8] u32: u32 j = the s8 of elems {32g+8c+j, c=0..3}
+};
+static void xq_build(XQ& q, const float* x, int K, int g) {
+    q.K = K;
+    q.g = g;
+    q.s8.assign(K, 0);
+    q.d.assign(K / g, 0);
+    q.t.assign(K / g, 0);
+    q.x8.assign((size_t)(K / 32) * 32, 0);
+    for (int gi = 0; gi < K / g; ++gi) {
+        float amx = 1e-9f;
+        for (int e = 0; e < g; ++e) amx = fmaxf(amx, fabsf(x[gi * g + e]));
+        const uint16_t db = f2h_host(amx / 127.f);
+        q.d[gi] = db;
+        const float inv = 1.f / h2f_host(db);
+        int t = 0;
+        for (int e = 0; e < g; ++e) {
+            int v = (int)lrintf(x[gi * g + e] * inv);
+            v = v < -127 ? -127 : (v > 127 ? 127 : v);
+            q.s8[gi * g + e] = (int8_t)v;
+            t += v;
+        }
+        q.t[gi] = t;
+    }
+    for (int gi = 0; gi < K / 32; ++gi)
+        for (int j = 0; j < 8; ++j) {
+            uint32_t w = 0;
+            for (int c = 0; c < 4; ++c) w |= (uint32_t)(uint8_t)q.s8[gi * 32 + 8 * c + j] << (8 * c);
+            memcpy(&q.x8[(size_t)gi * 32 + 4 * j], &w, 4);
+        }
+}
+
+static void gen_x(int K, std::vector<float>& x) {
+    x.resize(K);
+    for (int i = 0; i < K; ++i) x[i] = 0.5f * rndn_h();
+}
+
+// Q2_K: scales[16] (lo nibble = the d-index, hi = the dmin-index), qs[64], d/dmin fp16. w = a*q - m.
+__global__ void __launch_bounds__(256) k_q2k_gemv(const uint8_t* W, const int8_t* xs, const uint16_t* xd, const int* xt,
+                                                 float* y, int K, int N) {
+    const int row = blockIdx.x * 8 + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31, NB = K >> 8;
+    const uint32_t M = 0x03030303u;
+    float acc = 0.f;
+    if (row < N) {
+        const uint8_t* Wr = W + (size_t)row * NB * 84;
+        for (int it = 0; it < (NB + 1) >> 1; ++it) {
+            const int qb = (it << 1) + (lane >> 4);
+            if (qb < NB) {
+                const uint8_t* B = Wr + (size_t)qb * 84;
+                const int s = lane & 15, sh = ((s & 7) >> 1) << 1;
+                const uint32_t* q = (const uint32_t*)(B + 16 + 32 * (s >> 3) + 16 * (s & 1));
+                const uint32_t* xi = (const uint32_t*)(xs + (qb << 8) + (s << 4));
+                int S = 0;
+#pragma unroll
+                for (int c = 0; c < 4; ++c) S = __dp4a((int)((q[c] >> sh) & M), (int)xi[c], S);
+                const uint32_t dm = *(const uint32_t*)(B + 80);
+                const float d = __half2float(__ushort_as_half((unsigned short)(dm & 0xFFFF)));
+                const float dmin = __half2float(__ushort_as_half((unsigned short)(dm >> 16)));
+                const float a = d * (float)(B[s] & 15), m = dmin * (float)(B[s] >> 4);
+                const int g = (qb << 4) + s;
+                acc += __half2float(*(const __half*)(xd + g)) * (a * (float)S - m * (float)xt[g]);
+            }
+        }
+    }
+    for (int o = 16; o; o >>= 1) acc += __shfl_xor_sync(0xFFFFFFFFu, acc, o);
+    if (!lane && row < N) y[row] = acc;
+}
+
+// Q4_K: scales[12] (6-bit packed: s<4 -> sc=B[s]&63, m=B[s+4]&63; s>=4 -> the cross reassembly), qs[128],
+// d/dmin fp16 at 140/142. Sub s (32 elems) = nibble plane s&1 of the 32 bytes at 32*(s>>1); natural order.
+__global__ void __launch_bounds__(256) k_q4k_gemv(const uint8_t* W, const int8_t* xs, const uint16_t* xd, const int* xt,
+                                                 float* y, int K, int N) {
+    const int row = blockIdx.x * 8 + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31, NB = K >> 8;
+    const uint32_t M = 0x0F0F0F0Fu;
+    float acc = 0.f;
+    if (row < N) {
+        const uint8_t* Wr = W + (size_t)row * NB * 144;
+        for (int it = 0; it < (NB + 3) >> 2; ++it) {
+            const int qb = (it << 2) + (lane >> 3);
+            if (qb < NB) {
+                const uint8_t* B = Wr + (size_t)qb * 144;
+                const int s = lane & 7;
+                int sc, mi;
+                if (s < 4) {
+                    sc = B[s] & 63;
+                    mi = B[s + 4] & 63;
+                } else {
+                    sc = (B[s + 4] & 0xF) | ((B[s - 4] >> 6) << 4);
+                    mi = (B[s + 4] >> 4) | ((B[s] >> 6) << 4);
+                }
+                const uint32_t* q = (const uint32_t*)(B + 12 + 32 * (s >> 1));
+                const uint32_t* xi = (const uint32_t*)(xs + (qb << 8) + (s << 5));
+                int S = 0;
+                if (!(s & 1)) {
+#pragma unroll
+                    for (int c = 0; c < 8; ++c) S = __dp4a((int)(q[c] & M), (int)xi[c], S);
+                } else {
+#pragma unroll
+                    for (int c = 0; c < 8; ++c) S = __dp4a((int)((q[c] >> 4) & M), (int)xi[c], S);
+                }
+                const uint32_t dm = *(const uint32_t*)(B + 140);
+                const float d = __half2float(__ushort_as_half((unsigned short)(dm & 0xFFFF)));
+                const float dmin = __half2float(__ushort_as_half((unsigned short)(dm >> 16)));
+                const float a = d * (float)sc, m = dmin * (float)mi;
+                const int g = (qb << 3) + s;
+                acc += __half2float(*(const __half*)(xd + g)) * (a * (float)S - m * (float)xt[g]);
+            }
+        }
+    }
+    for (int o = 16; o; o >>= 1) acc += __shfl_xor_sync(0xFFFFFFFFu, acc, o);
+    if (!lane && row < N) y[row] = acc;
+}
+
+// Q5_1: 24 B/32 (d, m fp16; qh[4]; qs[16]). w = d*(nib | qhbit<<4) + m; qh as a LE u32: bit e = elem e.
+__global__ void __launch_bounds__(256) k_q51_gemv(const uint8_t* W, const int8_t* xs, const uint8_t* x8,
+                                                 const uint16_t* xd, const int* xt, float* y, int K, int N) {
+    const int row = blockIdx.x * 8 + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31, NG = K >> 5;
+    const uint32_t M = 0x0F0F0F0Fu, MB = 0x01010101u;
+    float acc = 0.f;
+    if (row < N) {
+        const uint8_t* Wr = W + (size_t)row * NG * 24;
+        for (int it = 0; it < (NG + 31) >> 5; ++it) {
+            const int g = (it << 5) + lane;
+            if (g < NG) {
+                const uint8_t* B = Wr + (size_t)g * 24;
+                const uint32_t* q = (const uint32_t*)(B + 8);
+                const uint32_t* xi = (const uint32_t*)(xs + (g << 5));
+                const uint32_t* xj = (const uint32_t*)(x8 + (size_t)g * 32);
+                const uint32_t qhw = *(const uint32_t*)(B + 4);
+                int S = 0, Sq = 0;
+#pragma unroll
+                for (int c = 0; c < 4; ++c) {
+                    S = __dp4a((int)(q[c] & M), (int)xi[c], S);
+                    S = __dp4a((int)((q[c] >> 4) & M), (int)xi[4 + c], S);
+                }
+#pragma unroll
+                for (int j = 0; j < 8; ++j) Sq = __dp4a((int)((qhw >> j) & MB), (int)xj[j], Sq);
+                const float d = __half2float(*(const __half*)B);
+                const float m = __half2float(*(const __half*)(B + 2));
+                acc += __half2float(*(const __half*)(xd + g)) *
+                       (d * ((float)S + 16.f * (float)Sq) + m * (float)xt[g]);
+            }
+        }
+    }
+    for (int o = 16; o; o >>= 1) acc += __shfl_xor_sync(0xFFFFFFFFu, acc, o);
+    if (!lane && row < N) y[row] = acc;
+}
+
+// Q4_0 (the engine's P4 format's parent): 18 B/32, d fp16 + qs[16]; w = d*(nib-8). The 18-B rows put the
+// qs u32s at 2 mod 4 on odd blocks: assemble via __funnelshift_r from the two enclosing aligned words.
+static __device__ __forceinline__ uint32_t ld_u32u(const uint8_t* p) {
+    const uintptr_t a = (uintptr_t)p;
+    const uint32_t* w = (const uint32_t*)(a & ~(uintptr_t)3);
+    return __funnelshift_r(w[0], w[1], (uint32_t)((a & 3) * 8));
+}
+__global__ void __launch_bounds__(256) k_p4d_gemv(const uint8_t* W, const int8_t* xs, const uint16_t* xd, const int* xt,
+                                                 float* y, int K, int N, int rows_e) {
+    const int row = blockIdx.x * 8 + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31, NG = K >> 5;
+    const uint32_t M = 0x0F0F0F0Fu;
+    float acc = 0.f;
+    if (row < N) {
+        const uint8_t* Wr = W + ((size_t)blockIdx.z * rows_e + row) * NG * 18;
+        for (int it = 0; it < (NG + 31) >> 5; ++it) {
+            const int g = (it << 5) + lane;
+            if (g < NG) {
+                const uint8_t* B = Wr + (size_t)g * 18;
+                const float d = __half2float(*(const __half*)B);
+                int S = 0;
+#pragma unroll
+                for (int c = 0; c < 4; ++c) {
+                    const uint32_t w = ld_u32u(B + 2 + 4 * c);
+                    S = __dp4a((int)(w & M), *(const int*)(xs + (g << 5) + 4 * c), S);
+                    S = __dp4a((int)((w >> 4) & M), *(const int*)(xs + (g << 5) + 16 + 4 * c), S);
+                }
+                acc += d * __half2float(*(const __half*)(xd + g)) * ((float)S - 8.f * (float)xt[g]);
+            }
+        }
+    }
+    for (int o = 16; o; o >>= 1) acc += __shfl_xor_sync(0xFFFFFFFFu, acc, o);
+    if (!lane && row < N) y[(size_t)blockIdx.z * N + row] = acc;
+}
+
+static void gen_q2k(int N, int K, std::vector<uint8_t>& out) {
+    const size_t rb = (size_t)(K >> 8) * 84;
+    out.resize(rb * N + 8);
+    rand_bytes(out);
+    for (size_t row = 0; row < (size_t)N; ++row)
+        for (int qb = 0; qb < (K >> 8); ++qb) {
+            uint8_t* B = out.data() + row * rb + (size_t)qb * 84;
+            const uint16_t d = f2h_host(0.002f + 0.02f * rndu()), dm = f2h_host(0.002f + 0.02f * rndu());
+            memcpy(B + 80, &d, 2);
+            memcpy(B + 82, &dm, 2);
+        }
+}
+static void gen_q4k(int N, int K, std::vector<uint8_t>& out) {
+    const size_t rb = (size_t)(K >> 8) * 144;
+    out.resize(rb * N + 8);
+    rand_bytes(out);
+    for (size_t row = 0; row < (size_t)N; ++row)
+        for (int qb = 0; qb < (K >> 8); ++qb) {
+            uint8_t* B = out.data() + row * rb + (size_t)qb * 144;
+            const uint16_t d = f2h_host(0.002f + 0.02f * rndu()), dm = f2h_host(0.002f + 0.02f * rndu());
+            memcpy(B + 140, &d, 2);
+            memcpy(B + 142, &dm, 2);
+        }
+}
+static void gen_q51(int N, int K, std::vector<uint8_t>& out) {
+    const size_t rb = (size_t)(K >> 5) * 24;
+    out.resize(rb * N + 8);
+    rand_bytes(out);
+    for (size_t row = 0; row < (size_t)N; ++row)
+        for (int g = 0; g < (K >> 5); ++g) {
+            uint8_t* B = out.data() + row * rb + (size_t)g * 24;
+            const uint16_t d = f2h_host(0.002f + 0.02f * rndu()), m = f2h_host(0.002f + 0.02f * rndu());
+            memcpy(B, &d, 2);
+            memcpy(B + 2, &m, 2);
+        }
+}
+static void gen_p4d(int N, int K, std::vector<uint8_t>& out) {
+    const size_t rb = (size_t)(K >> 5) * 18;
+    out.resize(rb * N + 8);
+    rand_bytes(out);
+    for (size_t row = 0; row < (size_t)N; ++row)
+        for (int g = 0; g < (K >> 5); ++g) {
+            uint8_t* B = out.data() + row * rb + (size_t)g * 18;
+            const uint16_t d = f2h_host(0.002f + 0.02f * rndu());
+            memcpy(B, &d, 2);
+        }
+}
+
+static void q2k_host(int K, int N, const std::vector<uint8_t>& W, const XQ& xq, float* y) {
+    const int NB = K >> 8;
+    for (int r = 0; r < N; ++r) {
+        const uint8_t* B0 = W.data() + (size_t)r * NB * 84;
+        double acc = 0;
+        for (int qb = 0; qb < NB; ++qb) {
+            const uint8_t* B = B0 + qb * 84;
+            const float d = h2f_host(*(const uint16_t*)(B + 80)), dmin = h2f_host(*(const uint16_t*)(B + 82));
+            for (int s = 0; s < 16; ++s) {
+                const float a = d * (B[s] & 15), m = dmin * (B[s] >> 4);
+                const int sh = ((s & 7) >> 1) << 1;
+                const uint8_t* q = B + 16 + 32 * (s >> 3) + 16 * (s & 1);
+                for (int t = 0; t < 16; ++t) {
+                    const int k = (qb << 8) + (s << 4) + t;
+                    const float w = a * (float)((q[t] >> sh) & 3) - m;
+                    acc += (double)w * h2f_host(xq.d[k / xq.g]) * xq.s8[k];
+                }
+            }
+        }
+        y[r] = (float)acc;
+    }
+}
+static void q4k_host(int K, int N, const std::vector<uint8_t>& W, const XQ& xq, float* y) {
+    const int NB = K >> 8;
+    for (int r = 0; r < N; ++r) {
+        const uint8_t* B0 = W.data() + (size_t)r * NB * 144;
+        double acc = 0;
+        for (int qb = 0; qb < NB; ++qb) {
+            const uint8_t* B = B0 + qb * 144;
+            const float d = h2f_host(*(const uint16_t*)(B + 140)), dmin = h2f_host(*(const uint16_t*)(B + 142));
+            for (int s = 0; s < 8; ++s) {
+                int sc, mi;
+                if (s < 4) {
+                    sc = B[s] & 63;
+                    mi = B[s + 4] & 63;
+                } else {
+                    sc = (B[s + 4] & 0xF) | ((B[s - 4] >> 6) << 4);
+                    mi = (B[s + 4] >> 4) | ((B[s] >> 6) << 4);
+                }
+                const float a = d * sc, m = dmin * mi;
+                const uint8_t* q = B + 12 + 32 * (s >> 1);
+                for (int t = 0; t < 32; ++t) {
+                    const int nib = (s & 1) ? (q[t] >> 4) : (q[t] & 15);
+                    const int k = (qb << 8) + (s << 5) + t;
+                    acc += (double)(a * nib - m) * h2f_host(xq.d[k / xq.g]) * xq.s8[k];
+                }
+            }
+        }
+        y[r] = (float)acc;
+    }
+}
+static void q51_host(int K, int N, const std::vector<uint8_t>& W, const XQ& xq, float* y) {
+    const int NG = K >> 5;
+    for (int r = 0; r < N; ++r) {
+        const uint8_t* B0 = W.data() + (size_t)r * NG * 24;
+        double acc = 0;
+        for (int g = 0; g < NG; ++g) {
+            const uint8_t* B = B0 + g * 24;
+            const float d = h2f_host(*(const uint16_t*)B), m = h2f_host(*(const uint16_t*)(B + 2));
+            uint32_t qhw;
+            memcpy(&qhw, B + 4, 4);
+            for (int t = 0; t < 32; ++t) {
+                const int nib = t < 16 ? (B[8 + t] & 15) : (B[8 + t - 16] >> 4);
+                const float w = d * (float)(nib | (((qhw >> t) & 1) << 4)) + m;
+                acc += (double)w * h2f_host(xq.d[g]) * xq.s8[g * 32 + t];
+            }
+        }
+        y[r] = (float)acc;
+    }
+}
+static void p4d_host(int K, int N, int E, const std::vector<uint8_t>& W, const XQ& xq, float* y) {
+    const int NG = K >> 5;
+    for (int e = 0; e < E; ++e)
+        for (int r = 0; r < N; ++r) {
+            const uint8_t* B0 = W.data() + ((size_t)e * N + r) * NG * 18;
+            double acc = 0;
+            for (int g = 0; g < NG; ++g) {
+                const uint8_t* B = B0 + g * 18;
+                const float d = h2f_host(*(const uint16_t*)B);
+                for (int t = 0; t < 32; ++t) {
+                    const int nib = t < 16 ? (B[2 + t] & 15) : (B[2 + t - 16] >> 4);
+                    acc += (double)(d * (nib - 8)) * h2f_host(xq.d[g]) * xq.s8[g * 32 + t];
+                }
+            }
+            y[(size_t)e * N + r] = (float)acc;
+        }
+}
+
+static int cf_disk_probe(const char* dir, int gb) {
+    std::string path = std::string(dir) + "/cfprobe.bin";
+    struct statvfs vfs {};
+    if (statvfs(dir, &vfs) != 0) {
+        printf("R {\"cfdisk\":{\"err\":\"statvfs\"}}\n");
+        return 1;
+    }
+    const double free_gb = (double)vfs.f_bavail * (double)vfs.f_frsize / 1073741824.0;
+    if ((double)gb > free_gb * 0.6) gb = (int)(free_gb * 0.6);
+    if (gb < 2) {
+        printf("R {\"cfdisk\":{\"free_gb\":%.1f,\"skip\":\"no-space\"}}\n", free_gb);
+        return 1;
+    }
+    printf("R {\"cfdisk\":{\"dir\":\"%s\",\"free_gb\":%.1f,\"file_gb\":%d}}\n", dir, free_gb, gb);
+    const size_t CH = 128ull << 20, tot = (size_t)gb << 30;
+    void* wb = nullptr;
+    if (posix_memalign(&wb, 512, CH) != 0) {
+        printf("R {\"cfdisk\":{\"err\":\"memalign\"}}\n");
+        return 1;
+    }
+    for (size_t i = 0; i < CH; i += 8) {
+        uint64_t r = rnd();
+        memcpy((char*)wb + i, &r, 8);
+    }
+    int od = 0, fd = -1;
+#ifdef O_DIRECT
+    fd = open(path.c_str(), O_CREAT | O_WRONLY | O_TRUNC | O_DIRECT, 0644);
+    if (fd >= 0) od = 1;
+#endif
+    if (fd < 0) fd = open(path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) {
+        printf("R {\"cfdisk\":{\"err\":\"open-w\"}}\n");
+        return 1;
+    }
+    double t0 = now_ms();
+    for (size_t off = 0; off < tot; off += CH)
+        if ((size_t)write(fd, wb, CH) != CH) {
+            printf("R {\"cfdisk\":{\"err\":\"write\"}}\n");
+            return 1;
+        }
+    fdatasync(fd);
+    const double wr_ms = now_ms() - t0;
+    printf("R {\"cfdisk\":{\"write\":{\"odirect\":%d,\"ms\":%.0f,\"gbps\":%.2f}}}\n", od, wr_ms, gb / (wr_ms / 1000.0));
+    close(fd);
+    int rfd = -1;
+#ifdef O_DIRECT
+    rfd = open(path.c_str(), O_RDONLY | O_DIRECT);
+#endif
+    if (rfd < 0) rfd = open(path.c_str(), O_RDONLY);
+    if (rfd < 0) {
+        printf("R {\"cfdisk\":{\"err\":\"open-r\"}}\n");
+        return 1;
+    }
+    if (!od) posix_fadvise(rfd, 0, 0, POSIX_FADV_DONTNEED);  // the write went through the page cache: drop it
+    // sequential 1 MiB (the requant read-back / the cold-tail stream)
+    t0 = now_ms();
+    double rd = 0;
+    for (size_t off = 0; off + (1 << 20) <= tot; off += (1 << 20))
+        if ((size_t)pread(rfd, wb, 1 << 20, (off_t)off) == (1 << 20)) rd += 1;
+    double ms = now_ms() - t0;
+    printf("R {\"cfdisk\":{\"seq\":{\"odirect\":%d,\"gb\":%.1f,\"ms\":%.0f,\"gbps\":%.2f}}}\n", od, rd / 1024.0, ms,
+           rd / 1024.0 / (ms / 1000.0));
+    // random 2 MiB (an expert tail row read at tier-3 granularity)
+    const int n2 = 1200;
+    t0 = now_ms();
+    for (int i = 0; i < n2; ++i) {
+        const size_t off = (size_t)(rnd() % (tot >> 21)) << 21;
+        if ((size_t)pread(rfd, wb, 2 << 20, (off_t)off) != (2 << 20)) break;
+    }
+    ms = now_ms() - t0;
+    printf("R {\"cfdisk\":{\"rand2m\":{\"n\":%d,\"ms\":%.0f,\"gbps\":%.2f}}}\n", n2, ms,
+           (double)n2 * 2 / 1024.0 / (ms / 1000.0));
+    // random 4 KiB (a PLE hash page fault through the page cache)
+    const int n4 = 2400;
+    t0 = now_ms();
+    for (int i = 0; i < n4; ++i) {
+        const size_t off = (size_t)(rnd() % (tot >> 12)) << 12;
+        if ((size_t)pread(rfd, wb, 4096, (off_t)off) != 4096) break;
+    }
+    ms = now_ms() - t0;
+    printf("R {\"cfdisk\":{\"rand4k\":{\"n\":%d,\"ms\":%.0f,\"iops\":%.0f}}}\n", n4, ms, n4 / (ms / 1000.0));
+    // mmap first-fault: 16 scattered 90 B rows (the PLE gather shape: 16 rows x 90 B = 1440 B/token)
+    if (!od) posix_fadvise(rfd, 0, 0, POSIX_FADV_DONTNEED);
+    void* mm = mmap(nullptr, tot, PROT_READ, MAP_SHARED, rfd, 0);
+    if (mm == MAP_FAILED) {
+        printf("R {\"cfdisk\":{\"mmap\":\"fail\"}}\n");
+    } else {
+        madvise(mm, tot, MADV_RANDOM);
+        const int rounds = 800;
+        volatile unsigned sink = 0;
+        t0 = now_ms();
+        for (int i = 0; i < rounds; ++i) {
+            unsigned s = 0;
+            for (int r = 0; r < 16; ++r) {
+                const size_t off = (size_t)(rnd() % (tot - 90));
+                s += ((volatile const unsigned char*)mm)[off] + ((volatile const unsigned char*)mm)[off + 89];
+            }
+            sink += s;
+        }
+        ms = now_ms() - t0;
+        printf("R {\"cfdisk\":{\"mmap16\":{\"rounds\":%d,\"ms\":%.0f,\"us_per_round\":%.1f,\"us_per_row\":%.2f}}}\n",
+               rounds, ms, ms * 1000.0 / rounds, ms * 1000.0 / rounds / 16.0);
+        munmap(mm, tot);
+    }
+    close(rfd);
+    unlink(path.c_str());
+    free(wb);
+    printf("R {\"cfdisk\":\"done\"}\n");
+    return 0;
+}
+
+static int cf_pinned_probe(int reps) {
+    int ndev = 0;
+    CK(cudaGetDeviceCount(&ndev));
+    if (ndev > 2) ndev = 2;
+    const size_t MB = 2048, BY = MB << 20;
+    void* hp = nullptr;
+    CK(cudaHostAlloc(&hp, BY, cudaHostAllocPortable | cudaHostAllocMapped));
+    memset(hp, 0xCD, BY);
+    printf("R {\"cfpinned\":{\"mb\":%zu,\"ndev\":%d}}\n", MB, ndev);
+    unsigned* sink = nullptr;
+    float* dbuf[2] = {nullptr, nullptr};
+    for (int d = 0; d < ndev; ++d) {
+        CK(cudaSetDevice(d));
+        CK(cudaMalloc(&dbuf[d], 1 << 30));
+        CK(cudaMemset(dbuf[d], 1, 1 << 30));
+    }
+    CK(cudaMalloc(&sink, 4));
+    for (int d = 0; d < ndev; ++d) {
+        CK(cudaSetDevice(d));
+        cudaStream_t s;
+        CK(cudaStreamCreate(&s));
+        void* dp = nullptr;
+        CK(cudaHostGetDevicePointer(&dp, hp, 0));
+        for (int nb : {80, 240}) {
+            const float ms = time_burst([&] { k_read16<<<nb, 256, 0, s>>>((const float4*)dp, BY / 16, sink); }, reps);
+            printf("R {\"cfpinned\":{\"dev\":%d,\"mode\":\"zero\",\"blocks\":%d,\"us\":%.1f,\"gbps\":%.2f}}\n", d, nb,
+                   ms * 1000, MB / 1024.0 / (ms / 1000.0));
+        }
+        const float ms = time_burst(
+            [&] {
+                CK(cudaMemcpyAsync(dbuf[d], dp, 1 << 30, cudaMemcpyHostToDevice, s));
+                CK(cudaStreamSynchronize(s));
+            },
+            12);
+        printf("R {\"cfpinned\":{\"dev\":%d,\"mode\":\"memcpy\",\"gbps\":%.2f}}\n", d, 1.0 / (ms / 1000.0));
+        CK(cudaStreamSynchronize(s));
+    }
+    if (ndev == 2) {
+        // both concurrently from one host thread: the launches interleave through cudaSetDevice (a ~2 us
+        // submission cost, negligible against the ~100 ms+ read bursts) and the kernels overlap on device
+        cudaStream_t s[2] = {nullptr, nullptr};
+        void* dp[2] = {nullptr, nullptr};
+        for (int d = 0; d < 2; ++d) {
+            CK(cudaSetDevice(d));
+            CK(cudaStreamCreate(&s[d]));
+            CK(cudaHostGetDevicePointer(&dp[d], hp, 0));
+        }
+        for (int r = 0; r < 3; ++r)
+            for (int d = 0; d < 2; ++d) {
+                CK(cudaSetDevice(d));
+                k_read16<<<240, 256, 0, s[d]>>>((const float4*)dp[d], BY / 16, sink);
+            }
+        for (int d = 0; d < 2; ++d) {
+            CK(cudaSetDevice(d));
+            CK(cudaStreamSynchronize(s[d]));
+        }
+        double best = 1e30;
+        for (int w = 0; w < 3; ++w) {
+            const double t0 = now_ms();
+            for (int r = 0; r < reps; ++r)
+                for (int d = 0; d < 2; ++d) {
+                    CK(cudaSetDevice(d));
+                    k_read16<<<240, 256, 0, s[d]>>>((const float4*)dp[d], BY / 16, sink);
+                }
+            for (int d = 0; d < 2; ++d) {
+                CK(cudaSetDevice(d));
+                CK(cudaStreamSynchronize(s[d]));
+            }
+            const double ms = now_ms() - t0;
+            if (ms / reps < best) best = ms / reps;
+        }
+        printf("R {\"cfpinned\":{\"mode\":\"zero-both\",\"blocks\":240,\"gbps_per_gpu\":%.2f,\"gbps_total\":%.2f}}\n",
+               MB / 1024.0 / (best / 1000.0), 2.0 * MB / 1024.0 / (best / 1000.0));
+    }
+    CK(cudaSetDevice(0));
+    cudaFreeHost(hp);
+    for (int d = 0; d < ndev; ++d) {
+        CK(cudaSetDevice(d));
+        cudaFree(dbuf[d]);
+    }
+    printf("R {\"cfpinned\":\"done\"}\n");
+    return 0;
+}
+
+struct CFB {  // the device-side copies shared by the format runners
+    uint8_t* W = nullptr;
+    int8_t* xs = nullptr;
+    uint8_t* x8 = nullptr;
+    uint16_t* xd = nullptr;
+    int* xt = nullptr;
+    float* y = nullptr;
+    size_t wb = 0;
+};
+static void cf_dev_put(CFB& b, const std::vector<uint8_t>& W, const XQ& xq, size_t yn) {
+    b.wb = W.size();
+    CK(cudaMalloc(&b.W, W.size()));
+    CK(cudaMalloc(&b.xs, xq.K));
+    CK(cudaMalloc(&b.xd, xq.d.size() * 2));
+    CK(cudaMalloc(&b.xt, xq.t.size() * 4));
+    if (!xq.x8.empty()) CK(cudaMalloc(&b.x8, xq.x8.size()));
+    CK(cudaMalloc(&b.y, yn * 4));
+    CK(cudaMemcpy(b.W, W.data(), W.size(), cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(b.xs, xq.s8.data(), xq.K, cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(b.xd, xq.d.data(), xq.d.size() * 2, cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(b.xt, xq.t.data(), xq.t.size() * 4, cudaMemcpyHostToDevice));
+    if (!xq.x8.empty()) CK(cudaMemcpy(b.x8, xq.x8.data(), xq.x8.size(), cudaMemcpyHostToDevice));
+}
+static void cf_dev_free(CFB& b) {
+    cudaFree(b.W);
+    cudaFree(b.xs);
+    cudaFree(b.xd);
+    cudaFree(b.xt);
+    cudaFree(b.y);
+    if (b.x8) cudaFree(b.x8);
+}
+static float cf_check(const float* y, int n, const float* yh) {
+    float mx = 0;
+    for (int i = 0; i < n; ++i) mx = fmaxf(mx, fabsf(y[i] - yh[i]));
+    return mx;
+}
+
+static int cf_formats_probe(int dev, int reps) {
+    CK(cudaSetDevice(dev));
+    cudaStream_t s;
+    CK(cudaStreamCreate(&s));
+    std::vector<float> x;
+    std::vector<uint8_t> W;
+    std::vector<float> yh;
+    CFB b;
+    // --- q2k at the expert gate/up shape, then the big-N class ---
+    for (int sh = 0; sh < 2; ++sh) {
+        const int K = 2560, N = sh ? 12288 : 640;
+        gen_q2k(N, K, W);
+        gen_x(K, x);
+        XQ xq;
+        xq_build(xq, x.data(), K, 16);
+        cf_dev_put(b, W, xq, N);
+        const int NCHK = N < 64 ? N : 64;
+        yh.assign(NCHK, 0.f);
+        q2k_host(K, NCHK, W, xq, yh.data());
+        k_q2k_gemv<<<(NCHK + 7) / 8, 256, 0, s>>>(b.W, b.xs, b.xd, b.xt, b.y, K, NCHK);
+        std::vector<float> y(NCHK);
+        CK(cudaMemcpy(y.data(), b.y, NCHK * 4, cudaMemcpyDeviceToHost));
+        const float ms = time_burst([&] { k_q2k_gemv<<<(N + 7) / 8, 256, 0, s>>>(b.W, b.xs, b.xd, b.xt, b.y, K, N); }, reps);
+        printf("R {\"cfq2k\":{\"tag\":\"%s\",\"k\":%d,\"n\":%d,\"us\":%.1f,\"gbps\":%.1f,\"chk\":\"%.2e\"}}\n",
+               sh ? "attn_q" : "exp_up", K, N, ms * 1000,
+               (double)N * (K >> 8) * 84 / (ms / 1000.0) / 1e9, cf_check(y.data(), NCHK, yh.data()));
+        cf_dev_free(b);
+    }
+    // --- q4k at the lm_head class ---
+    {
+        const int K = 2560, N = 6208;  // the lm_head's real N is 248320; this fills the grid and fits VRAM
+        gen_q4k(N, K, W);
+        gen_x(K, x);
+        XQ xq;
+        xq_build(xq, x.data(), K, 32);
+        cf_dev_put(b, W, xq, N);
+        const int NCHK = 64;
+        yh.assign(NCHK, 0.f);
+        q4k_host(K, NCHK, W, xq, yh.data());
+        k_q4k_gemv<<<(NCHK + 7) / 8, 256, 0, s>>>(b.W, b.xs, b.xd, b.xt, b.y, K, NCHK);
+        std::vector<float> y(NCHK);
+        CK(cudaMemcpy(y.data(), b.y, NCHK * 4, cudaMemcpyDeviceToHost));
+        const float ms = time_burst([&] { k_q4k_gemv<<<(N + 7) / 8, 256, 0, s>>>(b.W, b.xs, b.xd, b.xt, b.y, K, N); }, reps);
+        printf("R {\"cfq4k\":{\"tag\":\"lm_head\",\"k\":%d,\"n\":%d,\"us\":%.1f,\"gbps\":%.1f,\"chk\":\"%.2e\"}}\n", K, N,
+               ms * 1000, (double)N * (K >> 8) * 144 / (ms / 1000.0) / 1e9, cf_check(y.data(), NCHK, yh.data()));
+        cf_dev_free(b);
+    }
+    // --- q51 at the hc LoRA shape ---
+    {
+        const int K = 10240, N = 320;
+        gen_q51(N, K, W);
+        gen_x(K, x);
+        XQ xq;
+        xq_build(xq, x.data(), K, 32);
+        cf_dev_put(b, W, xq, N);
+        const int NCHK = 64;
+        yh.assign(NCHK, 0.f);
+        q51_host(K, NCHK, W, xq, yh.data());
+        k_q51_gemv<<<(NCHK + 7) / 8, 256, 0, s>>>(b.W, b.xs, b.x8, b.xd, b.xt, b.y, K, NCHK);
+        std::vector<float> y(NCHK);
+        CK(cudaMemcpy(y.data(), b.y, NCHK * 4, cudaMemcpyDeviceToHost));
+        const float ms = time_burst([&] { k_q51_gemv<<<(N + 7) / 8, 256, 0, s>>>(b.W, b.xs, b.x8, b.xd, b.xt, b.y, K, N); }, reps);
+        printf("R {\"cfq51\":{\"tag\":\"hc_lora\",\"k\":%d,\"n\":%d,\"us\":%.1f,\"gbps\":%.1f,\"chk\":\"%.2e\"}}\n", K, N,
+               ms * 1000, (double)N * (K >> 5) * 24 / (ms / 1000.0) / 1e9, cf_check(y.data(), NCHK, yh.data()));
+        cf_dev_free(b);
+    }
+    // --- p4d at the expert-down shape: 10 separate launches vs 1 batched gather ---
+    {
+        const int K = 640, N = 2560, E = 10;
+        const size_t rb = (size_t)(K >> 5) * 18;
+        gen_p4d(N * E, K, W);  // E contiguous [N x rb] slabs
+        gen_x(K, x);
+        XQ xq;
+        xq_build(xq, x.data(), K, 32);
+        cf_dev_put(b, W, xq, (size_t)N * E);
+        const int NCHK = 64;
+        yh.assign((size_t)NCHK * E, 0.f);
+        p4d_host(K, NCHK, E, W, xq, yh.data());
+        for (int e = 0; e < E; ++e)
+            k_p4d_gemv<<<(NCHK + 7) / 8, 256, 0, s>>>(b.W + (size_t)e * NCHK * rb, b.xs, b.xd, b.xt,
+                                                     b.y + (size_t)e * NCHK, K, NCHK, NCHK);
+        std::vector<float> y((size_t)NCHK * E);
+        CK(cudaMemcpy(y.data(), b.y, NCHK * E * 4, cudaMemcpyDeviceToHost));
+        // 10 separate launches (the rows-per-expert pointer offset stands in for per-expert tensors)
+        const float msA = time_burst(
+            [&] {
+                for (int e = 0; e < E; ++e)
+                    k_p4d_gemv<<<(N + 7) / 8, 256, 0, s>>>(b.W + (size_t)e * N * rb, b.xs, b.xd, b.xt, b.y, K, N, N);
+            },
+            reps);
+        const float usA = msA * 1000;
+        const float msB = time_burst([&] { k_p4d_gemv<<<dim3((N + 7) / 8, 1, E), 256, 0, s>>>(b.W, b.xs, b.xd, b.xt, b.y, K, N, N); }, reps);
+        printf("R {\"cfp4d\":{\"tag\":\"exp_down\",\"k\":%d,\"n\":%d,\"e\":%d,\"sep_us\":%.1f,\"sep_gbps\":%.1f,"
+               "\"bat_us\":%.1f,\"bat_gbps\":%.1f,\"chk\":\"%.2e\"}}\n",
+               K, N, E, usA, (double)E * N * rb / (msA / 1000.0) / 1e9, msB * 1000,
+               (double)E * N * rb / (msB / 1000.0) / 1e9, cf_check(y.data(), NCHK * E, yh.data()));
+        cf_dev_free(b);
+    }
+    printf("R {\"cfformats\":\"done\"}\n");
+    return 0;
+}
+
+static int cf_probe(const char* dir, int gb, int dev, int reps) {
+    int ndev = 0;
+    CK(cudaGetDeviceCount(&ndev));
+    printf("R {\"cfprobe\":{\"gpus\":%d,\"reps\":%d}}\n", ndev, reps);
+    cf_disk_probe(dir, gb);
+    cf_pinned_probe(reps);
+    for (int d = 0; d < ndev && d < 2; ++d) dram_probe(d, reps);
+    cf_formats_probe(dev, reps);
+    printf("R {\"cfprobe\":\"done\"}\n");
+    return 0;
+}
+
 // dp4a launch (the engine's M-column path): RPL / NCH / SQ / M instantiation
 #define DK(RPL_, NCH_, SQ_, M_)                                                                                        \
     tp::launch_gemv<FAST_P4, RPL_, NCH_, false, false, tp::PRO_NONE, SQ_, 2, M_>(W, d_xq, d_xm, d_y, s, tp::ArArgs{}, tp::SegArgs{}, P)
@@ -367,7 +1088,8 @@ static const VInfo VS[] = {
 
 int main(int argc, char** argv) {
     setbuf(stdout, nullptr);  // unbuffered: a crash still leaves everything printed so far in the log
-    int dev = 0, reps = 50, only = -1, arprobe = 0, dramprobe = 0;
+    int dev = 0, reps = 50, only = -1, arprobe = 0, dramprobe = 0, cfprobe = 0, cfgb = 32;
+    const char* cfdir = ".";
     int vrun[8], nvr = 0, mflt[8], nmf = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -376,6 +1098,9 @@ int main(int argc, char** argv) {
         else if (a == "--case") only = atoi(argv[++i]);  // run one case (the stage loops cases as separate processes)
         else if (a == "--arprobe") arprobe = 1;  // r14: the P2P publish writer-count probe (exits before the case loop)
         else if (a == "--dramprobe") dramprobe = 1;  // r15: the DRAM read-stream ceiling probe (exits before the case loop)
+        else if (a == "--cfprobe") cfprobe = 1;  // r17 cf-m0: the CYBER-FROST platform+format probes (exits before the case loop)
+        else if (a == "--cfdir") cfdir = argv[++i];  // the dir the GGUF will land on (default: the cwd)
+        else if (a == "--cfgb") cfgb = atoi(argv[++i]);  // the disk-probe file size, GiB (default 32; capped at 60% free)
         else if (a == "--variants") {  // comma list of variant ids (default 0)
             std::string s = argv[++i];
             size_t pos = 0;
@@ -408,6 +1133,7 @@ int main(int argc, char** argv) {
     printf("R {\"dev\":\"%s\",\"sms\":%d}\n", prop.name, prop.multiProcessorCount);
     if (arprobe) return ar_probe(dev, reps);
     if (dramprobe) return dram_probe(dev, reps);
+    if (cfprobe) return cf_probe(cfdir, cfgb, dev, reps);
 
     int fails = 0, ran = 0;
     for (int ci = 0; ci < (int)(sizeof(CASES) / sizeof(CASES[0])); ++ci) {
