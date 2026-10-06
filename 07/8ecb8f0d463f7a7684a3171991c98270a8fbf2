@@ -1,0 +1,90 @@
+t4q/src/gguf.h
+  s_ac85989787ca8c::t_a3344c331214a4 10-11
+  s_ac85989787ca8c::t_3e476bbc7e17aa 50
+  s_ac85989787ca8c::t_fda315519ba6b0 31
+t4q/src/cf_kernels.cu
+  s_ac85989787ca8c::t_a6911270d12f3c 245
+  s_ac85989787ca8c::t_0cbc27af222494 1-6,9-181,186-244,246-303
+  s_ac85989787ca8c::t_e3f60964f7dad0 182-183
+  s_ac85989787ca8c::t_fbf3e9800b2a7a 7-8
+  s_ac85989787ca8c::t_305bb6e4c0b6be 184-185
+.gitignore
+  s_ac85989787ca8c::t_e277e76f29ea0a 17
+t4q/src/quant_cpu.cpp
+  s_ac85989787ca8c::t_709b997176801e 123-184
+t4q/src/gguf.cpp
+  s_ac85989787ca8c::t_b46206cc5168e0 33-34
+  s_ac85989787ca8c::t_0c08901bc659cd 17
+  s_ac85989787ca8c::t_fd7abdcfcb4675 156-162
+  s_ac85989787ca8c::t_e711e76a4f6e75 104-109
+t4q/src/cf_engine.cu
+  s_ac85989787ca8c::t_e7f17e25097601 3
+  s_ac85989787ca8c::t_174198b4d6b63c 1-2,4-24,26,28-33,35-203,205-207,209-212,214-259
+  s_ac85989787ca8c::t_54362780e0c423 204,208,213
+  s_ac85989787ca8c::t_c0d458116bf0d8 25,27,34
+t4q/tools/mkkernel.py
+  s_ac85989787ca8c::t_81bf0043001a1b 54,56-57
+t4q/src/kernels/gemv_ref.cu
+  s_ac85989787ca8c::t_1878c2c07e08c7 37-39
+t4q/Makefile
+  s_ac85989787ca8c::t_2e9719b0270049 7
+  s_ac85989787ca8c::t_ce4d7206a1bcb4 27
+  s_ac85989787ca8c::t_bd6ef79876c72a 24-26,28
+t4q/tools/cf_run.cu
+  s_ac85989787ca8c::t_48e6879b72fa66 63-65,69-70,72-75,78,84,89,91-92
+  s_ac85989787ca8c::t_97d46ce7af4093 1-62,66-68,71,76-77,79-83,85-88,90,93-162
+t4q/tools/stage_cf1.py
+  s_ac85989787ca8c::t_e8fd1939493371 217-219,221
+  s_ac85989787ca8c::t_bc21718b8c937f 1-212,214-216,222-259
+  s_ac85989787ca8c::t_5c5a68284679ff 213
+  s_ac85989787ca8c::t_7dfb740953eeda 220
+research/PLAN_CF.md
+  s_ac85989787ca8c::t_d93071fc8dee10 90-108
+t4q/src/cf_loader.cu
+  s_ac85989787ca8c::t_819d990608e088 231-233,239-245,279,295-335,337-344,351-352
+  s_ac85989787ca8c::t_4a0b7b4ffe12bb 4,9
+  s_ac85989787ca8c::t_c643fc6c2d517a 1-3,5-8,10-172,175-230,234-238,246-278,280-294,336,345-350,354-358
+  s_ac85989787ca8c::t_500b70c1105a70 353
+  s_ac85989787ca8c::t_4048642171ea78 173-174
+t4q/src/repack.cu
+  s_ac85989787ca8c::t_f8956e9799c385 110-112
+  s_ac85989787ca8c::t_a9a467d750fcbb 10
+  s_ac85989787ca8c::t_14b6996f27552b 47-67,80-82
+t4q/tools/oracle_dump.cpp
+  s_ac85989787ca8c::t_d111d64f1ff911 129
+  s_ac85989787ca8c::t_d441bf560a37e9 300-317,321-322
+  s_ac85989787ca8c::t_8f683fd86f967a 130-137
+  s_ac85989787ca8c::t_23a77802780481 318-320,323
+  s_ac85989787ca8c::t_f3839ca102cd15 12-13
+t4q/src/packed.h
+  s_ac85989787ca8c::t_5321ad9883874d 13-16
+t4q/src/cf_model.h
+  s_ac85989787ca8c::t_da172bbcf2bb79 1-5,7-10,13-15,24-52,56-94,99-106,108-125
+  s_ac85989787ca8c::t_de5ec500501c89 53-55
+  s_ac85989787ca8c::t_06b7d28b4d530a 6,11-12,16-23
+  s_ac85989787ca8c::t_c081fb1204fd67 126-150
+  s_ac85989787ca8c::t_48d6a73e604c81 95-98,107
+t4q/src/loader.cu
+  s_ac85989787ca8c::t_7c3a37a540f724 49-51
+  s_ac85989787ca8c::t_eb1615e0a5e3f4 31-33
+t4q/src/kernels/deq.cuh
+  s_ac85989787ca8c::t_8e08ed4da89666 85,92,94-98,101-104,108,118
+  s_ac85989787ca8c::t_9572029bb44ef0 82-84,86-91,93,99-100,105-107,109-117,119-140
+  s_ac85989787ca8c::t_cea68d27e05b01 185-210
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "078ecb8f0d463f7a7684a3171991c98270a8fbf2",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
