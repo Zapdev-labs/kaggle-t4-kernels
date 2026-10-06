@@ -113,6 +113,14 @@ struct CfCtx {
     uint8_t *raw_dev = nullptr;       // device mirror
     PackedW up_stage;                 // [TOPK*2*EE, D]   Q2_K gate|up per expert
     PackedW dn_stage;                // [TOPK*D, EE]     Q4_0 down per expert
+    // the per-pick W tables (the cf-m3 tiering mechanism, adopted by the default path): the
+    // identity tables = the staged slab views, so the batched gemvs are bit-identical to the
+    // old uniform-stride advance; the tiering swaps in per-hit resident views with zero
+    // kernel change. Built once at load (the staging bases never move), uploaded once.
+    PackedW* wt_gu = nullptr;         // device: [TOPK] the gate|up slab views
+    PackedW* wt_dn = nullptr;         // device: [TOPK] the down slab views
+    PackedW h_wt_gu[cf::TOPK] = {};   // host staging for the upload
+    PackedW h_wt_dn[cf::TOPK] = {};
     float* ye = nullptr;              // [TOPK*D] per-expert down outputs
     float* we = nullptr;              // [TOPK] renormalized router weights (device)
     float* ysh = nullptr;             // [D] shared expert out

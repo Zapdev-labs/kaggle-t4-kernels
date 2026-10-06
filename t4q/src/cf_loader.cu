@@ -341,6 +341,27 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
             CK(cudaMallocHost(&c->raw_stage, up_bytes + dn_bytes));
             CK(cudaMalloc(&c->raw_dev, up_bytes + dn_bytes));
         }
+        // the per-pick W tables: the IDENTITY views of the staged slabs (the cf-m3 tiering
+        // swaps in per-hit resident views later with zero kernel change; the staging bases
+        // never move, so this is built + uploaded ONCE). The K2 gate|up slab view: rows 2*EE,
+        // cols D - the codes plane 640 B/row, the meta 200 B/row; the P4 down slab: rows D,
+        // cols EE - the codes 320 B/row, the d 20 fp16/row (element offsets).
+        for (int p = 0; p < TOPK; p++) {
+            PackedW& v = c->h_wt_gu[p];
+            v = c->up_stage;
+            v.rows = 2 * EE;
+            v.codes = c->up_stage.codes + (size_t)p * 2 * EE * (D / 4);
+            v.meta = c->up_stage.meta + (size_t)p * 2 * EE * (size_t)(D / 256) * 20;
+            PackedW& w = c->h_wt_dn[p];
+            w = c->dn_stage;
+            w.rows = D;
+            w.codes = c->dn_stage.codes + (size_t)p * D * (EE / 2);
+            w.d = c->dn_stage.d + (size_t)p * D * (EE / 32);
+        }
+        CK(cudaMalloc(&c->wt_gu, (size_t)TOPK * sizeof(PackedW)));
+        CK(cudaMalloc(&c->wt_dn, (size_t)TOPK * sizeof(PackedW)));
+        CK(cudaMemcpy(c->wt_gu, c->h_wt_gu, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(c->wt_dn, c->h_wt_dn, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice));
         CK(cudaMallocHost(&c->h_router, (size_t)NE * 4));
         CK(cudaMallocHost(&c->we_h, (size_t)TOPK * 4));
         c->eid = new int[TOPK];

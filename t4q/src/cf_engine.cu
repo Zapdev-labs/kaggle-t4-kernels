@@ -183,16 +183,19 @@ void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
     CK(cudaMemcpyAsync(c->we, c->we_h, (size_t)TOPK * 4, cudaMemcpyHostToDevice, st));
     // gate|up gemv over the stacked staging, then the batched silu*up and the batched down gemv
     // (the r18 verdict: the batched launches are mandatory - one launch each instead of 10
-    // underfilled ones, the measured 112.2 -> 144.2 GB/s family)
-    gemv(s, c->up_stage, s.xn, s.logits, st);  // y_gu [TOPK*2*EE = 12800], borrowing the logits scratch
+    // underfilled ones, the measured 112.2 -> 144.2 GB/s family). The r19k form: the gemv runs
+    // the per-pick W table (the identity views of the staged slabs, bit-identical to the old
+    // single launch's stride math; the tiering later swaps in resident views with zero kernel
+    // change); the xn quantizes ONCE and is shared by all 10 picks (strides 0).
+    launch_quantize_q8_K(s.xn, D, s.xqk, s.xqk_b, s.xqk_d, st);
+    launch_gemv_q8k_b(c->wt_gu, FMT_K2, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0, (int64_t)2 * EE, TOPK,
+                      st);
     launch_cf_silu_mul_b(s.logits, s.ffa, EE, TOPK, st);  // [gate n | up n] per expert, stride 2n
     {  // the down gemv as one batched launch over the 10-expert SoA staging, on the Q8_0
         // pairing (the oracle's own arithmetic for the Q4_0 down experts); the ffa [TOPK][EE]
         // is flat and the expert boundaries are the 32-group boundaries, so one flat quantize
-        PackedW W = c->dn_stage;  // the per-expert view: rows = D, planes stay at the staging base
-        W.rows = D;
         launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, s.xs0, st);
-        launch_gemv_q8_0_b(W, s.xq0, s.xd0, s.xs0, c->ye, EE, D, EE / 32, TOPK, st);
+        launch_gemv_q8_0_b(c->wt_dn, D, s.xq0, s.xd0, s.xs0, c->ye, EE, D, EE / 32, TOPK, st);
     }
     // shared expert + its sigmoid gate, then the weighted combine
     gemv(s, L.sh_gate, s.xn, s.ffg, st);
@@ -271,6 +274,8 @@ void cf_free(CfCtx* c) {
     if (c->st) { cudaStreamSynchronize(c->st); cudaStreamDestroy(c->st); }
     if (c->raw_stage) cudaFreeHost(c->raw_stage);
     if (c->raw_dev) cudaFree(c->raw_dev);
+    if (c->wt_gu) cudaFree(c->wt_gu);
+    if (c->wt_dn) cudaFree(c->wt_dn);
     if (c->h_router) cudaFreeHost(c->h_router);
     if (c->we_h) cudaFreeHost(c->we_h);
     if (c->h_emb) cudaFreeHost(c->h_emb);

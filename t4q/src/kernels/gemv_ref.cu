@@ -349,6 +349,58 @@ void launch_gemv_q8k(const PackedW& W, const int8_t* xq, const int16_t* bsums, c
     }
 }
 
+// The per-pick W-table batched variant (the cf-m3 tiering mechanism, adopted by the default
+// path as its stepping stone): grid.y = the pick, and the pick's slab view is READ from
+// wt[by] (a device table of PackedW views) instead of a uniform-stride advance. With the
+// identity table (the pick's staged slab views) the pointers are exactly the ones the
+// stride math produced, so the default path is bit-identical; the tiering later swaps in
+// per-hit resident views with zero kernel change. The x/bsums/d strides are 0 when the
+// activation is shared (the y_gu gate|up gemv quantizes the xn ONCE); y advances per pick.
+template <int FMT>
+__global__ void __launch_bounds__(256) k_gemv_q8k_b(const PackedW* __restrict__ wt, const int8_t* __restrict__ xq,
+                                                   const int16_t* __restrict__ bsums, const float* __restrict__ yd,
+                                                   float* __restrict__ y, int64_t x_stride, int64_t bs_stride,
+                                                   int64_t d_stride, int64_t y_stride) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const PackedW W = wt[blockIdx.y];
+    const int64_t row = (int64_t)blockIdx.x * 8 + warp;
+    if (row >= W.rows) return;
+    const int8_t* __restrict__ xb = xq + (int64_t)blockIdx.y * x_stride;
+    const int16_t* __restrict__ bsb = bsums + (int64_t)blockIdx.y * bs_stride;
+    const float* __restrict__ db = yd + (int64_t)blockIdx.y * d_stride;
+    float* __restrict__ yb = y + (int64_t)blockIdx.y * y_stride;
+    const int64_t ng = W.cols / 32;
+    float acc = 0.f;
+    for (int64_t g = lane; g < ng; g += 32) {
+        int8_t xv[32];
+        *(int4*)xv = __ldg((const int4*)(xb + g * 32));
+        *(int4*)(xv + 16) = __ldg((const int4*)(xb + g * 32 + 16));
+        const int64_t sb = g >> 3;
+        const int sub = 2 * (int)(g & 7);  // K2: the subs s0, s0+1; K4: the bsums 2s, 2s+1
+        acc += dot_q8k<FMT>(W, row, g, xv, bsb[sb * 16 + sub], bsb[sb * 16 + sub + 1], db[sb]);
+    }
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, o);
+    if (lane == 0) yb[row] = acc;
+}
+
+void launch_gemv_q8k_b(const PackedW* wt, int fmt, int rows, const int8_t* xq, const int16_t* bsums,
+                       const float* yd, float* y, int64_t x_stride, int64_t bs_stride, int64_t d_stride,
+                       int64_t y_stride, int batch, cudaStream_t s) {
+    // rows is the HOST-side row count (the grid covers it; wt[] is device memory)
+    const unsigned G = (unsigned)((rows + 7) / 8);
+    const dim3 grid(G, batch);
+    switch (fmt) {
+        case FMT_K2:
+            k_gemv_q8k_b<FMT_K2><<<grid, 256, 0, s>>>(wt, xq, bsums, yd, y, x_stride, bs_stride, d_stride, y_stride);
+            break;
+        case FMT_K4:
+            k_gemv_q8k_b<FMT_K4><<<grid, 256, 0, s>>>(wt, xq, bsums, yd, y, x_stride, bs_stride, d_stride, y_stride);
+            break;
+        default: break;
+    }
+}
+
 // ------------------------------------------------------------------------- Q8_0 activations (the Q4_0 pairing)
 // quantize_row_q8_0_ref verbatim: d = amax/127 rounded to fp16, id = d ? 1/d : 0, q = roundf(x*id);
 // PLUS the per-32-block signed code sum (the dp4a factored bias below: sum (nib-8)*x =
@@ -421,19 +473,20 @@ __global__ void __launch_bounds__(256) k_gemv_q80(PackedW W, const int8_t* __res
     if (lane == 0) y[row] = acc;
 }
 
-// the batched variant for the 10-expert SoA-staged down slabs: grid.y = the expert, the
-// xq/xd/xs planes advance by the per-expert strides (the ffa [TOPK][EE] is flat, the expert
-// boundaries are the 32-group boundaries, so one flat quantize feeds it; the xs shares the
-// xd stride - both are per-32-block planes).
-__global__ void __launch_bounds__(256) k_gemv_q80_b(PackedW W, const int8_t* __restrict__ xq,
+// the batched variant for the 10-expert SoA-staged down slabs, in the per-pick W-table form
+// (the same mechanism as k_gemv_q8k_b): grid.y = the pick, the pick's slab view read from
+// wt[by]; the identity table (the staged slab views) is bit-identical to the old
+// uniform-stride advance. The xq/xd/xs planes advance by the per-pick strides (the ffa
+// [TOPK][EE] is flat, the expert boundaries are the 32-group boundaries, so one flat
+// quantize feeds it; the xs shares the xd stride - both per-32-block planes).
+__global__ void __launch_bounds__(256) k_gemv_q80_b(const PackedW* __restrict__ wt, const int8_t* __restrict__ xq,
                                                     const float* __restrict__ xd, const int* __restrict__ xs,
                                                     float* __restrict__ y, int64_t x_stride, int64_t y_stride,
-                                                    int64_t xd_stride, int64_t codes_stride, int64_t d_stride) {
+                                                    int64_t xd_stride) {
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const PackedW W = wt[blockIdx.y];
     const int64_t row = (int64_t)blockIdx.x * 8 + warp;
     if (row >= W.rows) return;
-    W.codes += (size_t)blockIdx.y * codes_stride;
-    W.d = (uint16_t*)((uint8_t*)W.d + (size_t)blockIdx.y * d_stride);
     const int8_t* __restrict__ xb = xq + (int64_t)blockIdx.y * x_stride;
     const float* __restrict__ db = xd + (int64_t)blockIdx.y * xd_stride;
     const int* __restrict__ sb = xs + (int64_t)blockIdx.y * xd_stride;
@@ -457,11 +510,9 @@ void launch_gemv_q8_0(const PackedW& W, const int8_t* xq, const float* xd, const
     k_gemv_q80<FMT_P4><<<G, 256, 0, s>>>(W, xq, xd, xs, y);
 }
 
-void launch_gemv_q8_0_b(const PackedW& W, const int8_t* xq, const float* xd, const int* xs, float* y,
+void launch_gemv_q8_0_b(const PackedW* wt, int rows, const int8_t* xq, const float* xd, const int* xs, float* y,
                         int64_t x_stride, int64_t y_stride, int64_t xd_stride, int batch, cudaStream_t s) {
-    // W describes ONE expert slab; the codes/d strides are per-expert byte offsets (P4)
-    const unsigned G = (unsigned)((W.rows + 7) / 8);
-    const int64_t cs = W.rows * (W.cols / 2);
-    const int64_t ds = W.rows * (W.cols / 32) * 2;
-    k_gemv_q80_b<<<dim3(G, batch), 256, 0, s>>>(W, xq, xd, xs, y, x_stride, y_stride, xd_stride, cs, ds);
+    // rows is the HOST-side row count (the grid covers it; wt[] is device memory)
+    const unsigned G = (unsigned)((rows + 7) / 8);
+    k_gemv_q80_b<<<dim3(G, batch), 256, 0, s>>>(wt, xq, xd, xs, y, x_stride, y_stride, xd_stride);
 }
