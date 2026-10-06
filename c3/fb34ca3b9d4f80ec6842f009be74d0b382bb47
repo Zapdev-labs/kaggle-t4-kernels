@@ -1,0 +1,53 @@
+t4q/src/cf_loader.cu
+  s_ac85989787ca8c::t_82572afc421363 319-324
+t4q/src/cf_model.h
+  s_ac85989787ca8c::t_6d2d09b5ac2051 88-96
+  s_ac85989787ca8c::t_5cd912858995a2 97-98
+t4q/tools/sim_q8_dots.py
+  s_ac85989787ca8c::t_7b24301bc3d376 243
+  s_ac85989787ca8c::t_25f55357fee305 1-94,98-101,103-104,107-125,128-134,136-139,141-145,147-152,154-156,158-168,170-174,176-211,223-224,226-228,232-233,235-239,242,245-247,251-256,259-263,266-271,274-276,278-287
+  s_ac85989787ca8c::t_bcabd51a19447b 126-127,135,140,146
+  s_ac85989787ca8c::t_ae3848dbd1b088 169,175
+  s_ac85989787ca8c::t_c9d028b3593641 213-214,216-222
+  s_ac85989787ca8c::t_cd15f58209589a 225,229-231,234,240-241,244,248-250,257,264,272-273
+  s_ac85989787ca8c::t_39ab7d2e69bf28 95-97,102,105-106
+  s_ac85989787ca8c::t_678f00b6e80849 212,215
+  s_ac85989787ca8c::t_946b64f19ae9f9 258,265
+  s_ac85989787ca8c::t_5406a36d136cfd 153,157
+  s_ac85989787ca8c::t_e7933edbe70660 277
+t4q/src/kernels/kernels.h
+  s_ac85989787ca8c::t_2f3f967a777187 37-38
+  s_ac85989787ca8c::t_232e39f2c9f65e 25-31
+  s_ac85989787ca8c::t_57ab90f78f4273 32-36
+t4q/src/cf_engine.cu
+  s_ac85989787ca8c::t_6cda56831761a5 189-191,194
+  s_ac85989787ca8c::t_73a02e6aa0e2bb 31-33
+  s_ac85989787ca8c::t_2cf6da1cfdb02e 195
+  s_ac85989787ca8c::t_9874ce71ae6cf3 54
+  s_ac85989787ca8c::t_e574a27642faee 17-30,34-37
+t4q/src/kernels/gemv_ref.cu
+  s_ac85989787ca8c::t_0ad495875d93af 233,237-264,266-273,275-345,347-365,367-379
+  s_ac85989787ca8c::t_1126a5678a8bd7 265,274
+  s_ac85989787ca8c::t_16fa553089b6aa 471-472
+  s_ac85989787ca8c::t_483c1540e0c31a 346
+  s_ac85989787ca8c::t_da1a016b5f3877 366
+  s_ac85989787ca8c::t_aa6ecf326a9c09 383-470,473-476,478
+  s_ac85989787ca8c::t_686ae8ba5c3c9a 477
+  s_ac85989787ca8c::t_dc81f45243fe60 161-179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c3fb34ca3b9d4f80ec6842f009be74d0b382bb47",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
