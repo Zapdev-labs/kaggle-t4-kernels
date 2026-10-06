@@ -29,8 +29,8 @@ void gemv(CfScratch& sc, const PackedW& W, const float* x, float* y, cudaStream_
         launch_quantize_q8_1(x, (int)W.cols, sc.xq1, sc.xq1_d, sc.xq1_s, st);
         launch_gemv_q8(W, sc.xq1, sc.xq1_d, sc.xq1_s, y, st);
     } else if (W.fmt == FMT_P4) {
-        launch_quantize_q8_0(x, (int)W.cols, sc.xq0, sc.xd0, st);
-        launch_gemv_q8_0(W, sc.xq0, sc.xd0, y, st);
+        launch_quantize_q8_0(x, (int)W.cols, sc.xq0, sc.xd0, sc.xs0, st);
+        launch_gemv_q8_0(W, sc.xq0, sc.xd0, sc.xs0, y, st);
     } else {
         launch_gemv(W, x, y, st);
     }
@@ -191,8 +191,8 @@ void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
         // is flat and the expert boundaries are the 32-group boundaries, so one flat quantize
         PackedW W = c->dn_stage;  // the per-expert view: rows = D, planes stay at the staging base
         W.rows = D;
-        launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, st);
-        launch_gemv_q8_0_b(W, s.xq0, s.xd0, c->ye, EE, D, EE / 32, TOPK, st);
+        launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, s.xs0, st);
+        launch_gemv_q8_0_b(W, s.xq0, s.xd0, s.xs0, c->ye, EE, D, EE / 32, TOPK, st);
     }
     // shared expert + its sigmoid gate, then the weighted combine
     gemv(s, L.sh_gate, s.xn, s.ffg, st);

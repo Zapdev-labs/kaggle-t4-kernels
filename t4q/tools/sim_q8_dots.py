@@ -165,42 +165,73 @@ def dot_k2(blk, x, xv, bs0, bs1, yd, g):
     return dall * float(a0 * is0 + a1 * is1) - dmin_ * float(bs0 * m0 + bs1 * m1)
 
 
-def dot_k4(blk, x, xv, bs0, bs1, yd, g):
-    # the kernel's group form verbatim: the group = sub g&7, bytes 32*((g&7)>>1), plane g&1
-    meta, codes = blk["meta"], blk["codes"]
-    d, dmin = h2f(f2h(meta[0])), h2f(f2h(meta[1]))
-    sc, mi = scale_min_k4(g & 7, meta[2:])
-    qs = codes
-    hin = g & 1
-    base = 32 * ((g & 7) >> 1)
-    sumi = 0
-    for l in range(32):
-        lo = (qs[base + l] >> 4) if hin else (qs[base + l] & 15)
-        sumi += lo * xv[l]
-    return (d * yd) * float(sc * sumi) - (dmin * yd) * float((bs0 + bs1) * mi)
+def sx8(v):  # a byte as a signed int8 lane
+    return v - 256 if v >= 128 else v
+
+
+def dp4a(a, b, c=0):
+    """IDP.4A.S8.S8: the 4 signed-int8 lanes of a and b dotted, plus c (int32 exact)."""
+    t = c
+    for i in range(4):
+        t += sx8((a >> (8 * i)) & 0xFF) * sx8((b >> (8 * i)) & 0xFF)
+    return t
+
+
+def lanes4(bytes_):  # 4 values -> one int32 of lanes (each byte masked, like the C++ int8 packing)
+    return (bytes_[0] & 0xFF) | ((bytes_[1] & 0xFF) << 8) | ((bytes_[2] & 0xFF) << 16) | (bytes_[3] << 24)
 
 
 def dot_q51(blk, xv, d8, s8):
+    # the kernel's dp4a form verbatim: the packed SPLIT (byte j: lo = elem j, hi = elem 16+j)
+    # packs the lanes cleanly; the elems 4q..4q+3's qh bits are the CONSECUTIVE bits (4q..4q+3)
+    # - one nibble - spread into the 4 lane positions by (n * 0x00204081 & 0x01010101) << 4
+    # (a direct 0x01010101 mask would wrongly pick bits 8 apart)
     c, qh = blk["codes"], blk["qh"]
-    qhw = qh[0] | (qh[1] << 8) | (qh[2] << 16) | (qh[3] << 24)
+    qhw = lanes4(qh)
     dx, mx = h2f(f2h(blk["d"])), h2f(f2h(blk["m"]))
-    s0 = s1 = 0
-    for j in range(16):
-        xh0 = ((qhw >> j) << 4) & 0x10
-        xh1 = (qhw >> (j + 12)) & 0x10
-        s0 += ((c[j] & 0xF) | xh0) * xv[j]
-        s1 += ((c[j] >> 4) | xh1) * xv[j + 16]
-    return (dx * d8) * float(s0 + s1) + mx * s8
+    s = 0
+    for q in range(4):
+        ci = lanes4(c[4 * q:4 * q + 4])
+        n0 = (qhw >> (4 * q)) & 0xF
+        n1 = (qhw >> (16 + 4 * q)) & 0xF
+        lo = (ci & 0x0F0F0F0F) | (((n0 * 0x00204081) & 0x01010101) << 4)
+        hi = ((ci >> 4) & 0x0F0F0F0F) | (((n1 * 0x00204081) & 0x01010101) << 4)
+        s = dp4a(lo, lanes4(xv[4 * q:4 * q + 4]), s)
+        s = dp4a(hi, lanes4(xv[16 + 4 * q:16 + 4 * q + 4]), s)
+    return (dx * d8) * float(s) + mx * s8
 
 
-def dot_q40(blk, xv, dy):
+def dot_q40(blk, xv, dy, s32):
+    # the kernel's dp4a form verbatim: lo nibbles = elems 0..15, hi = 16..31 (the packed
+    # SPLIT), and the -8 bias FACTORED: sum (nib-8)*x = sum nib*x - 8*sum x (identical int32;
+    # no overflow: |s| <= 32*15*127 + 8*32*127 << 2^31). s32 = the block's signed code sum.
     c = blk["codes"]
     d4 = h2f(f2h(blk["d"]))
-    s0 = s1 = 0
-    for j in range(16):
-        s0 += ((c[j] & 15) - 8) * xv[j]
-        s1 += ((c[j] >> 4) - 8) * xv[j + 16]
-    return float(s0 + s1) * d4 * dy
+    s = 0
+    for q in range(4):
+        ci = lanes4(c[4 * q:4 * q + 4])
+        s = dp4a(ci & 0x0F0F0F0F, lanes4(xv[4 * q:4 * q + 4]), s)
+        s = dp4a((ci >> 4) & 0x0F0F0F0F, lanes4(xv[16 + 4 * q:16 + 4 * q + 4]), s)
+    s -= 8 * s32
+    return float(s) * d4 * dy
+
+
+def dot_k4(blk, x, xv, bs0, bs1, yd, g):
+    # the kernel's dp4a form verbatim: the group = one 32-elem sub = the 32 window bytes at
+    # ONE shared nibble plane (byte l = elem l), so the lanes pack cleanly - no bias, the
+    # mins fold outside the int dot
+    meta, codes = blk["meta"], blk["codes"]
+    d, dmin = h2f(f2h(meta[0])), h2f(f2h(meta[1]))
+    sc, mi = scale_min_k4(g & 7, meta[2:])
+    base = 32 * ((g & 7) >> 1)
+    qs = codes[base:base + 32]
+    hin = g & 1
+    s = 0
+    for l in range(8):
+        qi = lanes4(qs[4 * l:4 * l + 4])
+        lo = ((qi >> 4) & 0x0F0F0F0F) if hin else (qi & 0x0F0F0F0F)
+        s = dp4a(lo, lanes4(xv[4 * l:4 * l + 4]), s)
+    return (d * yd) * float(sc * s) - (dmin * yd) * float((bs0 + bs1) * mi)
 
 
 # ---------------------------------------------------------------- the harness
@@ -261,7 +292,7 @@ def main():
                 bsum = 0.0
                 for g in range(32):
                     xv = qs[32 * g:32 * g + 32]
-                    bsum += dot(blocks[g], xv, xd[g])
+                    bsum += dot(blocks[g], xv, xd[g], sum(xv))  # s32 = the block's signed code sum
                 bad += check(name, trial, a, bsum, w, x, xd, 5)
     # the quantize round-trips: x ~ d * q (the q8_K's negative-d quirk included)
     x = [random.uniform(-2, 2) for _ in range(512)]

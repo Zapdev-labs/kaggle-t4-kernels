@@ -163,20 +163,28 @@ __device__ __forceinline__ float dot_q8(const PackedW& W, int64_t row, int64_t g
         // ((qh>>j)<<4 & 0x10 for the low half, (qh>>(j+12)) & 0x10 for the high), the two
         // 16-elem int partials, then (dx*dy)*sumi + mx*sy. The group IS the 32-elem block,
         // so the integers are bit-identical; only the cross-block order differs (~1e-6).
+        // The dp4a form: the packed SPLIT layout (byte j: lo nib = elem j, hi = elem 16+j)
+        // packs the lanes cleanly, and the qh bits fold 4 at a time: the elems 4q..4q+3's
+        // bits are the CONSECUTIVE qh bits (4q..4q+3) - one nibble - so they spread into the
+        // 4 lane positions with the magic (n * 0x00204081 & 0x01010101) << 4 (and 16+4q for
+        // the hi half; the 0x01010101 direct mask would wrongly pick bits 8 apart).
         const int64_t b = row * (W.cols / 32) + g;
-        const uint8_t* c = W.codes + b * 16;
+        const int* ci = (const int*)(W.codes + b * 16);
+        const int* xi = (const int*)x;
         const uint32_t qh = (uint32_t)W.hi[b * 4] | ((uint32_t)W.hi[b * 4 + 1] << 8) |
                             ((uint32_t)W.hi[b * 4 + 2] << 16) | ((uint32_t)W.hi[b * 4 + 3] << 24);
         const float dx = h2f(W.d[b]), mx = h2f(W.m[b]);
-        int sumi0 = 0, sumi1 = 0;
+        const int m = 0x0F0F0F0F;
+        int sumi = 0;
 #pragma unroll
-        for (int j = 0; j < 16; j++) {
-            const int xh0 = (int)(((qh >> j) << 4) & 0x10u);
-            const int xh1 = (int)((qh >> (j + 12)) & 0x10u);
-            sumi0 += ((c[j] & 0xF) | xh0) * x[j];
-            sumi1 += ((c[j] >> 4) | xh1) * x[j + 16];
+        for (int q = 0; q < 4; q++) {
+            const unsigned n0 = (qh >> (4 * q)) & 0xFu, n1 = (qh >> (16 + 4 * q)) & 0xFu;
+            const int lo = (int)((ci[q] & m) | (((n0 * 0x00204081u) & 0x01010101u) << 4));
+            const int hi = (int)(((ci[q] >> 4) & m) | (((n1 * 0x00204081u) & 0x01010101u) << 4));
+            sumi = __dp4a(lo, xi[q], sumi);
+            sumi = __dp4a(hi, xi[4 + q], sumi);
         }
-        return (dx * d8) * (float)(sumi0 + sumi1) + mx * s8;
+        return (dx * d8) * (float)sumi + mx * s8;
     } else if constexpr (FMT == FMT_K6) {
         const int64_t nb = W.cols / 256;
         const int64_t blk = row * nb + (g >> 3);
@@ -335,14 +343,15 @@ __device__ __forceinline__ float dot_q8k(const PackedW& W, int64_t row, int64_t 
         const float dminx = h2f((uint16_t)(meta[2] | (meta[3] << 8)));
         int sc, mi;
         dev_scale_min_k4((int)(g & 7), meta + 4, sc, mi);
-        const uint8_t* qs = W.codes + blk * 128 + 32 * ((g & 7) >> 1);
+        // the dp4a form: the group = one 32-elem sub = the 32 window bytes at ONE shared nibble
+        // plane (byte l = elem l), so the lanes pack cleanly - no bias, the mins fold outside
+        const int* qi = (const int*)(W.codes + blk * 128 + 32 * ((g & 7) >> 1));
+        const int* xi = (const int*)xv;
+        const int m = 0x0F0F0F0F;
         const int hin = (int)(g & 1);
         int sumi = 0;
 #pragma unroll
-        for (int l = 0; l < 32; l++) {
-            const int lo = hin ? (qs[l] >> 4) : (qs[l] & 15);
-            sumi += lo * xv[l];
-        }
+        for (int l = 0; l < 8; l++) sumi = __dp4a(hin ? (qi[l] >> 4) & m : qi[l] & m, xi[l], sumi);
         return (dx * yd) * (float)(sc * sumi) - (dminx * yd) * (float)(((int)bs0 + (int)bs1) * mi);
     } else {
         return 0.f;
@@ -382,8 +391,11 @@ void launch_gemv_q8k(const PackedW& W, const int8_t* xq, const int16_t* bsums, c
 }
 
 // ------------------------------------------------------------------------- Q8_0 activations (the Q4_0 pairing)
-// quantize_row_q8_0_ref verbatim: d = amax/127 rounded to fp16, id = d ? 1/d : 0, q = roundf(x*id).
-__global__ void k_quantize_q8_0(const float* __restrict__ x, int K, int8_t* __restrict__ xq, float* __restrict__ xd) {
+// quantize_row_q8_0_ref verbatim: d = amax/127 rounded to fp16, id = d ? 1/d : 0, q = roundf(x*id);
+// PLUS the per-32-block signed code sum (the dp4a factored bias below: sum (nib-8)*x =
+// sum nib*x - 8*sum x, so the dot never pays the per-lane -8; the 27B group_dot's pattern).
+__global__ void k_quantize_q8_0(const float* __restrict__ x, int K, int8_t* __restrict__ xq, float* __restrict__ xd,
+                                int* __restrict__ xs) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;  // K % 32 == 0
     if (i >= K) return;
     const float xi = x[i];
@@ -392,33 +404,48 @@ __global__ void k_quantize_q8_0(const float* __restrict__ x, int K, int8_t* __re
     for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
     const float d = amax / 127.0f;
     const float id = d ? 1.0f / d : 0.0f;
-    xq[i] = (int8_t)roundf(xi * id);
-    if ((i & 31) == 0) xd[i >> 5] = __half2float(__float2half_rn(d));
+    const int q = (int)roundf(xi * id);
+    xq[i] = (int8_t)q;
+    int sum = q;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+    if ((i & 31) == 0) {
+        xd[i >> 5] = __half2float(__float2half_rn(d));
+        xs[i >> 5] = sum;
+    }
 }
 
-void launch_quantize_q8_0(const float* x, int K, int8_t* xq, float* xd, cudaStream_t s) {
-    k_quantize_q8_0<<<(K + 255) / 256, 256, 0, s>>>(x, K, xq, xd);
+void launch_quantize_q8_0(const float* x, int K, int8_t* xq, float* xd, int* xs, cudaStream_t s) {
+    k_quantize_q8_0<<<(K + 255) / 256, 256, 0, s>>>(x, K, xq, xd, xs);
 }
 
 // ggml_vec_dot_q4_0_q8_0_generic verbatim (the PLAIN form - no sum fold): v = nib-8, the two
 // 16-elem int partials, then sumi * dx * dy (the left-assoc chain). The group IS the 32-block,
-// so the integers are bit-identical to the oracle's own Q4_0xQ8_0 arithmetic.
-__device__ __forceinline__ float dot_q8_0_p4(const PackedW& W, int64_t row, int64_t g, const int8_t* x, float dy) {
+// so the integers are bit-identical to the oracle's own Q4_0xQ8_0 arithmetic. The dp4a form
+// (the 27B group_dot's measured 254 GB/s class vs this family's issue-bound ~122): the lo
+// nibbles = elems 0..15, hi = 16..31 (the packed SPLIT layout), and the -8 bias factors out
+// exactly in int32: sum (nib-8)*x = sum nib*x - 8*sum x, with the block sum carried by the
+// quantize's xs plane - no overflow (|s| <= 32*15*127 + 8*32*127 << 2^31).
+__device__ __forceinline__ float dot_q8_0_p4(const PackedW& W, int64_t row, int64_t g, const int8_t* x, float dy,
+                                             int s32) {
     const int64_t b = row * (W.cols / 32) + g;
     const uint4 c4 = *(const uint4*)(W.codes + b * 16);
-    const uint8_t* c = (const uint8_t*)&c4;
-    int s0 = 0, s1 = 0;
+    const int* ci = (const int*)&c4;
+    const int* xi = (const int*)x;
+    const int m = 0x0F0F0F0F;
+    int s = 0;
 #pragma unroll
-    for (int j = 0; j < 16; j++) {
-        s0 += ((c[j] & 15) - 8) * x[j];
-        s1 += ((c[j] >> 4) - 8) * x[j + 16];
-    }
-    return (float)(s0 + s1) * h2f(W.d[b]) * dy;
+    for (int q = 0; q < 4; q++) s = __dp4a(ci[q] & m, xi[q], s);
+#pragma unroll
+    for (int q = 0; q < 4; q++) s = __dp4a((ci[q] >> 4) & m, xi[4 + q], s);
+    s -= 8 * s32;  // the factored bias: identical int32 to the per-lane (nib-8)*x form
+    return (float)s * h2f(W.d[b]) * dy;
 }
 
 template <int FMT>
 __global__ void __launch_bounds__(256) k_gemv_q80(PackedW W, const int8_t* __restrict__ xq,
-                                                  const float* __restrict__ xd, float* __restrict__ y) {
+                                                  const float* __restrict__ xd, const int* __restrict__ xs,
+                                                  float* __restrict__ y) {
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int64_t row = (int64_t)blockIdx.x * 8 + warp;
     if (row >= W.rows) return;
@@ -428,7 +455,7 @@ __global__ void __launch_bounds__(256) k_gemv_q80(PackedW W, const int8_t* __res
         int8_t xv[32];
         *(int4*)xv = __ldg((const int4*)(xq + g * 32));
         *(int4*)(xv + 16) = __ldg((const int4*)(xq + g * 32 + 16));
-        acc += dot_q8_0_p4(W, row, g, xv, xd[g]);
+        acc += dot_q8_0_p4(W, row, g, xv, xd[g], xs[g]);
     }
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, o);
@@ -436,12 +463,13 @@ __global__ void __launch_bounds__(256) k_gemv_q80(PackedW W, const int8_t* __res
 }
 
 // the batched variant for the 10-expert SoA-staged down slabs: grid.y = the expert, the
-// xq/xd planes advance by the per-expert strides (the ffa [TOPK][EE] is flat, the expert
-// boundaries are the 32-group boundaries, so one flat quantize feeds it).
+// xq/xd/xs planes advance by the per-expert strides (the ffa [TOPK][EE] is flat, the expert
+// boundaries are the 32-group boundaries, so one flat quantize feeds it; the xs shares the
+// xd stride - both are per-32-block planes).
 __global__ void __launch_bounds__(256) k_gemv_q80_b(PackedW W, const int8_t* __restrict__ xq,
-                                                    const float* __restrict__ xd, float* __restrict__ y,
-                                                    int64_t x_stride, int64_t y_stride, int64_t xd_stride,
-                                                    int64_t codes_stride, int64_t d_stride) {
+                                                    const float* __restrict__ xd, const int* __restrict__ xs,
+                                                    float* __restrict__ y, int64_t x_stride, int64_t y_stride,
+                                                    int64_t xd_stride, int64_t codes_stride, int64_t d_stride) {
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int64_t row = (int64_t)blockIdx.x * 8 + warp;
     if (row >= W.rows) return;
@@ -449,6 +477,7 @@ __global__ void __launch_bounds__(256) k_gemv_q80_b(PackedW W, const int8_t* __r
     W.d = (uint16_t*)((uint8_t*)W.d + (size_t)blockIdx.y * d_stride);
     const int8_t* __restrict__ xb = xq + (int64_t)blockIdx.y * x_stride;
     const float* __restrict__ db = xd + (int64_t)blockIdx.y * xd_stride;
+    const int* __restrict__ sb = xs + (int64_t)blockIdx.y * xd_stride;
     float* __restrict__ yb = y + (int64_t)blockIdx.y * y_stride;
     const int64_t ng = W.cols / 32;
     float acc = 0.f;
@@ -456,23 +485,24 @@ __global__ void __launch_bounds__(256) k_gemv_q80_b(PackedW W, const int8_t* __r
         int8_t xv[32];
         *(int4*)xv = __ldg((const int4*)(xb + g * 32));
         *(int4*)(xv + 16) = __ldg((const int4*)(xb + g * 32 + 16));
-        acc += dot_q8_0_p4(W, row, g, xv, db[g]);
+        acc += dot_q8_0_p4(W, row, g, xv, db[g], sb[g]);
     }
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, o);
     if (lane == 0) yb[row] = acc;
 }
 
-void launch_gemv_q8_0(const PackedW& W, const int8_t* xq, const float* xd, float* y, cudaStream_t s) {
+void launch_gemv_q8_0(const PackedW& W, const int8_t* xq, const float* xd, const int* xs, float* y,
+                      cudaStream_t s) {
     const unsigned G = (unsigned)((W.rows + 7) / 8);
-    k_gemv_q80<FMT_P4><<<G, 256, 0, s>>>(W, xq, xd, y);
+    k_gemv_q80<FMT_P4><<<G, 256, 0, s>>>(W, xq, xd, xs, y);
 }
 
-void launch_gemv_q8_0_b(const PackedW& W, const int8_t* xq, const float* xd, float* y, int64_t x_stride,
-                        int64_t y_stride, int64_t xd_stride, int batch, cudaStream_t s) {
+void launch_gemv_q8_0_b(const PackedW& W, const int8_t* xq, const float* xd, const int* xs, float* y,
+                        int64_t x_stride, int64_t y_stride, int64_t xd_stride, int batch, cudaStream_t s) {
     // W describes ONE expert slab; the codes/d strides are per-expert byte offsets (P4)
     const unsigned G = (unsigned)((W.rows + 7) / 8);
     const int64_t cs = W.rows * (W.cols / 2);
     const int64_t ds = W.rows * (W.cols / 32) * 2;
-    k_gemv_q80_b<<<dim3(G, batch), 256, 0, s>>>(W, xq, xd, y, x_stride, y_stride, xd_stride, cs, ds);
+    k_gemv_q80_b<<<dim3(G, batch), 256, 0, s>>>(W, xq, xd, xs, y, x_stride, y_stride, xd_stride, cs, ds);
 }

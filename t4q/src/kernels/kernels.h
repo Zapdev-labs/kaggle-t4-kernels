@@ -29,13 +29,15 @@ void launch_gemv_q8(const PackedW& W, const int8_t* xq, const float* xd, const f
 void launch_quantize_q8_K(const float* x, int K, int8_t* qs, int16_t* bsums, float* d, cudaStream_t s);
 void launch_gemv_q8k(const PackedW& W, const int8_t* xq, const int16_t* bsums, const float* yd, float* y,
                       cudaStream_t s);
-// q8_0 activations (the Q4_0 pairing, quantize_row_q8_0_ref verbatim): gemv reproduces the
-// current ggml's plain vec_dot_q4_0_q8_0 form (no sum fold)
-void launch_quantize_q8_0(const float* x, int K, int8_t* xq, float* xd, cudaStream_t s);
-void launch_gemv_q8_0(const PackedW& W, const int8_t* xq, const float* xd, float* y, cudaStream_t s);
+// q8_0 activations (the Q4_0 pairing, quantize_row_q8_0_ref verbatim + the per-block signed
+// sum for the dp4a's factored -8 bias): gemv reproduces the current ggml's plain
+// vec_dot_q4_0_q8_0 integer exactly (the factored form: sum nib*x - 8*sum x)
+void launch_quantize_q8_0(const float* x, int K, int8_t* xq, float* xd, int* xs, cudaStream_t s);
+void launch_gemv_q8_0(const PackedW& W, const int8_t* xq, const float* xd, const int* xs, float* y,
+                      cudaStream_t s);
 // the batched variant over SoA-staged Q4_0 expert slabs (the moe down experts)
-void launch_gemv_q8_0_b(const PackedW& W, const int8_t* xq, const float* xd, float* y, int64_t x_stride,
-                        int64_t y_stride, int64_t xd_stride, int batch, cudaStream_t s);
+void launch_gemv_q8_0_b(const PackedW& W, const int8_t* xq, const float* xd, const int* xs, float* y,
+                        int64_t x_stride, int64_t y_stride, int64_t xd_stride, int batch, cudaStream_t s);
 
 // misc.cu
 void launch_rmsnorm(const float* x, const float* w, float* y, int n, float eps, cudaStream_t s);

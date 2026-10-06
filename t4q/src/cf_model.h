@@ -96,6 +96,7 @@ struct CfScratch {
     float* xqk_d = nullptr;              // [HCD/256] the per-super-block d
     int8_t* xq0 = nullptr;               // [TOPK*EE] the q8_0 codes (the down experts, flat [TOPK][EE])
     float* xd0 = nullptr;                // [TOPK*EE/32] the fp16-rounded d
+    int* xs0 = nullptr;                  // [TOPK*EE/32] the per-32-block signed code sum (the dp4a factored -8 bias)
 };
 
 struct CfCtx {
