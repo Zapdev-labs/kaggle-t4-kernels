@@ -1374,3 +1374,53 @@ bucket is measured- or roof-closed. The paths out (low-bit, tree) are roof-dead 
 s4-activation requant loses even breaking numerics (r13 roof math). What remains is the deferred
 8000 fresh-process race fix (robustness) and the rb1 config-history mechanism (a curiosity - the
 best config does not use rb 1).
+
+## 2026-10-05 - M5 round 15 (r15): the one honest unknown left in the dominant cost - is the dp4a
+## GEMV's ~254 GB/s actually the node's DRAM ceiling, or just the best GEMV rate ever measured?
+
+### Why this question is the only one left
+After r14 every >1 ms bucket of the 47.6 ms step is measured- or roof-closed EXCEPT this: the r4-r13
+census calls the dp4a weight streams' ~254 GB/s "the DRAM roof", but 254 was the best GEMV rate ever
+measured, never a measured stream ceiling. The T4's GDDR6 is 320 GB/s theoretical; a STREAM-class
+coalesced read on a good card reaches 280-300 GB/s (88-94%). This node runs power-capped (66-67 W
+sustained, SMs 900-1050 MHz, both at ~75-79 C), and the DRAM draws real power, so the true sustained
+read ceiling could sit anywhere from ~250 (power-capped) to ~290+. The GEMV marginal bytes are
+~28 ms/step of the 47.6: if the ceiling is 254-260 the GEMV is at 97-100% of it and the closure
+stands; if it is 280+ the weight streams leave ~10% (~2.6 ms/step, ~+5.5% tok_s) and the streams'
+DRAM efficiency becomes the next lever.
+
+### The v45 design (pure measurement, no engine change)
+tc_bench --dramprobe: a dead-code-guarded coalesced 16-B read (k_read16, 12 registers) over a
+200 MB buffer (>> 6 MB L2, pure DRAM), timed with the same warmup/min-window methodology as the GEMV
+anchors, at 80/160/240 blocks x 256 threads. The anchor cases (qkvz/gateup/down/out) run in the SAME
+run on the SAME node, so the probe-vs-anchor comparison has no node band in it. No VARIANTS process
+(no engine change to A/B), so the run is ~250 s shorter and the OOM kill window moves off the bench
+phase. Matrix order: the anchor classes first (the probe's comparators), the answered attn_e twins
+late.
+
+### The decision rule
+If dramprobe <= ~260 GB/s: the GEMV closure stands rigorously - the engine is at 97-100% of the
+node's power-capped DRAM ceiling and the exact-numerics ceiling is ~66-71 tok/s, reported as final.
+If dramprobe >= ~280 GB/s: the GEMV leaves ~10% - the r16 lever is the streams' DRAM efficiency
+(load width/pattern per warp, the tile/chunk memory order, the L2 policy hints, the warp scheduling
+across the 22-44 MB per-layer walks).
+
+### v45 results: the DRAM ceiling is ~277 GB/s - the GEMV anchors sit at 75-93% of it
+The probe (this node, this run): 275.0 / 277.0 / 277.6 GB/s at 80/160/240 blocks (762->756 us per
+200 MB rep; the extra blocks buy ~1%). The SAME run's anchors (no node band in the comparison):
+qkvz M2 258.3 / M4 254.9 (93/92% of the ceiling - the best dp4a rates measured to date), down M2
+259.2 / M4 231.1, gateup M2 250.6 / M4 222.0, out M2 224.3 / M4 208.7 (75-93% per shape).
+The engine continuity: k3_dv1 70.8 / 66.05 / 70.96 (V5 pass, the best numbers to date, the spread
+on; the worker OOM kill took the matrix tail again, after all the anchors and the probe had landed).
+So the r13 "254 = the DRAM roof" was HALF right: 254 is the ISSUE roof (the dp4a's instruction
+stream at the current clocks), not the DRAM roof (277). The honest remaining stream gap at the
+verify's M4 mix is ~2-3.7 ms/step (~+4-8% tok_s) IF the per-shape rates can be lifted toward the
+ceiling - but the limiter per shape is the instruction count, not the DRAM: the pure read moves
+16 B per ~6 instructions (1 LDG.128 + 5 XOR) while the dp4a group loop moves 16 B per ~25-30
+(load, 8 dp4a, mask/shift, the q8 epilogue) - the issue side binds first at ~254-258, and the
+DRAM headroom is only reachable by cutting instructions per byte ~9-25% per shape.
+r16 is therefore a SASS census: dump the dp4a kernels' hot loops (nvdisasm on the bench cubin),
+count the real instructions per 16 B per shape/M, and rank the cut candidates (the FFMA epilogue
+folding, the x-load hoisting across the RPL rows, the mask constants, the M4 register pressure)
+against the ~9% (qkvz) to ~25% (out) per-shape instruction budgets. Only cuts that keep the
+bit-identical FFMA chains count (the V4/V5 gates).

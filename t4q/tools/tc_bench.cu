@@ -247,6 +247,47 @@ static int ar_probe(int dev, int reps) {
     return 0;
 }
 
+// r15 DRAM ceiling probe (--dramprobe): the dp4a GEMV anchors sit at ~243-253 GB/s and the r4-r13 census
+// calls that "the DRAM roof" - but 254 was the best-ever GEMV rate, never a measured stream ceiling. The
+// T4's GDDR6 is 320 GB/s theoretical; a STREAM-class coalesced read on a good card reaches 280-300
+// (88-94%). The node runs power-capped (66-67 W sustained, SMs ~900-1050 MHz), so the true ceiling could
+// sit anywhere. If it is ~254-260 the GEMV is at 97-100% of the ceiling and the closure stands; if it is
+// 280+ the GEMV weight streams leave ~10% (2.6 ms/step, ~+5.5% tok/s) and the streams' DRAM efficiency
+// becomes the next lever. Read-only (the GEMV's weight traffic is read-only; the y writes are tiny),
+// dead-code-guarded accumulation, timed with the same warmup/min-window methodology as the anchors so
+// the numbers are directly comparable, on the same node in the same run as the case anchors.
+__global__ void __launch_bounds__(256) k_read16(const float4* p, size_t n4, unsigned* sink) {
+    unsigned acc = 0;
+    const size_t stride = (size_t)gridDim.x * blockDim.x;
+    for (size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x; i < n4; i += stride) {
+        float4 v = __ldg(p + i);
+        acc ^= __float_as_uint(v.x) ^ __float_as_uint(v.y) ^ __float_as_uint(v.z) ^ __float_as_uint(v.w);
+    }
+    if (acc == 0x12345678u) sink[0] = acc;  // defeat dead-code elimination
+}
+
+static int dram_probe(int dev, int reps) {
+    CK(cudaSetDevice(dev));
+    cudaStream_t s;
+    CK(cudaStreamCreate(&s));
+    unsigned* sink = nullptr;
+    float* buf = nullptr;
+    const size_t MB = 200;
+    CK(cudaMalloc(&buf, MB * 1024 * 1024));  // >> 6 MB L2: pure DRAM stream
+    CK(cudaMalloc(&sink, 4));
+    CK(cudaMemset(buf, 1, MB * 1024 * 1024));
+    printf("R {\"dramprobe\":{\"dev\":%d,\"mb\":%zu,\"reps\":%d}}\n", dev, MB, reps);
+    for (int nb : {80, 160, 240}) {
+        float ms = time_burst([&] { k_read16<<<nb, 256, 0, s>>>((const float4*)buf, MB * 1024 * 1024 / 16, sink); },
+                              reps);
+        printf("R {\"dramprobe\":{\"blocks\":%d,\"width\":16,\"us\":%.1f,\"gbps\":%.1f}}\n", nb, ms * 1000,
+               MB * 1.048576 / ms);
+    }
+    CK(cudaStreamSynchronize(s));
+    printf("R {\"dramprobe\":\"done\"}\n");
+    return 0;
+}
+
 // dp4a launch (the engine's M-column path): RPL / NCH / SQ / M instantiation
 #define DK(RPL_, NCH_, SQ_, M_)                                                                                        \
     tp::launch_gemv<FAST_P4, RPL_, NCH_, false, false, tp::PRO_NONE, SQ_, 2, M_>(W, d_xq, d_xm, d_y, s, tp::ArArgs{}, tp::SegArgs{}, P)
@@ -326,7 +367,7 @@ static const VInfo VS[] = {
 
 int main(int argc, char** argv) {
     setbuf(stdout, nullptr);  // unbuffered: a crash still leaves everything printed so far in the log
-    int dev = 0, reps = 50, only = -1, arprobe = 0;
+    int dev = 0, reps = 50, only = -1, arprobe = 0, dramprobe = 0;
     int vrun[8], nvr = 0, mflt[8], nmf = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -334,6 +375,7 @@ int main(int argc, char** argv) {
         else if (a == "--reps") reps = atoi(argv[++i]);
         else if (a == "--case") only = atoi(argv[++i]);  // run one case (the stage loops cases as separate processes)
         else if (a == "--arprobe") arprobe = 1;  // r14: the P2P publish writer-count probe (exits before the case loop)
+        else if (a == "--dramprobe") dramprobe = 1;  // r15: the DRAM read-stream ceiling probe (exits before the case loop)
         else if (a == "--variants") {  // comma list of variant ids (default 0)
             std::string s = argv[++i];
             size_t pos = 0;
@@ -365,6 +407,7 @@ int main(int argc, char** argv) {
     CK(cudaGetDeviceProperties(&prop, dev));
     printf("R {\"dev\":\"%s\",\"sms\":%d}\n", prop.name, prop.multiProcessorCount);
     if (arprobe) return ar_probe(dev, reps);
+    if (dramprobe) return dram_probe(dev, reps);
 
     int fails = 0, ran = 0;
     for (int ci = 0; ci < (int)(sizeof(CASES) / sizeof(CASES[0])); ++ci) {

@@ -42,18 +42,10 @@ SPEC_ARGS = ["--gen", "512", "--ks", "3,4,5,6", "--dvs", "1", "--dv0_ks", "", "-
 NOP2P_ARGS = ["--gen", "256", "--ks", "3", "--dvs", "1", "--dv0_ks", "", "--sections", "ref,v4,v5"]
 RUN_NOP2P = False
 # extra processes (env at load time): (name, env, args).
-# r14: the k_ar_norm_m publish SPREAD A/B at ENGINE level (T4Q_AR_SPREAD). The v42 trace: k_ar_norm_m is
-# 4.86 ms/step (128 launches x 38 us at M4) vs the plain path's 13.9 us at M1 - and the M4-round arpub
-# A/Bs were M1-only (20 KB from one block), so the M > 1 publish (M x 20 KB through one block per row,
-# ~2.5 GB/s marginal - the per-block outstanding-store limit) was never A/B'd on a fast box. The main now
-# defaults to the spread (every block publishes its own 1 KB slice, one counter + one flag; same values,
-# same fp32 exchange, timing only - v26 measured the per-SLICE-FLAG variant losing only on a slow-P2P
-# box); ars0 runs the old one-block-per-row publish for the within-run A/B on the rb0/rb1 best configs.
-# The r13 r4a A/B is retired: v43 closed the rpl line (qkv_a stays rpl 2; rb0@rpl4 == rb0@rpl2 exactly).
-VARIANTS = [("ars0", {"T4Q_AR_SPREAD": "0"},
-             ["--gen", "512", "--ks", "3", "--dvs", "1", "--dv0_ks", "", "--sections", "v4,v5",
-              "--prompts", "P0,P1,P2", "--ngs", "0",
-              "--extra", "spec_k=3,spec_rb=1;spec_k=3,spec_tc=1,spec_rb=1"])]
+# r15: no variant - the round is pure measurement (the DRAM ceiling probe vs the GEMV anchors on the same
+# node); the r14 ars0 A/B closed the AR line (the spread stays the default, +0.6 min-over-prompts, and the
+# probe showed the P2P publish already saturates the PCIe at ~8.4 GB/s with 4 blocks, ~11 us fixed).
+VARIANTS = []
 
 
 def el():
@@ -441,15 +433,19 @@ def main():
                       f"{t4q}/tools/tc_bench.cu -o {W / 'tc_bench'}", timeout=900, logname="tc_bench_build.txt")
         if tbr == 0:
             parts = []
-            # r14 question FIRST (tiny, self-contained): the P2P publish writer-count probe - the spec path's
-            # k_ar_norm_m publish at M > 1 (M x 20 KB through one block per row) vs the spread (every block its
-            # 1 KB slice), fence + counter + flag inclusive, P2P and local dst controls at M 1/4. This anchors
-            # the engine-level T4Q_AR_SPREAD A/B (the main runs the spread, ars0 the old one-block publish).
-            prc, pout = sh(f"{W / 'tc_bench'} --arprobe --dev 0 --reps 400", timeout=600,
-                           logname="tc_bench_arprobe.txt", cwd=str(W))
-            ptail = (OUT / "logs" / "tc_bench_arprobe.txt")
+            # r15 question FIRST (tiny, self-contained): the DRAM read-stream ceiling - the r4-r13 census calls
+            # the dp4a GEMV's ~254 GB/s "the DRAM roof", but 254 was the best-ever GEMV rate, never a measured
+            # stream ceiling; the T4's GDDR6 is 320 GB/s theoretical and a STREAM-class read on a good card
+            # reaches 280-300. This node runs power-capped (66-67 W sustained), so the true ceiling could sit
+            # anywhere: if it is ~254-260 the GEMV is at 97-100% of the ceiling and the closure stands; if it is
+            # 280+ the weight streams leave ~10% (2.6 ms/step, ~+5.5% tok_s) and DRAM efficiency is the r16
+            # lever. The anchor cases below run in the SAME run on the SAME node, so the probe vs the anchors
+            # is a same-node comparison.
+            prc, pout = sh(f"{W / 'tc_bench'} --dramprobe --dev 0 --reps 40", timeout=600,
+                           logname="tc_bench_dramprobe.txt", cwd=str(W))
+            ptail = (OUT / "logs" / "tc_bench_dramprobe.txt")
             ptxt = ptail.read_text()[-2000:] if ptail.exists() else pout[-1500:]
-            parts.append(f"arprobe rc={prc}\n{ptxt}")
+            parts.append(f"dramprobe rc={prc}\n{ptxt}")
             # r13 question FIRST: the true qkv_a shape A/B (14/15: attn_e_tp/attn_e_r4, N 7168 - the engine's
             # real attention q|k|v, selftest-pinned; the stale N 4096 case stays as the control 12 attn_r4 that
             # pairs with them for the N dependence), then the real-shape continuity set (2-7, the v37/v40
@@ -459,7 +455,7 @@ def main():
             # process before the matrix, so the kill window lands mid-matrix: new-questions-first protects the
             # r13 data, each case's process leaves its CHECK lines in its own log, and a late worker-OOM kill
             # only costs the continuity columns
-            for ci in (14, 15, 12, 2, 3, 4, 5, 6, 7, 10, 0, 1):
+            for ci in (2, 4, 5, 6, 3, 7, 14, 15, 12, 10, 0, 1):
                 crc, cout = sh(f"{W / 'tc_bench'} --case {ci} --reps 100 --variants 0,1,2,3,4,5", timeout=900,
                                logname=f"tc_bench_{ci}.txt", cwd=str(W))
                 tail = (OUT / "logs" / f"tc_bench_{ci}.txt")
