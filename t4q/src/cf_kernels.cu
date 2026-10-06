@@ -301,3 +301,17 @@ void launch_cf_moe_out(const float* ye, const float* we, const float* ysh, const
                        cudaStream_t s) {
     k_cf_moe_out<<<(D + 255) / 256, 256, 0, s>>>(ye, we, ysh, sh_gate_raw, out);
 }
+
+// the 10-expert batched silu(g)*u over the stacked [gate n | up n] staging (stride 2n per expert).
+// Same expression as k_silu_mul, so bit-identical per element; one launch instead of 10 x 3-block
+// underfilled ones (the r18 verdict: the batched launch is mandatory at the measured 112->144 GB/s).
+__global__ void k_cf_silu_mul_b(const float* gu, float* out, int n_per, int stride) {
+    const int b = blockIdx.y, i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_per) return;
+    const float x = gu[(size_t)b * stride + i];
+    out[(size_t)b * n_per + i] = (x / (1.0f + expf(-x))) * gu[(size_t)b * stride + n_per + i];
+}
+
+void launch_cf_silu_mul_b(const float* gu, float* out, int n_per, int batch, cudaStream_t s) {
+    k_cf_silu_mul_b<<<dim3((n_per + 255) / 256, batch), 256, 0, s>>>(gu, out, n_per, 2 * n_per);
+}

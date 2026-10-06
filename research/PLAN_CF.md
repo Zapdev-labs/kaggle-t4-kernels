@@ -87,7 +87,7 @@ dequant rates and the platform paths are measured, no more assumptions**:
   gate marginally missed at the first cut - the mask-dp4a path is correct, the headroom is in
   the derive/load engineering at cf-m1), the launch geometry verdict (per-expert N=640 launches
   are grid-underfilled: the batched gather is mandatory, 102.7 -> 178.8 same kernel).
-- **cf-m1 - the exact-forward port, correctness-first** (BUILT r19, the Kaggle gate round
+- **cf-m1 - the exact-forward port, correctness-first** (BUILT r19, the Kagulate gate round
   pushed as kaggle/cf1): the format layer landed (FMT_K2/K4/Q51 in packed.h/deq.cuh/
   repack.cu/gemv_ref.cu/quant_cpu.cpp, all bit-exact transcriptions; the exact-u64 KV parse
   for the PLE hash constants) and the model layer landed (cf_model.h / cf_kernels.cu /
@@ -102,10 +102,17 @@ dequant rates and the platform paths are measured, no more assumptions**:
   exact-u64 (EOS 248044 cuts predecessors at-or-before it, heads 0-7 bigram 8-15 trigram).
   The tokenizer is owned by the ORACLE (the new chatw job: the GGUF chat template +
   llama_tokenize write the ids), so no t4q tokenizer port exists at all. The Kaggle round
-  (kaggle/cf1): the 82.85 GB download, the build, the oracle jobs (chatw x2, seq tail-48
-  x2, gen 32 x2), then cf_run seq (rel < 1e-3 + 48/48 top1 agree vs the oracle's own
-  tbt), gen (byte-compare the greedy), time (the steady tok/s). Gate: byte-identical
-  greedy vs llama.cpp b10975 on both prompts.
+  (kaggle/cf1): the 82.85 GB download, the build, the oracle jobs (chatw x2, seq tail-8
+  x2, gen 8 x2), then cf_run seq (rel < 1e-3 + top1 agree vs the oracle's own tbt), gen
+  (byte-compare the greedy), time (the steady tok/s), census (the router top-10 dump +
+  the local analysis). Gate: byte-identical greedy vs llama.cpp b10975 on both prompts.
+  Round state (r19b-e): five oracle-side platform bugs fixed v1-v5; v6 WEDGED past every
+  timeout and burned the weekly 30 h GPU quota (readline blocks on a silent child - the
+  v7 watchdog hardening in-tree); the v7 payload (the watchdog + the census ride-along)
+  is frozen as committed and pushed by the local 6-hourly automation when the quota
+  resets; the moe launch batching (10 launches, was 28: one batched silu_mul grid.y=10 +
+  one batched down gemv grid.y=10, bodies verbatim/bit-identical, 0 errors 64/19 regs)
+  landed r19e for the v8 round so the base failure localizes cleanly on v7.
 - **cf-m2 - the census**: the router concentration curve (section 3.2) + the per-bucket step
   trace (the 27B trace method). Verdict: the tier split for cf-m3. Gate: the curve + the
   chosen H per layer recorded, the projected tok/s with a measured miss model.

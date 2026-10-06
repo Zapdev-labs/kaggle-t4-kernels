@@ -161,19 +161,15 @@ void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
     launch_repack(c->dn_stage, GT_Q4_0, c->raw_dev + up_bytes, 0, (int64_t)TOPK * D, st);
     CK(cudaGetLastError());
     CK(cudaMemcpyAsync(c->we, c->we_h, (size_t)TOPK * 4, cudaMemcpyHostToDevice, st));
-    // gate|up gemv over the stacked staging, then per-expert silu*up and down gemv
+    // gate|up gemv over the stacked staging, then the batched silu*up and the batched down gemv
+    // (the r18 verdict: the batched launches are mandatory - one launch each instead of 10
+    // underfilled ones, the measured 112.2 -> 144.2 GB/s family)
     gemv(c->up_stage, s.xn, s.logits, st);  // y_gu [TOPK*2*EE = 12800], borrowing the logits scratch
-    for (int k = 0; k < TOPK; k++) {
-        const float* g = s.logits + (size_t)k * 2 * EE;
-        const float* u = g + EE;
-        launch_silu_mul(g, u, s.ffa + (size_t)k * EE, EE, st);
-    }
-    for (int k = 0; k < TOPK; k++) {
-        PackedW W = c->dn_stage;  // SoA planes: row stride uniform, so a view is just an offset
+    launch_cf_silu_mul_b(s.logits, s.ffa, EE, TOPK, st);  // [gate n | up n] per expert, stride 2n
+    {  // the down gemv as one batched launch over the 10-expert SoA staging
+        PackedW W = c->dn_stage;  // the per-expert view: rows = D, planes stay at the staging base
         W.rows = D;
-        W.codes += (size_t)k * D * (EE / 2);
-        W.d = (uint16_t*)((uint8_t*)W.d + (size_t)k * D * (EE / 32) * 2);
-        gemv(W, s.ffa + (size_t)k * EE, c->ye + (size_t)k * D, st);
+        launch_gemv_batched(W, s.ffa, c->ye, EE, D, TOPK, st);
     }
     // shared expert + its sigmoid gate, then the weighted combine
     gemv(L.sh_gate, s.xn, s.ffg, st);

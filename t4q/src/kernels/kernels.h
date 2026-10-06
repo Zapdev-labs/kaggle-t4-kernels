@@ -13,6 +13,11 @@ void launch_dequant_rows(const PackedW& W, const int32_t* rows, int n, float* ou
 
 // gemv_ref.cu: y[rows] = W x (fp32 activations, fp32 accumulation)
 void launch_gemv(const PackedW& W, const float* x, float* y, cudaStream_t s);
+// batched over SoA-staged expert slabs (P4 today): grid.y = the expert; W describes ONE slab
+// (rows/cols) while its codes/d pointers stay at the staging base; x_stride/y_stride are the
+// per-expert activation/output element strides
+void launch_gemv_batched(const PackedW& W, const float* x, float* y, int64_t x_stride, int64_t y_stride, int batch,
+                         cudaStream_t s);
 // llama.cpp-style q8_1 activations (validation mode "act_q8"): per 32 block d = amax/127 and the sum of x, both
 // rounded to fp16 (stored here as floats), q = round(x/d). gemv_q8 reproduces ggml's vec_dot_*_q8_1 formulas.
 void launch_quantize_q8_1(const float* x, int K, int8_t* xq, float* xd, float* xs, cudaStream_t s);

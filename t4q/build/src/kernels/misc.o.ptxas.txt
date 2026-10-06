@@ -3,24 +3,24 @@ ptxas info    : Compiling entry function '_Z8k_argmaxPKfiPiPf' for 'sm_75'
 ptxas info    : Function properties for _Z8k_argmaxPKfiPiPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 12 registers, used 1 barriers, 8192 bytes smem, 384 bytes cmem[0]
-ptxas info    : Compile time = 15.466 ms
+ptxas info    : Compile time = 3.466 ms
 ptxas info    : Compiling entry function '_Z10k_silu_mulPKfS0_Pfi' for 'sm_75'
 ptxas info    : Function properties for _Z10k_silu_mulPKfS0_Pfi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 15 registers, used 0 barriers, 380 bytes cmem[0]
-ptxas info    : Compile time = 7.603 ms
+ptxas info    : Compile time = 4.256 ms
 ptxas info    : Compiling entry function '_Z5k_addPfPKfi' for 'sm_75'
 ptxas info    : Function properties for _Z5k_addPfPKfi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 10 registers, used 0 barriers, 372 bytes cmem[0]
-ptxas info    : Compile time = 1.438 ms
+ptxas info    : Compile time = 0.891 ms
 ptxas info    : Compiling entry function '_Z15k_rmsnorm_headsPKfS0_Pfiiif' for 'sm_75'
 ptxas info    : Function properties for _Z15k_rmsnorm_headsPKfS0_Pfiiif
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 15 registers, used 1 barriers, 128 bytes smem, 392 bytes cmem[0]
-ptxas info    : Compile time = 11.837 ms
+ptxas info    : Compile time = 7.552 ms
 ptxas info    : Compiling entry function '_Z9k_rmsnormPKfS0_Pfif' for 'sm_75'
 ptxas info    : Function properties for _Z9k_rmsnormPKfS0_Pfif
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 15 registers, used 1 barriers, 128 bytes smem, 384 bytes cmem[0]
-ptxas info    : Compile time = 10.015 ms
+ptxas info    : Compile time = 6.368 ms

@@ -1682,3 +1682,54 @@ cf_run + oracle_dump -> the oracle jobs (chatw x2, seq tail-48 x2, gen 32 x2) ->
 cf_run seq (the last-48 logits vs the oracle's own tbt: max rel diff + top1 agree) +
 gen (byte-compare vs the oracle greedy) + time (the steady tok/s). The gate: rel
 < 1e-3 with 48/48 top1 agree AND the 32-token greedy identical on both prompts.
+
+### r19b: the v6 wedge + the v7 hardening (2f33431)
+Six kernel versions were pushed. v1-v5 fixed three ORACLE-side platform bugs (never
+t4q-side): the llama.cpp prefetch of the 26.3 GiB PLE table OOM'd the GPU (->
+T4Q_ORACLE_NGPU=0), the CUDA ssm-conv op asserts on F16 conv weights (->
+CUDA_VISIBLE_DEVICES="" for the oracle env), and the CPU repack allocates ~80 GiB of
+anon buffers (-> use_extra_bufts=false), plus two chatw path bugs. v6 (all fixes in)
+WEDGED: still RUNNING 14+ h past every designed timeout, its output unfetchable while
+the session hangs, and it consumed the WEEKLY 30 h GPU quota, so the v7 push is
+quota-rejected until the weekly reset. Root cause diagnosed: stream()'s readline
+blocks forever on a SILENT child (the timeout only trips when a line arrives). v7
+hardens in-tree: a watchdog daemon thread (flushes results.json + os._exit(0) at the
+56-min deadline - a hung child can never again cost the diagnostics), live per-16-layer
+progress prints in cf_step, and the trimmed scope (one-liner prompts, T_SEQ 8, N_GEN
+8, the CPU oracle pays ~1.16 GB of cold expert faults per token).
+
+### r19c: cf-m2 folded into the cf-m1 round (7fac149) + the round automation (this round)
+The quota is now the scarce resource (the wedge burned half the week), so every round
+multi-purposes: the v7 round also carries the cf-m2 router census - the engine hook
+(moe() appends the layer's top-10 (u32 id, f32 renormed weight) to c->census_f when
+set, zero decode-path cost), the cf_run census mode (the CFC1 header + a ~200-token
+natural-prose prompt via the oracle chatw + 32 greedy), and t4q/tools/cf_census.py
+(the LOCAL analysis, zero Kaggle time: the per-layer concentration curve, the unique
+counts, the cross-layer hot-set union, the LRU working-set simulation at the VRAM
+budget, the tier verdict at the target rate vs the measured 11.5 GB/s shared warm
+tier - smoke-tested on a synthetic 4-pool skew). Both platform gates (the wedged v6
++ the quota) are days-scale, so the round is tended by the local automation "CF Kaggle
+round gatekeeper" (every 6 h): poll the v6 status, fetch its output the moment it
+ends, push v7 when the quota clears, poll the 56-min watchdog window, and record the
+verdicts in PROGRESS/PLAN_CF + commit. The frozen v7 payload stays as committed (the
+base gates FIRST on the simplest engine - a base failure must localize cleanly; the
+speed items below ride the v8 round after the base is verified).
+
+### r19e: the moe launch batching landed (in-tree, for the v8 round)
+The engine audit vs the r18 verdicts: the up/gate repack was already the batched
+full-grid launch (one 12800-row launch = the 178.8 GB/s pattern), but moe() still ran
+10 separate silu_mul launches (EE=640 -> 3 blocks each, grid-underfilled) + 10
+separate down gemvs per layer - ~480 avoidable launches/token, the exact 112.2 -> 144.2
+GB/s family the r18 A/B measured. Landed: k_cf_silu_mul_b (one launch, grid.y = the
+expert, the same expression as k_silu_mul so bit-identical) + k_gemv_b (the batched
+gemv, grid.y = the expert, the per-row body VERBATIM from k_gemv, the SoA plane
+strides = rows*(cols/2) / rows*(cols/32)*2 - exactly the old per-expert view offsets)
++ launch_gemv_batched (P4 today; other formats grow a case when a tier needs them).
+moe() now: 2 repack + 1 y_gu gemv + 1 batched silu + 1 batched down gemv + 4 shared
++ 1 combine = 10 launches (was 28). Build-validated (0 errors, k_gemv_b 64 regs = the
+gemv family class, k_cf_silu_mul_b 19 regs, zero spill). The PLE "1-step-ahead
+prefetch" idea from r18 dies honestly: the logits -> argmax -> next-token dependency
+is a hard chain, there is NO window to prefetch into in the greedy loop (the warm
+row cost is ~20-50 us/token, measurable at the round's mean_ms). The bigger remaining
+launch lever is the cf-m3 CUDA-graph capture (the static-shape sections), not more
+kernel fusions.

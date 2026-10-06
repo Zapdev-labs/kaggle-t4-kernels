@@ -144,6 +144,7 @@ void launch_cf_ple_gated(const float* value, const float* gate, float* gated, cu
 void launch_cf_ple_conv(const float* gnorm, float* hist, const float* w, float* out, cudaStream_t s);
 void launch_cf_moe_out(const float* ye, const float* we, const float* ysh, const float* sh_gate_raw, float* out,
                         cudaStream_t s);
+void launch_cf_silu_mul_b(const float* gu, float* out, int n_per, int batch, cudaStream_t s);
 
 // cf_engine.cu / cf_loader.cu
 CfCtx* cf_load(const char* path, int max_ctx, std::string* err);
