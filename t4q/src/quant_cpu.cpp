@@ -144,18 +144,19 @@ bool dequant_row_cpu(uint32_t type, const uint8_t* x, float* y, int64_t n) {
             return true;
         }
         case GT_Q4_K: {
+            // real ggml block_q4_K order: d, dmin (fp16), scales[12] (6-bit), qs[128]
             for (int64_t i = 0; i < n / 256; i++) {
                 const uint8_t* b = x + 144 * i;
-                const float d = fp16_to_fp32(rd16(b + 140));
-                const float min = fp16_to_fp32(rd16(b + 142));
-                const uint8_t* q = b + 12;
+                const float d = fp16_to_fp32(rd16(b));
+                const float min = fp16_to_fp32(rd16(b + 2));
+                const uint8_t* q = b + 16;
                 float* yy = y + i * 256;
                 int is = 0;
                 uint8_t sc, m;
                 for (int j = 0; j < 256; j += 64) {
-                    get_scale_min_k4(is + 0, b, &sc, &m);
+                    get_scale_min_k4(is + 0, b + 4, &sc, &m);
                     const float d1 = d * sc; const float m1 = min * m;
-                    get_scale_min_k4(is + 1, b, &sc, &m);
+                    get_scale_min_k4(is + 1, b + 4, &sc, &m);
                     const float d2 = d * sc; const float m2 = min * m;
                     for (int l = 0; l < 32; ++l) *yy++ = d1 * (q[l] & 0xF) - m1;
                     for (int l = 0; l < 32; ++l) *yy++ = d2 * (q[l] >> 4) - m2;

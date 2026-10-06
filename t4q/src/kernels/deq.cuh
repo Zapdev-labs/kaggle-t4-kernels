@@ -192,14 +192,15 @@ T4Q_HD void repack_q2k_block(const PackedW& W, const uint8_t* src, int64_t dst) 
     for (int j = 0; j < 16; j++) W.meta[dst * 20 + 4 + j] = src[j];
     for (int j = 0; j < 64; j++) W.codes[dst * 64 + j] = src[16 + j];
 }
-// Q4_K source block: scales[12], qs[128], d, dmin (fp16) = 144 B. meta = [d, dmin, scales[12]] (same as K5).
+// Q4_K source block (real ggml order): d, dmin (fp16), scales[12] (6-bit), qs[128] = 144 B.
+// meta = [d, dmin, scales[12]] (the K5-style plane).
 T4Q_HD void repack_q4k_block(const PackedW& W, const uint8_t* src, int64_t dst) {
-    W.meta[dst * 16 + 0] = src[140];
-    W.meta[dst * 16 + 1] = src[141];
-    W.meta[dst * 16 + 2] = src[142];
-    W.meta[dst * 16 + 3] = src[143];
-    for (int j = 0; j < 12; j++) W.meta[dst * 16 + 4 + j] = src[j];
-    for (int j = 0; j < 128; j++) W.codes[dst * 128 + j] = src[12 + j];
+    W.meta[dst * 16 + 0] = src[0];
+    W.meta[dst * 16 + 1] = src[1];
+    W.meta[dst * 16 + 2] = src[2];
+    W.meta[dst * 16 + 3] = src[3];
+    for (int j = 0; j < 12; j++) W.meta[dst * 16 + 4 + j] = src[4 + j];
+    for (int j = 0; j < 128; j++) W.codes[dst * 128 + j] = src[16 + j];
 }
 // Q5_1 source block: d, m (fp16), qh[4], qs[16] = 24 B.
 T4Q_HD void repack_q51_block(const PackedW& W, const uint8_t* src, int64_t dst) {
