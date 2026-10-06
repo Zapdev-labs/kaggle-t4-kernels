@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -62,10 +63,15 @@ __global__ void k_embed_m(const uint8_t* __restrict__ embd, const int* tok, floa
 
 // AR + RMSNorm + q8 over M rows (grid (20, M) x 256): row r = blockIdx.y; each block reduces the full row's sum of
 // squares exactly like k_ar_norm_mb and normalizes its own 256 elements, so every row is bit-identical to the
-// single-token kernel. own / rx: slot bases (rows of 5120). pub (P2P): every block copies its slice of its row's
-// partial to the peer's mailbox; the last block to finish (local counter) sets the peer flag. WAIT: spin on the local
-// flag (peer-written). own == nullptr: no all-reduce (h is used as is).
-template <bool WAIT>
+// single-token kernel. own / rx: slot bases (rows of 5120). pub (P2P): the partial rows go to the peer's mailbox and
+// the last block to finish (local counter) sets the peer flag. WAIT: spin on the local flag (peer-written).
+// own == nullptr: no all-reduce (h is used as is).
+// SPREAD (T4Q_AR_SPREAD, default 1): every block publishes its own 1 KB slice instead of block 0 of each row copying
+// the whole 20 KB row. The M4-round arpub experiments were M1-only (20 KB from one block); at M > 1 the one-block
+// publish moves M * 20 KB through one block per row (v42 trace: M4 AR 38 us vs M1 13.9, ~2.5-3 GB/s, the per-block
+// outstanding-store limit), while the M4's other 76 blocks idle. v26 measured the per-slice-flag variant (arpub 3)
+// only on a slow-P2P box; the fast box at M > 1 was never measured. Same values, same fp32 exchange, timing only.
+template <bool WAIT, bool SPREAD = false>
 __global__ void __launch_bounds__(256) k_ar_norm_m(const float* h, float* h_out, const float* own, const float* rx,
                                                    const unsigned* flag, StepState* st, int idx,
                                                    const float* __restrict__ w, float* xn, int8_t* xq, int2* xm,
@@ -77,16 +83,20 @@ __global__ void __launch_bounds__(256) k_ar_norm_m(const float* h, float* h_out,
     const size_t ro = (size_t)row * DM;
     const unsigned ep = epoch_of(st, idx);
     const float wv = w[e];
-    if (pub_peer_flag && blockIdx.x == 0) {  // one publisher block per row: coalesced 20 KB copy, one system fence
-        const float4* src = (const float4*)(own + ro);
-        float4* dst = (float4*)(pub_peer_rx + ro);
+    if (pub_peer_flag && (SPREAD || blockIdx.x == 0)) {  // publisher: slice (SPREAD) or whole row per row-block
+        if (SPREAD) {
+            pub_peer_rx[ro + e] = own[ro + e];  // this block's 256-element (1 KB) slice, coalesced
+        } else {
+            const float4* src = (const float4*)(own + ro);
+            float4* dst = (float4*)(pub_peer_rx + ro);
 #pragma unroll
-        for (int k = 0; k < 5; k++) dst[tid + 256 * k] = src[tid + 256 * k];
+            for (int k = 0; k < 5; k++) dst[tid + 256 * k] = src[tid + 256 * k];
+        }
         __syncthreads();
         if (tid == 0) {
             __threadfence_system();
             const unsigned old = atomicAdd(cnt, 1u);
-            if (old == gridDim.y - 1) {
+            if (old == (SPREAD ? gridDim.x * gridDim.y : gridDim.y) - 1u) {
                 atomicExch(cnt, 0u);
                 __threadfence_system();
                 st_vol_u32(pub_peer_flag, ep);
@@ -768,9 +778,14 @@ struct SEnq {
         if (e != cudaSuccess) throw std::runtime_error(std::string("spec launch ") + w + ": " + cudaGetErrorString(e));
     }
     // AR idx (add) or plain norm (h used as is): rows of h_in -> [h_out], norm(w) -> xn / xq / xm rows
+    static int ar_spread() {  // T4Q_AR_SPREAD (default 1): all blocks publish 1 KB slices vs one 20 KB block per row
+        static int v = [] { const char* e = getenv("T4Q_AR_SPREAD"); return e ? atoi(e) : 1; }();
+        return v;
+    }
     void ar(int idx, const float* h_in, float* h_out, bool add, const float* w, float* xn, int8_t* xq, int2* xm,
             int M) {
         const dim3 grid(20, M);
+        const bool sp = ar_spread() != 0;
         if (!add) {
             k_ar_norm_m<false><<<grid, 256, 0, s>>>(h_in, nullptr, nullptr, nullptr, nullptr, G.st, idx, w, xn, xq, xm,
                                                     nullptr, nullptr, nullptr);
@@ -781,8 +796,14 @@ struct SEnq {
         const size_t so = (size_t)sl * MMAX * DM;
         const float* own = B.part + so;
         if (S.p2p) {
-            k_ar_norm_m<true><<<grid, 256, 0, s>>>(h_in, h_out, own, B.rx[mb] + so, B.flag[mb] + sl, G.st, idx, w,
-                                                   xn, xq, xm, B.peer_rx[mb] + so, B.peer_flag[mb] + sl, B.cnt + mb);
+            if (sp)
+                k_ar_norm_m<true, true><<<grid, 256, 0, s>>>(
+                        h_in, h_out, own, B.rx[mb] + so, B.flag[mb] + sl, G.st, idx, w, xn, xq, xm, B.peer_rx[mb] + so,
+                        B.peer_flag[mb] + sl, B.cnt + mb);
+            else
+                k_ar_norm_m<true, false><<<grid, 256, 0, s>>>(
+                        h_in, h_out, own, B.rx[mb] + so, B.flag[mb] + sl, G.st, idx, w, xn, xq, xm, B.peer_rx[mb] + so,
+                        B.peer_flag[mb] + sl, B.cnt + mb);
         } else {
             k_pull_m<<<M, 640, 0, s>>>(B.hflag[mb] + sl, B.hrx[mb] + so, B.rx[mb] + so, G.st, idx, own,
                                        B.peer_rx[mb] + so, B.peer_flag[mb] + sl, B.cnt + 2 + mb);

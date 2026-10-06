@@ -42,17 +42,15 @@ SPEC_ARGS = ["--gen", "512", "--ks", "3,4,5,6", "--dvs", "1", "--dv0_ks", "", "-
 NOP2P_ARGS = ["--gen", "256", "--ks", "3", "--dvs", "1", "--dv0_ks", "", "--sections", "ref,v4,v5"]
 RUN_NOP2P = False
 # extra processes (env at load time): (name, env, args).
-# r13/r14: the qkv_a (attention q|k|v, N 7168 K 5120) repack A/B at ENGINE level. The v42 bench A/B at the
-# TRUE shape refuted the repack per-GEMV (M4 dp4a 243.1 vs 239.4, TC AR64 178.1 vs 177.8, rpl4 -30% at M8
-# dp4a) - but the v42 r4a variant showed TWO anomalies its bench anchors contradict: x_k3_rb1 (rb=1,
-# dp4a) jumped to rb=0 speed (54.95 -> 68.16 tok/s, +24%, all 3 prompts, same node, same run) right after
-# the k3_dv1 (rb=0) config ERRORED (the 4-s AR-wait watchdog 8000 on its first spec step), and the class
-# landed +1.2% above the main's rb0 best on every prompt. Either the errored config left the engine
-# running rb0 semantics (an option-state artifact) or the repack removes a real ~10 ms/step rb=1 penalty.
-# v43 settles it: the v4 section warms the spec machinery (spec-enter + first-step) so k3_dv1 (rb0) runs
-# clean at rpl4, and the within-variant rb0/rb1 pair plus the main's rpl2 pair (47.6/57.7 ms per step)
-# decide. If rb0@rpl4 > rb0@rpl2 the default flips; if the pair matches rpl2 the line closes.
-VARIANTS = [("r4a", {"T4Q_RPL_QKV_A": "4"},
+# r14: the k_ar_norm_m publish SPREAD A/B at ENGINE level (T4Q_AR_SPREAD). The v42 trace: k_ar_norm_m is
+# 4.86 ms/step (128 launches x 38 us at M4) vs the plain path's 13.9 us at M1 - and the M4-round arpub
+# A/Bs were M1-only (20 KB from one block), so the M > 1 publish (M x 20 KB through one block per row,
+# ~2.5 GB/s marginal - the per-block outstanding-store limit) was never A/B'd on a fast box. The main now
+# defaults to the spread (every block publishes its own 1 KB slice, one counter + one flag; same values,
+# same fp32 exchange, timing only - v26 measured the per-SLICE-FLAG variant losing only on a slow-P2P
+# box); ars0 runs the old one-block-per-row publish for the within-run A/B on the rb0/rb1 best configs.
+# The r13 r4a A/B is retired: v43 closed the rpl line (qkv_a stays rpl 2; rb0@rpl4 == rb0@rpl2 exactly).
+VARIANTS = [("ars0", {"T4Q_AR_SPREAD": "0"},
              ["--gen", "512", "--ks", "3", "--dvs", "1", "--dv0_ks", "", "--sections", "v4,v5",
               "--prompts", "P0,P1,P2", "--ngs", "0",
               "--extra", "spec_k=3,spec_rb=1;spec_k=3,spec_tc=1,spec_rb=1"])]
@@ -443,6 +441,15 @@ def main():
                       f"{t4q}/tools/tc_bench.cu -o {W / 'tc_bench'}", timeout=900, logname="tc_bench_build.txt")
         if tbr == 0:
             parts = []
+            # r14 question FIRST (tiny, self-contained): the P2P publish writer-count probe - the spec path's
+            # k_ar_norm_m publish at M > 1 (M x 20 KB through one block per row) vs the spread (every block its
+            # 1 KB slice), fence + counter + flag inclusive, P2P and local dst controls at M 1/4. This anchors
+            # the engine-level T4Q_AR_SPREAD A/B (the main runs the spread, ars0 the old one-block publish).
+            prc, pout = sh(f"{W / 'tc_bench'} --arprobe --dev 0 --reps 400", timeout=600,
+                           logname="tc_bench_arprobe.txt", cwd=str(W))
+            ptail = (OUT / "logs" / "tc_bench_arprobe.txt")
+            ptxt = ptail.read_text()[-2000:] if ptail.exists() else pout[-1500:]
+            parts.append(f"arprobe rc={prc}\n{ptxt}")
             # r13 question FIRST: the true qkv_a shape A/B (14/15: attn_e_tp/attn_e_r4, N 7168 - the engine's
             # real attention q|k|v, selftest-pinned; the stale N 4096 case stays as the control 12 attn_r4 that
             # pairs with them for the N dependence), then the real-shape continuity set (2-7, the v37/v40

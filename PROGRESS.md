@@ -1240,3 +1240,114 @@ better; but it breaks the V4/V5 bit-identity gates and the tok/s effect rides th
 ACCEPTANCE rate, unmeasured). r14: either measure that acceptance-vs-speed tradeoff once, or accept
 the TC as the M7/8-only promotion and move to the next tok/s lever of PLAN_500 (the tree drafts /
 TPD = 16 on the dp4a path).
+
+## 2026-10-05 - M5 round 14 (r14): the tree drafts and low-bit refuted on measured roofs, the ngram
+## confirmed measured-dead (v3); the v42 trace census finds the AR norms as the biggest live lever
+## (4.86 ms/step, 128 x 38 us at M4 - the publish runs through one block per row); the SPREAD publish
+## (every block its 1 KB slice, one counter + one flag, T4Q_AR_SPREAD) is the r14 A/B
+
+### The r13-chosen lever (tree drafts / TPD 16) dies on the measured M-scaling roof
+The tree needs the TC verify at M 16 (TPD = 16, a 2-m-tile variant of gemv_tc, same weight bytes,
+~2x mma work). The honest roof check kills it without kernel work: the TC verify degrades ~20% from
+M2 to M8 (gateup AR64 179.5 -> 143.1 GB/s), so a 2-m-tile M16 lands ~85-100 GB/s; a depth-4 B = 2
+tree (E ~ 4.6 tokens/step at per-level top-2 coverage ~0.95) needs ~64 verify columns through
+that rate -> a ~97 ms step ~ 47 tok/s, a LOSS to the current 66-72. The M8 AR-norm bytes double
+again with M (M x 20 KB x 128), so the tree's step is worse than the naive roof. Tree closed.
+
+### Low-bit (L3) dies on the T4's issue x DRAM coincidence
+dp4a at Q4_0 sits at ~254 GB/s, which is BOTH the DRAM roof and the issue roof (the 6-8
+instructions per 4-el group / 1 byte of weight: the issue rate and the DRAM rate coincide on T4).
+A 2-bit pack saves ~1.44x the bytes but spends ~2.75x the instructions per byte (the unpack
+shift/mask chains), so the issue roof drops to ~92 GB/s < the needed ~176 - the byte saving cannot
+pay. Low-bit closed within exact numerics on this chip. (PLAN_500's honest bottom line said 500
+needs BOTH low-bit and ~7-8 tokens/step; both halves are now measured or roof-dead on 2xT4, so
+the exact-numerics ceiling here is the ~75-80 tok/s architecture fully tuned, not 500.)
+
+### The ngram lever was already measured (v3) - it stays off
+spec_ng (prompt lookup, k_ngram) was A/B'd at k = 3 in v3: ng5 66.8 / 62.6 / 66.6 vs MTP-only
+69.3 / 63.5 / 65.9 tok/s on P0/P1/P2, and ng3 was worse. The MTP head already predicts the copied
+spans of the edit prompt (P2 acceptance 0.82), so the lookup replaces drafts it would have gotten
+anyway. No re-run needed; --ngs 0 stays.
+
+### The v42 trace census (the non-GEMV ~40% of the step, per-iter us / launch counts)
+The TC-config verify decodes as (per iter): the gemvs 44.3 ms of the 54.3 ms span (81.6%, capped
+by the r4-r13 census); k_ar_norm_m 4857.8 us / 128 launches (8.9%); k_gdn_m 2231.9 / 48 (4.1%,
+rb 1 measured a net loss earlier); k_seg_m 1436.6 / 48 (2.6%); the attention split/prep/combine
+~1070 / 16 layers (2%); the lm head 1982.7 us / 1 launch (FAST_K6, Q6_K, ~161 GB/s, M-insensitive
+1939 us at M1 - a Q6_K unpack kernel, not a Q4_0 stream; ~+0.7 ms if it reached 220+, a K6-kernel
+retune candidate for a later round); the draft span 250 us/iter. At the dp4a best config the step
+is 47.6 ms: the gemvs ~31 (capped), the AR norms ~4.86 (10.2%), the rest ~10 - so the AR norms are
+the biggest live non-GEMV lever.
+
+### The AR norm decomposition: the publish runs through ONE BLOCK PER ROW
+k_ar_norm_m's publish copies each row's 20 KB fp32 partial to the peer's mailbox from block 0 of
+that row only (the m5 port kept the M1-round's "one coalesced 20 KB copy + one fence + one flag"
+design). At M4 that is 4 concurrent publisher blocks moving 80 KB per direction; the trace's M1
+(13.9 us, 20 KB) vs M4 (38 us, 80 KB) gives a ~2.5 GB/s marginal - the per-block outstanding-store
+limit, not the PCIe (the gemv AR ring publishes from many blocks and does not pay this). The
+M4-round arpub A/Bs were M1-only (20 KB from one block): arpub 2 (rows from the gemv) ~= arpub 1
+(the consumer copy) on the fast box (v10/v11, a wash), and arpub 3 (each of the 20 blocks its own
+slice + its own flag) lost only on a SLOW-P2P box (19.9 vs 15.5, v26) - the fast box at M > 1 was
+never measured, and the M > 1 shape is where the one-block publish actually hurts.
+
+### The r14 change (bit-identity trivially preserved: same values, same fp32 exchange, timing only)
+k_ar_norm_m gains a SPREAD template param (default off): every block publishes its own 256-element
+(1 KB) slice of its row, then fences + bumps ONE counter (no per-slice flags - that was arpub 3's
+protocol cost); the last of the 20 x M blocks sets the one peer flag, exactly like the current
+last-of-M. Same addresses, same fp32 bytes, same reduce/wait path - only which blocks issue the
+stores changes. T4Q_AR_SPREAD (default 1) A/Bs it at engine level: the main runs the spread, the
+ars0 variant runs the old one-block-per-row publish on the rb0/rb1 best configs. v44 also adds
+tc_bench --arprobe (the mechanism anchor): the exact publish pattern (fence + counter + flag
+inclusive, no wait) at M 1/4 x spread 0/1 x dst P2P/local, timed on the real box - if the probe
+shows the P2P write flat vs writer count, the spread is dead and the AR is at the platform's
+latency floor; if the P2P write scales with the writer count, the projected AR time at M4 is
+~15 us (from 38) and the step gains ~2.6 ms (+5-6% tok/s).
+
+### v44 results: the probe refutes the writer-scaling model - the AR is at the PCIe floor
+The arprobe ran first and landed in 1 second (rc 0, before the worker OOM kill at 1264 s took the
+rest of the matrix mid-loop; cases 2/12/14/15 landed, all in-band - attn_e_tp 248.8 vs attn_e_r4
+241.7 dp4a at M2, the rpl2 verdict repeated):
+  M=1: no-spread P2P 13.31 us / spread 12.75 (loc: 10.89 / 9.36)
+  M=4: no-spread P2P 20.42 us / spread 21.55 (loc: 14.47 / 11.27)
+The P2P publish does NOT scale with the writer count: at M4 the four one-row publisher blocks
+already saturate the link. The linear fit (M4 - M1 = 7.11 us for +60 KB) gives the marginal
+~8.4 GB/s - essentially the PCIe gen3 x16 per-direction ceiling - and the fixed ~11 us (the launch
++ the threadfence_system + the counter + the flag). My r14 model (the per-block outstanding-store
+limit, ~2.5 GB/s) was wrong: the v42 trace's M1-vs-M4 delta was the fixed-vs-marginal split, not a
+per-block cap. The local-dst control DOES scale with the writers (14.47 -> 11.27 us, the local
+write path), which is what sent the model down the wrong path.
+The engine A/B (same run): k3_dv1 MAIN (spread) 70.61 / 65.77 / 70.31 vs ars0 (old publish)
+68.71 / 65.15 / 70.58 - the spread is +1.9 / +0.6 / -0.3 (min-over-prompts +0.62, ~+1%; the P0 step
+48.45 vs 49.79 ms, -1.34 ms). The spread stays the default: no measured downside, a small real
+win on 2 of 3 prompts - plausibly the finer-grained stores interleave better with the PEER's
+concurrent publish stream, the bidirectional-contention regime the one-direction probe cannot
+reproduce. THE AR NORM LEVER IS CLOSED AT THE PLATFORM FLOOR: ~11 us of protocol per AR + the
+partial bytes at the ~8 GB/s PCIe ceiling + the wait/readback; the 38 us/AR at M4 is the floor,
+and the M4-round's per-block-fence measurements (10-14 us per K-split GEMV) already showed the
+in-gemv alternatives are worse. No further AR work pays.
+
+### The rb1 penalty is REOPENED and re-attributed: it is the config HISTORY, not the rpl
+v44's ars0 (rpl 2, the OLD publish, a SHORT sweep: k3_dv1 then x_k3_rb1) runs x_k3_rb1 at
+69.89 / 65.39 / 70.35 tok/s - NO penalty - while the SAME run's MAIN (the long sweep, rpl 2, the
+spread) runs x_k3_rb1 at 54.54 / 50.54 / 55.56 (the ~15 ms/step penalty present). The v43
+conclusion "the repack (rpl 4) removes the penalty" was CONFOUNDED: the v42/v43 r4a variant was
+both the repack AND the short sweep. The v43 main (rpl 2, old publish, long sweep) had the penalty;
+the v44 ars0 (rpl 2, old publish, short sweep) does not. The clocks refute the power/DVFS theory
+(the penalized config runs at the same clock band as the healthy ones: 879/1050 vs 919/1039).
+The discriminator is the config position: in every main (v38-v44) x_k3_rb1 runs AFTER the 8-config
+sweep (four dp4a configs then four TC configs); in both no-penalty variants it runs BEFORE any TC
+config (the --ks 3 variants run only k3_dv1 first). Something the TC configs leave behind (a
+stream attribute, a memory-pool state, a graph-capture artifact) slows the NEXT rb 1 dp4a verify
+graph by ~15 ms/step; the mechanism is unidentified. It is NOT a tok/s lever (rb 1 <= rb 0 at
+every measurement, and the best config k3_dv1 / rb 0 is unaffected - 70.61 / 65.77 / 70.31, the
+best engine numbers to date, spread on).
+
+### Where the levers stand after r14
+Closed this round: tree drafts (the TC M-scaling roof), low-bit (the issue x DRAM coincidence),
+ngram (the v3 measurement), the AR norms (the PCIe floor, this round's probe). Still live, in
+honest order: the FAST_K6 lm-head retune (~2 ms/step at ~161 GB/s; +0.6-0.8 ms/step if a better
+Q6_K unpack reaches ~220), the k_seg_m fusion into the verify GEMV epilogue (~1.4 ms/step), the
+8000 fresh-process race fix (robustness), and the rb1-penalty mechanism (a curiosity - the best
+config does not use rb 1). The 47.6 ms step is ~65% GEMV (capped at the DRAM x issue coincidence),
+~10% AR (the platform floor), ~9% gdn/seg/attn machinery. The exact-numerics ceiling on 2xT4 stays
+the ~75-80 tok/s architecture fully tuned.

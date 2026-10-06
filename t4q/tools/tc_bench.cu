@@ -157,6 +157,96 @@ static float time_burst(const std::function<void()>& fn, int reps) {
     return best;
 }
 
+// r14 AR publish probe (--arprobe): the spec path's k_ar_norm_m publish moves M*20 KB of fp32 partials to the
+// peer's mailbox through ONE block per row (M4: 4 blocks x 20 KB; the v42 trace: M4 AR 38 us vs M1 13.9, the
+// ~2.5 GB/s marginal says the per-block outstanding-store limit binds, not the PCIe). The M4-round arpub A/Bs
+// were M1-only (20 KB from one block; arpub 3's per-slice flags lost on a SLOW-P2P box, v26) - the M > 1 spread
+// (every block publishes its own 1 KB slice, one counter + one flag) was never measured on a fast box. This probe
+// times the exact publish pattern (fence + counter + flag inclusive, no wait) at M 1/4 x spread 0/1 x dst
+// P2P/local so the engine A/B (T4Q_AR_SPREAD) has a mechanism anchor. Needs 2 GPUs; prints SKIP otherwise.
+__global__ void __launch_bounds__(256) k_pub_probe(const float* own, float* dst, unsigned* flag, unsigned* cnt,
+                                                    unsigned ep, int spread) {
+    const int tid = threadIdx.x, row = blockIdx.y;
+    const size_t ro = (size_t)row * 5120;
+    if (spread || blockIdx.x == 0) {
+        if (spread) {
+            dst[ro + blockIdx.x * 256 + tid] = own[ro + blockIdx.x * 256 + tid];  // this block's 1 KB slice
+        } else {
+            const float4* src = (const float4*)(own + ro);
+            float4* d = (float4*)(dst + ro);
+#pragma unroll
+            for (int k = 0; k < 5; k++) d[tid + 256 * k] = src[tid + 256 * k];
+        }
+        __syncthreads();
+        if (tid == 0) {
+            __threadfence_system();
+            const unsigned old = atomicAdd(cnt, 1u);
+            if (old == (spread ? gridDim.x * gridDim.y : gridDim.y) - 1u) {
+                atomicExch(cnt, 0u);
+                __threadfence_system();
+                asm volatile("st.volatile.global.u32 [%0], %1;" ::"l"(flag), "r"(ep) : "memory");
+            }
+        }
+    }
+}
+
+static int ar_probe(int dev, int reps) {
+    int nd = 0;
+    CK(cudaGetDeviceCount(&nd));
+    if (nd < 2) {
+        printf("R {\"arprobe\":\"SKIP\",\"why\":\"one GPU\"}\n");
+        return 0;
+    }
+    const int peer = dev ^ 1;
+    int acc = 0;
+    CK(cudaDeviceCanAccessPeer(&acc, dev, peer));
+    if (!acc) {
+        printf("R {\"arprobe\":\"SKIP\",\"why\":\"no peer access\"}\n");
+        return 0;
+    }
+    CK(cudaSetDevice(dev));
+    cudaError_t e = cudaDeviceEnablePeerAccess(peer, 0);
+    if (e != cudaSuccess && e != cudaErrorPeerAccessAlreadyEnabled) CK(e);
+    cudaGetLastError();
+    float* peer_rx = nullptr;  // allocated on the peer, written from dev: the engine's exact P2P publish direction
+    unsigned* peer_flag = nullptr;
+    CK(cudaSetDevice(peer));
+    CK(cudaMalloc(&peer_rx, 8 * 5120 * 4));
+    CK(cudaMalloc(&peer_flag, 4));
+    float* own = nullptr;
+    float* local_dst = nullptr;
+    unsigned *cnt = nullptr, *local_flag = nullptr;
+    CK(cudaSetDevice(dev));
+    CK(cudaMalloc(&own, 8 * 5120 * 4));
+    CK(cudaMalloc(&local_dst, 8 * 5120 * 4));
+    CK(cudaMalloc(&cnt, 4));
+    CK(cudaMalloc(&local_flag, 4));
+    CK(cudaMemset(cnt, 0, 4));
+    std::vector<float> h(8 * 5120);
+    for (float& v : h) v = rndn_h();
+    CK(cudaMemcpy(own, h.data(), h.size() * 4, cudaMemcpyHostToDevice));
+    cudaStream_t s;
+    CK(cudaStreamCreate(&s));
+    unsigned ep = 0;
+    printf("R {\"arprobe\":{\"dev\":%d,\"peer\":%d,\"reps\":%d}}\n", dev, peer, reps);
+    for (int M : {1, 4}) {
+        for (int spread : {0, 1}) {
+            for (int p2p : {1, 0}) {
+                float* dst = p2p ? peer_rx : local_dst;
+                unsigned* flag = p2p ? peer_flag : local_flag;
+                float ms = time_burst([&] { k_pub_probe<<<dim3(20, M), 256, 0, s>>>(own, dst, flag, cnt, ++ep, spread); },
+                                      reps);
+                const double bytes = (double)M * 20 * 1024;  // published per launch, one direction
+                printf("R {\"arprobe\":{\"M\":%d,\"spread\":%d,\"p2p\":%d,\"us\":%.2f,\"gbps\":%.1f}}\n", M, spread, p2p,
+                       ms * 1000, bytes / (ms * 1e3) / 1e3);
+            }
+        }
+    }
+    CK(cudaStreamSynchronize(s));
+    printf("R {\"arprobe\":\"done\"}\n");
+    return 0;
+}
+
 // dp4a launch (the engine's M-column path): RPL / NCH / SQ / M instantiation
 #define DK(RPL_, NCH_, SQ_, M_)                                                                                        \
     tp::launch_gemv<FAST_P4, RPL_, NCH_, false, false, tp::PRO_NONE, SQ_, 2, M_>(W, d_xq, d_xm, d_y, s, tp::ArArgs{}, tp::SegArgs{}, P)
@@ -236,13 +326,14 @@ static const VInfo VS[] = {
 
 int main(int argc, char** argv) {
     setbuf(stdout, nullptr);  // unbuffered: a crash still leaves everything printed so far in the log
-    int dev = 0, reps = 50, only = -1;
+    int dev = 0, reps = 50, only = -1, arprobe = 0;
     int vrun[8], nvr = 0, mflt[8], nmf = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--dev") dev = atoi(argv[++i]);
         else if (a == "--reps") reps = atoi(argv[++i]);
         else if (a == "--case") only = atoi(argv[++i]);  // run one case (the stage loops cases as separate processes)
+        else if (a == "--arprobe") arprobe = 1;  // r14: the P2P publish writer-count probe (exits before the case loop)
         else if (a == "--variants") {  // comma list of variant ids (default 0)
             std::string s = argv[++i];
             size_t pos = 0;
@@ -273,6 +364,7 @@ int main(int argc, char** argv) {
     cudaDeviceProp prop{};
     CK(cudaGetDeviceProperties(&prop, dev));
     printf("R {\"dev\":\"%s\",\"sms\":%d}\n", prop.name, prop.multiProcessorCount);
+    if (arprobe) return ar_probe(dev, reps);
 
     int fails = 0, ran = 0;
     for (int ci = 0; ci < (int)(sizeof(CASES) / sizeof(CASES[0])); ++ci) {
