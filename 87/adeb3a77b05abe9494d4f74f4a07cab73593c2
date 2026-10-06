@@ -1,0 +1,32 @@
+research/PLAN_CF.md
+  s_ac85989787ca8c::t_e70c4e6e62e7ff 82-89
+  s_ac85989787ca8c::t_26468facf70444 32-33,35-62
+t4q/tools/stage_cf0.py
+  s_ac85989787ca8c::t_4775b189a225e5 1-148
+t4q/tools/tc_bench.cu
+  s_ac85989787ca8c::t_633e038c78b4c8 727
+  s_ac85989787ca8c::t_3c596f63504c45 21-22,25,28-29
+  s_ac85989787ca8c::t_c97f172f9058af 815-832,836-844
+  s_ac85989787ca8c::t_0f63c0617e9cb5 296-718,720-726,728-766,768-814,833-835,845-976,979-1011
+  s_ac85989787ca8c::t_635cf27ab53227 1136
+  s_ac85989787ca8c::t_71d825496371ef 977-978
+  s_ac85989787ca8c::t_e2a600360fa025 767
+  s_ac85989787ca8c::t_f30b6bc8e7510c 719
+  s_ac85989787ca8c::t_509dc26809cbbe 1091-1092,1101-1103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "87adeb3a77b05abe9494d4f74f4a07cab73593c2",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
