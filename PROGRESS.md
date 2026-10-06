@@ -1787,3 +1787,23 @@ round now gates base + batching + census + the q8 fast paths together; the commi
 history (2f33431 base+census, 35d8c2d batching, c3fb34c q8) is the bisect ladder if
 the gates fail.
 
+### r19i: the dp4a transplant landed (942e86d, for the v8 round)
+The r18 worklist closed, the next lever was the ordered list's #1: the q8 dot integer
+partials on the T4's IDP.4A - the 27B track's own measured class (its dp4a gemv at
+the ~254 GB/s DRAM roof vs this family's issue-bound ~122; same chip, same kernel
+shape - the measured-lever transplant, not a guess). The packed layouts pack the
+lanes cleanly: the P4's SPLIT (byte j: lo = elem j, hi = elem 16+j) with the -8 bias
+FACTORED (sum (nib-8)*x = sum nib*x - 8*sum x; the block sum carried by the quantize's
+new xs plane - the 27B group_dot's own pattern), the K4's one-nibble-plane group
+(8 dp4a, no bias, the regs DROPPED 63 -> 48), the Q51's qh nibble-spread fold
+((n * 0x00204081 & 0x01010101) << 4: the elems' 4 consecutive bits spread into the
+4 lane positions). The K2 stays scalar (the 2-bit extract dominates both ways).
+Verified: 0 errors, ZERO SPILL (q80 64 regs, q80_b 61, K4 48), the SASS emits
+IDP.4A.S8.S8 in all four paths (40/40/8/8), and the sim's dots now mirror the EXACT
+lane arithmetic - ALL OK 120/120. The sim caught TWO real bugs pre-commit: its own
+lanes4 sign-extension (python | on a negative lane sign-extends across all higher
+bytes) and THE QH FOLD: a direct 0x01010101 mask picks bits 8 APART, but the elems'
+qh bits are CONSECUTIVE - the bug was in BOTH transcriptions (the kernel's too) and
+would have cost a quota round. The v7 payload stays frozen; this rides the v8 regen
+after the base verdicts.
+

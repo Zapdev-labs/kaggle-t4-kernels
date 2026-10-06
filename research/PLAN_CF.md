@@ -115,12 +115,12 @@ dequant rates and the platform paths are measured, no more assumptions**:
   fast-activation paths in one quota-scarce round, with the bisect ladder 2f33431 ->
   35d8c2d -> c3fb34c localizing a failure. The r18 worklist is CLOSED: every K-quant/P4 gemv
   pairs the activation with the oracle's own activation quantization (Q2_K/Q4_K <-> Q8_K,
-  Q5_1 <-> Q8_1, Q4_0 <-> Q8_0, the exact ggml arithmetic, sim-verified 120/120). Next
-  speed levers, in order, all AFTER the base gates: (1) the dp4a rewrite of the q8 dot
-  integer partials (the T4 sm_75 has __dp4a; today's dots are scalar IMADs - the nibble
-  unpack makes the plain Q4_0 path the clean first candidate); (2) the cf-m3 CUDA-graph
-  capture of the static-shape sections; (3) the census-gated tiered engine (cf-m3) and
-  MTP (cf-m4).
+  Q5_1 <-> Q8_1, Q4_0 <-> Q8_0, the exact ggml arithmetic, sim-verified 120/120), and the
+  integer partials run on the T4's IDP.4A (r19i, 942e86d: the 27B's own measured class,
+  the P4's factored -8 via the xs sums plane, the K4's nibble plane, the Q51's nibble-spread
+  qh fold; the K2's 2-bit extract stays scalar by a thin margin). Next speed levers, in
+  order, all AFTER the base gates: (1) the cf-m3 CUDA-graph capture of the static-shape
+  sections; (2) the census-gated tiered engine (cf-m3) and MTP (cf-m4).
 - **cf-m2 - the census**: the router concentration curve (section 3.2) + the per-bucket step
   trace (the 27B trace method). Verdict: the tier split for cf-m3. Gate: the curve + the
   chosen H per layer recorded, the projected tok/s with a measured miss model.
