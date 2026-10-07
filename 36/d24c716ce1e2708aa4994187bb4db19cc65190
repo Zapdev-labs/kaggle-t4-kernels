@@ -1,0 +1,22 @@
+research/CF_MTP.md
+  s_ac85989787ca8c::t_ac047dea7756a7 109-114
+  s_ac85989787ca8c::t_9bf5f203695b41 108
+research/PLAN_CF.md
+  s_ac85989787ca8c::t_c7c4a607b003ef 238-251
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "36d24c716ce1e2708aa4994187bb4db19cc65190",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
