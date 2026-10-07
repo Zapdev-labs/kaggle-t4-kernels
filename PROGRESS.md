@@ -2952,3 +2952,34 @@ tensors - the index map is saved, the gu shards are single-tensor 3.36 GB files)
 the dataset push; both ride the Saturday L4 window with the r19w-r19aa battery.
 NEXT: r4 (the stage-1 tiered residency - the loader reads the slabs, the HIT branch
 dispatches FMT_IQ1S/FMT_IQ1SH) + the L4 battery.
+
+## cf-m6 r3 part 2: the packer DRIVER landed (the two CPU kernels, live-smoked, ready for the Saturday push)
+
+THE r3 PIPELINE REMAINDER: t4q/tools/stage_cfreq.py (the driver template) + the mkkernel.py
+--template/--define/--cpu extensions, generating kaggle/cfreqa/t4q-cfreqa.py (layers [0,24),
+~11.95 GB) + kaggle/cfreqb/t4q-cfreqb.py (layers [24,49) incl. the MTP, ~12.45 GB). THE FORM
+and its reasons, all forced by real limits: (1) TWO CPU-ONLY kernels, not one GPU kernel -
+the ~24.41 GB pool (49 layers x 498.07 MB; the MTP layer's ne is ALSO 512, verified from the
+shard headers, so the pool arithmetic is now exact) is over the 20 GB kernel-output cap, so
+the 49 layers split in two, each half under the 19.5 GB working dir; the runtime battery
+attaches BOTH as kernel_sources (the p/pg pattern) - NO dataset push, NO secrets; and the CPU
+kernel burns NO GPU quota, keeping the whole Saturday window for the runtime battery. (2) The
+streaming: the index fetched at runtime (no baked map), the shard headers cached (one 8-B +
+one header read each), the tensors streamed in 256 MB range SEGMENTS with per-segment retry +
+resume from the segment's own start (10 attempts, the rewind handled), the producer thread one
+layer ahead over 2 rotating raw slots on /tmp (~10 GB peak). (3) The atomic slab: pack to
+.tmp, the byte-count check to the byte (96 + ne*1280*500 + ne*2560*130), the --verify
+32-row sample against the raw sources (deq32-vs-ref + the src-RMSE diag), THEN the rename -
+a killed session never leaves a partial slab. (4) manifest.json = the r4 loader's input (the
+per-layer file/ne/kind/bytes/verify). (5) The r19b/r19f watchdog pair at DEADLINE 11 h of
+the 12 h CPU cap. THE GATES: both generated drivers parse (ast) with the defines verified
+(LO=0/HI=24 and LO=24/HI=49), the metadata is CPU (enable_gpu false, no machine shape, no
+sources); and THE LIVE SMOKE against the real endpoint - the index fetch, the shard-header
+parse, ANONYMOUS 206 range reads, layer 0's gu = BF16 [512,1280,2560] with the offsets
+summing to EXACTLY 3,355,443,200 B (the number the r3 study pinned), real weight values
+decoding (|w| ~ 1.2 class), the MTP dn [512,2560,640] on its own shard, and the ne=512 ->
+498.1 MB slab arithmetic confirmed against the packer's plane math. The honest note: the
+~1.2 weight magnitude class (vs the synthetic gate's 0.02-0.17) is amplitude-independent
+for the quantizer, but the REAL RMSE lands only in the per-layer verify at the pack - the
+manifest carries it. NEXT: r4 (the stage-1 tiered residency - the loader reads the slabs +
+the HIT-branch mixed-format dispatch), then the Saturday pushes + the L4 battery.
