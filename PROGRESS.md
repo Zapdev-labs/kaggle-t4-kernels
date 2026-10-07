@@ -2380,7 +2380,7 @@ cf_draft_step is called. THE LANDING, per the frozen CF_MTP.md section 1 forward
   ACTUAL token at i+1 - the prompt id or the trunk's own greedy argmax) + the next pair
   (x_{i+1}, h_i); prints alpha1 (the 1-step acceptance the whole MTP speed math rides
   on) + the draft/trunk mean ms + the first disagreement position.
-Build: libt4q + cf_run 0 errors, 0 warnings in the 12.8 podman (k_cf_eh_gather 19 regs,
+Build: libt4q + cf_run 0 errors, 0 warnings in the 12.8 podman (k_cf_eh_gather 8 regs,
 0 spills; k_cf_qk_norm_rope's pre-existing 32-B stack frame unchanged vs HEAD).
 RUNTIME VERIFICATION (the L4 host): T4Q_CF_MTP=1 + `cf_run draft <model> <ids> <n>` ->
 the measured alpha1 decides the adoption class (the 27B's class ~2.2 accepted/verify;
@@ -2393,3 +2393,84 @@ rounds): the catch-up (pending_h ring), the batched verify (THE GATE: the k+1 ro
 MUST reproduce the sequential decode bit-exactly), the rollback, the speculative
 driver, k tuned on the measured acceptance. The PLAN_CF cf-m4 block carries the landed
 note.
+
+## r19x - the MTP verify LANDED in the GATE form (build-clean, THE GATE tool with it)
+
+The third lever's second half: the batched verify (CF_MTP.md section 5), landed as the
+per-row GATE form. Loaded under the same T4Q_CF_MTP=1 gate (k rides T4Q_CF_K, default 3
+-> nr = k+1 rows, the MAXR=8 bound); INERT until cf_verify is called. NO new kernels -
+the whole round is the driver + the union window + the per-row planes:
+- CfVerify (cf_model.h): the [MAXR] per-row scratch (the trunk's plane list verbatim -
+  every field, the activation planes sized for the largest gemv K as always), the
+  per-row pos words (h_pos pinned [MAXR] -> d_pos device [MAXR]; the row's
+  pos_dev = d_pos + r), the per-row pinned host planes (h_emb/h_ple/h_router/we_h/
+  h_logits, [MAXR]-strided), the per-row eid/we host arrays, the per-row W tables
+  ([MAXR][TOPK] host + device), the UNION slabs ([nr*TOPK*2EE, D] K2 / [nr*TOPK*D, EE]
+  P4 - the worst case nr*TOPK experts, the dedup usually ~1.5x, ~80 MB at nr=4, a VRAM
+  check at load), the union maps (uidx [NE], uids [MAXR*TOPK], the device uids for the
+  UVA scatters), the per-row ye/ysh/sh_gate_raw planes.
+- cf_verify (cf_engine.cu): THE GATE FORM - nr candidate rows through the whole trunk
+  in ONE pass. Every op is the sequential step's op with the ROW's slice (the same
+  kernels, the same args, the same per-row order): the head (the per-row embedding
+  dequants into the pinned [nr][D] slices, the toks records, the pos words - the writes
+  precede the ONE upload's enqueue, then the per-row emb H2D + res_init), the per-layer
+  loop (per row: [the PLE twin at layer 1 - ple_host_core into the row's pinned slice
+  (the hash at the row's pos), the H2D + the 8 PLE launches verbatim with the row's
+  scratch (the ple_key/ple_query/ple_s/ple_gate/ple_gated buffers shared - the stream
+  order serializes the rows, the same device-side reuse the sequential steps make) +
+  the ring evolving] -> the pre twin (the hc mix, the attention twin with the row's
+  pos_dev, or deltanet on the row's scratch with L.S/L.conv_state evolving in row
+  order) -> the combine -> the ffn mix -> the router twin (the gemv borrows the row's
+  logits scratch, the D2H lands in the row's pinned router slice)), then the ONE
+  batched host window: the sync, the per-row order-exact top-10 (host_top10_row - the
+  r19t bar, ONE source with the trunk's host_top10), the union dedup (uidx/uids), the
+  union staging (the OFF chunked passes through the trunk's raw_stage - TOPK experts
+  per pass, the same pass form as the hot-set tier / the UVA union scatters - each
+  union expert's own slab read once through the registered aliases, the same address
+  math as the OFF passes' memcpy sources, the same repack decode - byte-identical by
+  construction), the per-row W-table compose (the tiering's hit-branch view math
+  verbatim, the row's pick k -> the union slot of eid[r][k]), the uploads (the wt
+  [nr][TOPK] + the we), then the per-row moe rest twin (the batched gu gemv on the
+  row's W table + the shared quantized mixed, silu_mul_b, the batched down gemv into
+  the row's ye slice, the shared expert, the moe_out on the row's we slice, the
+  combine), then the per-row tail twin (the final mixer, the shared lm_head into the
+  row's logits scratch, the D2H into the row's pinned h_logits slice). The rows' logits
+  land in v->h_logits [nr][V] (row r = the prediction for pos+r+1); the trunk's pos
+  advances by nr; c->have_logits = false (the trunk's h_logits is stale).
+- THE TRAP CLASSES pre-empted by design (the r19w self-review sweep found no NEW
+  catches): the per-row pos ARRAY (the single-word form would race the per-row async
+  uploads - the write-after-enqueue class), the per-row pinned host slices (h_ple/
+  h_emb/h_router - the shared-word host races), the window's sync ordering (the
+  we/raw_stage/union-slab cross-layer drains: the layer il+1's window sync drains the
+  layer il's we upload + staging H2Ds + moe-rest readers before any host rewrite or
+  slab overwrite), the shared device buffers (the ple family: stream-ordered, the same
+  reuse the sequential steps make), the pageable W-table uploads (the driver stages
+  small copies at the enqueue - the trunk's own per-layer precedent), the causal
+  per-row attention (row r's n_kv = pos_r+1 never reaches the later rows' slots - no
+  reordering needed, the per-row order IS the sequential order).
+- THE GATE TOOL (cf_run's new `verify` mode): run A = the prompt + n-1 greedy steps,
+  ref[i] = the logits after the step consuming tok_i (the prediction of tok_{i+1});
+  cf_reset (the KV/GDN/PLE/toks states clear, the weights stay); run B = the same
+  prompt + the verify rounds over the SAME tail tokens (chunked by nr) - every row's
+  logits must BYTE-MATCH the sequential reference (memcmp per row + the top1 tally +
+  the first diff + the worst rel diff; pass = all rows byte-match). The gate also
+  covers the union (a byte-matched row proves the union slabs/W tables/we are
+  byte-exact), the per-row top-10, and the whole per-row op mirror.
+- host_top10_row / ple_host_core extractions (ONE source each: the trunk's instances
+  are the single-row wrappers; the verify's rows run the same order-exact loops at the
+  row's pos into the row's buffers).
+- cf_free: the verify's pinned planes freed (the device buffers fall to the
+  cudaDeviceReset, the trunk's own style).
+Build: libt4q + cf_run 0 errors, 0 warnings in the 12.8 podman (NO new kernels - the
+ptxas diffs are compile-time noise only). RUNTIME VERIFICATION (the L4): T4Q_CF_MTP=1 +
+`cf_run verify <model> <ids> <n>` -> THE GATE (byte_match == rows) + the verify's
+ms/token vs the sequential's (the honest note: the DIRECT per-row-launch form pays
+the ~22 us launch wall x ~2600 x nr - the SPEED comes with the verify's own segment
+graphs + the UVA union scatters, the later rounds; the CF_MTP speed math - the union
+~1.44 GB + the drafts ~8 ms -> ~55 ms/token ~ 18 t/s at k=3 - assumes those). ALSO
+PENDING: the draft's acceptance smoke (r19w's mode) on the same L4 run. STILL AHEAD:
+the catch-up (pending_h ring), the rollback (the GDN S/conv snapshots + the KV/PLE pos
+rewind), the speculative driver (the draft chain + the verify + the accept/reject
+loop), the verify's segment graphs, k tuned on the measured acceptance. The PLAN_CF
+cf-m4 block carries the verify's landed note; the r19w register-count record corrected
+(k_cf_eh_gather 8 regs, not 19).

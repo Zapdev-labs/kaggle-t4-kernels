@@ -7,6 +7,11 @@
 //                                                          load): the prompt + n greedy with the per-pair draft
 //                                                          forward (x_q, h_{q-1}); prints alpha1 (the 1-step
 //                                                          acceptance the MTP speed math rides on) + draft/trunk ms
+//   verify <model> <ids.i32> <n>                      -> cf-m4: THE GATE (needs T4Q_CF_MTP=1): run A = the prompt +
+//                                                          n-1 greedy steps (the reference logits); cf_reset; run B =
+//                                                          the same prompt + the verify rounds over the SAME tokens
+//                                                          (nr = T4Q_CF_K+1 rows per round) - every row's logits
+//                                                          must BYTE-MATCH the sequential reference
 // Prints CF {json} summary lines; exits 0 on pass, 3 on mismatch.
 #include <algorithm>
 #include <chrono>
@@ -48,7 +53,7 @@ static int argmax(const float* x, int n) {
 int main(int argc, char** argv) {
     setbuf(stdout, nullptr);
     if (argc < 4) {
-        fprintf(stderr, "usage: %s seq|gen|time|census|draft <model> <ids.i32> [args]\n", argv[0]);
+        fprintf(stderr, "usage: %s seq|gen|time|census|draft|verify <model> <ids.i32> [args]\n", argv[0]);
         return 2;
     }
     const std::string mode = argv[1];
@@ -233,6 +238,70 @@ int main(int argc, char** argv) {
                draft_s * 1000 / std::max(1, pairs), c->step_s * 1000 / std::max(1, c->steps), load_s);
         cf_free(c);
         return 0;
+    }
+
+    if (mode == "verify") {
+        // cf-m4 (r19x): THE GATE (CF_MTP.md section 5) - the batched verify rows MUST
+        // reproduce the sequential decode bit-exactly (the near-tie argmaxes flip
+        // otherwise). Run A: the prompt + the greedy tail, ref[i] = the logits AFTER the
+        // step consuming tok_i (the prediction of tok_{i+1}). Run B (after cf_reset): the
+        // same prompt + the verify rounds over the SAME tail tokens (chunked by nr = k+1)
+        // - the row i's logits must byte-match ref[i] at every position.
+        const int n = atoi(argv[4]);
+        if (!c->verify) { printf("CF {\"error\":\"no verify block (T4Q_CF_MTP=1 at load)\"}\n"); return 1; }
+        const int nr = c->verify->nr;
+        if (n < 2) { printf("CF {\"error\":\"verify needs n >= 2\"}\n"); return 1; }
+        for (int t : ids)
+            if (!cf_step(c, t)) { printf("CF {\"error\":\"prompt step: %s\"}\n", c->err.c_str()); return 1; }
+        std::vector<int32_t> tail;                      // run A's consumed tail tokens
+        std::vector<float> ref((size_t)(n - 1) * cf::V);
+        for (int i = 0; i < n; i++) {
+            const int tok = argmax(c->h_logits, cf::V);
+            if (i + 1 < n) {
+                tail.push_back(tok);
+                if (!cf_step(c, tok)) { printf("CF {\"error\":\"gen step: %s\"}\n", c->err.c_str()); return 1; }
+                memcpy(ref.data() + (size_t)i * cf::V, c->h_logits, (size_t)cf::V * 4);
+            }
+        }
+        const double seq_ms = c->step_s * 1000 / std::max(1, c->steps);
+        cf_reset(c);
+        for (int t : ids)
+            if (!cf_step(c, t)) { printf("CF {\"error\":\"prompt step 2: %s\"}\n", c->err.c_str()); return 1; }
+        int rows = 0, bytematch = 0, top1 = 0, first_diff = -1;
+        double worst_rel = 0, v_s = 0;
+        for (int i = 0; i < (int)tail.size();) {
+            const int m = std::min(nr, (int)tail.size() - i);
+            const auto tv = std::chrono::steady_clock::now();
+            if (!cf_verify(c, tail.data() + i, m)) {
+                printf("CF {\"error\":\"verify round: %s\"}\n", c->err.c_str());
+                return 1;
+            }
+            v_s += std::chrono::duration<double>(std::chrono::steady_clock::now() - tv).count();
+            for (int r = 0; r < m; r++) {
+                const float* mine = c->verify->h_logits + (size_t)r * cf::V;
+                const float* want = ref.data() + (size_t)(i + r) * cf::V;
+                rows++;
+                const bool bm = memcmp(mine, want, (size_t)cf::V * 4) == 0;
+                if (bm) bytematch++;
+                if (argmax(mine, cf::V) == argmax(want, cf::V)) top1++;
+                if ((!bm || argmax(mine, cf::V) != argmax(want, cf::V)) && first_diff < 0) first_diff = i + r;
+                if (!bm)
+                    for (int j = 0; j < cf::V; j++) {
+                        const double a = mine[j], b = want[j];
+                        const double rel = std::fabs(a - b) / (std::fabs(b) + 1e-6);
+                        if (rel > worst_rel) worst_rel = rel;
+                    }
+            }
+            i += m;
+        }
+        const bool pass = bytematch == rows;
+        printf("CF {\"mode\":\"verify\",\"n\":%d,\"nr\":%d,\"rows\":%d,\"byte_match\":%d,\"top1_agree\":%d,"
+               "\"first_diff\":%d,\"worst_rel\":%.3e,\"seq_ms\":%.2f,\"verify_ms\":%.2f,"
+               "\"verify_ms_per_tok\":%.2f,\"pass\":%s}\n",
+               n, nr, rows, bytematch, top1, first_diff, worst_rel, seq_ms, v_s * 1000,
+               v_s * 1000 / std::max(1, rows), pass ? "true" : "false");
+        cf_free(c);
+        return pass ? 0 : 3;
     }
 
     fprintf(stderr, "unknown mode %s\n", mode.c_str());

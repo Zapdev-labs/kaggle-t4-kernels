@@ -326,7 +326,7 @@ dequant rates and the platform paths are measured, no more assumptions**:
   the physical region boundaries: 10.75 MB gu / 3.48 MB per expert = 3, 9.22 MB dn /
   1.74 MB = 5, ch = 3), the FMT_Q8 case in gemv() (the Q8_0 activation pairing with the
   gate-proven FAST_Q8 dot), the ONE new op k_cf_eh_gather (the per-stream
-  [e_norm ; h_norm_s] concat, 19 regs 0 spills), the host_top10 extraction (ONE
+  [e_norm ; h_norm_s] concat, 8 regs 0 spills), the host_top10 extraction (ONE
   order-exact softmax/top-10/we source shared by the trunk's host window and the
   draft's forward - the draft's routing MUST be the same order-exact form), and
   cf_draft_step: the exact CF_MTP section 1 forward - the pair (x_q, h_{q-1}) with
@@ -350,9 +350,38 @@ dequant rates and the platform paths are measured, no more assumptions**:
   alpha1 decides the adoption class (the 27B's class ~2.2 accepted/verify); the draft
   forward's byte-exactness rides the trunk's own argument (every op is the trunk's op
   with the draft's own buffers - the same kernels, the same args, the same order - and
-  the Q8_0 pairing is the 27B's gate-proven arithmetic). STILL AHEAD: the catch-up
-  (pending_h ring), the batched verify (THE GATE: bit-exact vs sequential), the
-  rollback, the speculative driver, k tuned on the measured acceptance.
+  the Q8_0 pairing is the 27B's gate-proven arithmetic). THE VERIFY LANDED (r19x,
+  build-clean 0 errors/0 warnings, the same T4Q_CF_MTP gate, k rides T4Q_CF_K default 3
+  -> nr = k+1 <= 8 = MAXR): the GATE-form verify - nr candidate rows through the WHOLE
+  trunk in ONE pass, every op the sequential step's op with the ROW's slice (the same
+  kernels - NO new kernels in the round - the same args, the same per-row order; the
+  rows run strictly in row order so the rolling states (KV, GDN S/conv, the PLE ring)
+  evolve exactly as the sequential steps, the per-row attention inherently causal -
+  row r's n_kv = pos_r+1 never reaches the later rows' slots), with the ONE structural
+  change: the per-layer MoE host window BATCHES the rows - all the rows' router gemvs +
+  D2Hs (the [nr][NE] pinned slices, no cross-row race), ONE sync, the per-row
+  order-exact top-10 (host_top10_row - the r19t bar, ONE source with host_top10), the
+  picks' UNION deduped + staged/read ONCE per layer (the dedup is the verify's staging
+  win; the OFF chunked passes through the trunk's raw_stage / the UVA union scatters -
+  the same address math as the OFF passes' memcpy sources, the same repack decode into
+  the [nr*TOPK]-sized union slabs - byte-identical by construction), the per-row
+  W-table views into the union slabs (the tiering's hit-branch view math verbatim),
+  then the per-row batched gemvs + the shared expert + moe_out. The per-row pos words
+  ride the [nr] device array (the row's pos_dev = d_pos + r) - the single-word form
+  would race the per-row async uploads (the write-after-enqueue trap, the r19v class);
+  the per-row host planes (h_emb/h_ple/h_router/we_h/h_logits, all pinned) kill the
+  same class on the host side. The gate tool (cf_run's new `verify` mode): run A = the
+  prompt + n-1 greedy steps with the per-position reference logits; cf_reset; run B =
+  the same prompt + the verify rounds over the SAME tokens (chunked by nr) - every
+  row's logits must BYTE-MATCH the sequential reference (the pass gate; the near-tie
+  argmax flips are the failure the gate exists to catch). Runtime verification (the
+  L4): T4Q_CF_MTP=1 + the verify mode -> THE GATE result + the verify's ms/token vs
+  the sequential's (the direct per-row-launch form pays the ~22 us launch wall x
+  ~2600 x nr - the SPEED comes with the verify's own segment graphs + the UVA union
+  scatters, the later rounds; the GATE is this round's product). STILL AHEAD: the
+  catch-up (pending_h ring), the rollback (the reject path: the GDN S/conv snapshots +
+  the KV/PLE pos rewind), the speculative driver (the draft chain + the verify + the
+  accept/reject loop), the verify's segment graphs, k tuned on the measured acceptance.
 - **cf-m5 - the closure rounds**: the r4-r16 method (every lever A/B'd, every bucket measured
   or roof-closed, PROGRESS.md sections per round). Stretch goals: the TC verify columns at
   the M=4 batch (the int4 mma path exists), the draft's lm_head truncation (0.34 GiB of the

@@ -31,6 +31,7 @@ constexpr int HCD = D * HC;     // 10240, the wide residual
 constexpr int LORA = 320;       // hc low-rank
 constexpr int NE = 512;         // experts
 constexpr int TOPK = 10;
+constexpr int MAXR = 8;        // cf-m4: the verify's row bound (T4Q_CF_K <= 7 -> nr = k+1 rows)
 constexpr int EE = 640;        // expert FFN
 constexpr int HQ = 24, HKV = 2, HD = 256, NROT = 64;
 constexpr int HK = 16, HV = 48, DK = 128, VDIM = 6144, CONV = 10240;
@@ -143,6 +144,38 @@ struct CfDraft {
     int pos = 0;                      // the draft's own KV position
 };
 
+// cf-m4 (r19x): the MTP verify's state. THE GATE FORM (CF_MTP.md section 5): the k+1
+// candidate rows through the WHOLE trunk in one pass, every op the sequential step's op
+// with the ROW's slice (the same kernels, the same args, the same per-row order - the
+// rows run strictly in row order so the rolling states (KV, GDN S/conv, the PLE ring)
+// evolve exactly as the sequential steps would), with the ONE structural change: the
+// per-layer MoE host window BATCHES the rows - all the rows' router gemvs + D2Hs, ONE
+// sync, the per-row order-exact top-10, the picks' UNION deduped + staged/read ONCE
+// (the dedup is the verify's staging win), then the per-row batched gemvs against the
+// union slabs. Loaded under the same T4Q_CF_MTP gate (k rides T4Q_CF_K, default 3).
+struct CfVerify {
+    int nr = 0;                        // the loaded row count (k+1); the guard for cf_verify calls
+    CfScratch sc[cf::MAXR];             // the per-row scratch (the trunk's is never touched)
+    int *h_pos = nullptr, *d_pos = nullptr;  // the per-row pos words (pinned/host->device; the row's pos_dev = d_pos + r)
+    float* h_emb = nullptr;            // pinned [MAXR][D] the per-row embedding rows (the dequant targets)
+    float* h_ple = nullptr;            // pinned [MAXR][D] the per-row PLE gather rows (no cross-row H2D race)
+    float* h_router = nullptr;         // pinned [MAXR][NE] the per-row router outputs
+    int* eid = nullptr;                // host [MAXR][TOPK] the per-row picks
+    float* we_h = nullptr;             // host [MAXR][TOPK] the per-row weights
+    float* we_dev = nullptr;          // device [MAXR][TOPK] (the row's moe_out reads we_dev + r*TOPK)
+    PackedW h_wt_gu[cf::MAXR][cf::TOPK] = {}, h_wt_dn[cf::MAXR][cf::TOPK] = {};  // the per-row composed tables
+    PackedW *wt_gu = nullptr, *wt_dn = nullptr;  // device [MAXR][TOPK] the per-row W tables
+    PackedW uni_gu, uni_dn;            // the UNION slabs: [nr*TOPK*2EE, D] K2 / [nr*TOPK*D, EE] P4 (the worst case)
+    int* uids_dev = nullptr;          // device [MAXR*TOPK] the union's expert ids (the UVA scatter's eid)
+    int uidx[cf::NE];                 // the union slot map (expert -> slot, -1 = absent; host, recomposed per layer)
+    int uids[cf::MAXR * cf::TOPK];    // the union's expert ids in slot order (the staging order)
+    int nu = 0;                        // this layer's union count
+    float* ye = nullptr;              // device [MAXR][TOPK*D] the per-row batched down outputs
+    float* ysh = nullptr;             // device [MAXR][D] the per-row shared-expert outputs
+    float* sh_gate_raw = nullptr;     // device [MAXR] the per-row shared-expert sigmoid gates
+    float* h_logits = nullptr;        // pinned [MAXR][V] the per-row logits (the verify's output)
+};
+
 struct CfCtx {
     GgufFile f;
     std::vector<CfLayer> layers;
@@ -163,6 +196,15 @@ struct CfCtx {
     // hits). The pair semantics are the 27B's gate-proven form: (x_q, h_{q-1}) at the
     // draft's own KV position q, h_{-1} = 0; the chain state hres carries res' forward.
     CfDraft* draft = nullptr;
+    // cf-m4 (r19x): the MTP verify's per-row planes + the union staging (the same
+    // T4Q_CF_MTP gate; k rides T4Q_CF_K, default 3 -> nr = k+1 rows). cf_verify runs the
+    // k+1 candidate rows through the whole trunk in ONE pass (every op the sequential
+    // step's op with the row's slice, the rolling states evolving in row order), with
+    // the per-layer MoE host window BATCHED (the rows' routers -> ONE sync -> the
+    // per-row order-exact top-10 -> the picks' UNION staged/read once -> the per-row
+    // gemvs against the union slabs). INERT until cf_verify is called (the gate mode
+    // now; the speculative driver later).
+    CfVerify* verify = nullptr;
     // staging (raw GGUF slabs -> repack on device)
     uint8_t *raw_stage = nullptr;     // pinned: one layer's 10 experts (gate+up Q2_K, down Q4_0)
     uint8_t *raw_dev = nullptr;       // device mirror
@@ -262,4 +304,13 @@ bool cf_step(CfCtx* c, int token);       // one decode step; logits land in c->h
 // The draft's logits land in c->draft->h_logits (the prediction for the NEXT position);
 // the chain state (res') carries into the next draft call. Requires T4Q_CF_MTP=1 at load.
 bool cf_draft_step(CfCtx* c, int token, const float* h);
+// cf-m4 (r19x): the MTP verify - nr <= k+1 candidate rows through the whole trunk in ONE
+// pass (CF_MTP.md section 5): every op the sequential step's op with the row's slice
+// (the same kernels, the same args, the same per-row order - the rolling states evolve
+// exactly as the sequential steps), the ONE structural change: the per-layer MoE host
+// window batches the rows (the routers D2H, ONE sync, the per-row order-exact top-10,
+// the picks' UNION deduped + staged/read ONCE, the per-row gemvs against the union).
+// The rows' logits land in c->verify->h_logits [nr][V] (row r = the prediction for the
+// position pos+r+1); the trunk's pos/states advance by nr. Requires T4Q_CF_MTP=1 at load.
+bool cf_verify(CfCtx* c, const int* toks, int nr);
 void cf_reset(CfCtx* c);

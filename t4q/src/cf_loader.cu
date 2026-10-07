@@ -605,6 +605,78 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
             }
             const double d_dur = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             fprintf(stderr, "[cf] draft block loaded (all-512 resident) %.1f s\n", d_dur);
+            // cf-m4 (r19x): the MTP verify's per-row planes + the union staging (the same
+            // T4Q_CF_MTP gate; k rides T4Q_CF_K, default 3 -> nr = k+1 rows, the MAXR=8
+            // bound). The per-row scratch = the trunk's plane list verbatim (the rolling
+            // states - KV, GDN S/conv, the PLE ring - stay the TRUNK's buffers, evolving in
+            // row order exactly as the sequential steps); the UNION slabs are the same
+            // packed formats as the staging (K2 gu / P4 dn), sized for the WORST case
+            // nr*TOPK experts (the dedup usually ~1.5x), fed by the same repack path.
+            {
+                const char* ke = getenv("T4Q_CF_K");
+                const int k = ke ? atoi(ke) : 3;
+                if (k < 0 || k + 1 > MAXR) throw std::runtime_error("T4Q_CF_K out of range (0..7)");
+                CfVerify* v = new CfVerify();
+                c->verify = v;
+                v->nr = k + 1;
+                const int nr = v->nr;
+                CK(cudaMallocHost(&v->h_pos, MAXR * 4));
+                CK(cudaMalloc(&v->d_pos, MAXR * 4));
+                CK(cudaMallocHost(&v->h_emb, (size_t)MAXR * D * 4));
+                CK(cudaMallocHost(&v->h_ple, (size_t)MAXR * D * 4));
+                CK(cudaMallocHost(&v->h_router, (size_t)MAXR * NE * 4));
+                CK(cudaMallocHost(&v->we_h, (size_t)MAXR * TOPK * 4));
+                CK(cudaMalloc(&v->we_dev, (size_t)MAXR * TOPK * 4));
+                CK(cudaMallocHost(&v->h_logits, (size_t)MAXR * V * 4));
+                CK(cudaMalloc(&v->wt_gu, (size_t)MAXR * TOPK * sizeof(PackedW)));
+                CK(cudaMalloc(&v->wt_dn, (size_t)MAXR * TOPK * sizeof(PackedW)));
+                CK(cudaMalloc(&v->uids_dev, (size_t)MAXR * TOPK * 4));
+                CK(cudaMalloc(&v->ye, (size_t)MAXR * TOPK * D * 4));
+                CK(cudaMalloc(&v->ysh, (size_t)MAXR * D * 4));
+                CK(cudaMalloc(&v->sh_gate_raw, (size_t)MAXR * 4));
+                for (int i = 0; i < NE; i++) v->uidx[i] = -1;  // the union slot map (recomposed per layer)
+                for (int r = 0; r < MAXR; r++) {  // the per-row scratch: the trunk's plane list verbatim
+                    CfScratch& s = v->sc[r];
+                    s.h = dalloc<float>(HCD, false); s.xn = dalloc<float>(HCD, false); s.lo = dalloc<float>(LORA);
+                    s.gate = dalloc<float>(HCD); s.mixed = dalloc<float>(D); s.inj = dalloc<float>(HC);
+                    s.block = dalloc<float>(D, false);
+                    s.qfull = dalloc<float>(HQ * HD * 2, false); s.aq = dalloc<float>(HQ * HD, false);
+                    s.ak = dalloc<float>(HKV * HD, false); s.k = dalloc<float>(HKV * HD, false);
+                    s.v = dalloc<float>(HKV * HD, false);
+                    s.att = dalloc<float>(HQ * HD, false); s.attg = dalloc<float>(HQ * HD, false);
+                    s.scores = dalloc<float>((size_t)HQ * c->max_ctx);
+                    s.qkv = dalloc<float>(CONV, false); s.zz = dalloc<float>(VDIM, false);
+                    s.braw = dalloc<float>(HV, false); s.araw = dalloc<float>(HV, false);
+                    s.beta = dalloc<float>(HV, false); s.g = dalloc<float>(HV, false);
+                    s.conv = dalloc<float>(CONV, false); s.qn = dalloc<float>(HK * DK, false);
+                    s.kn = dalloc<float>(HK * DK, false);
+                    s.o = dalloc<float>(VDIM, false); s.on = dalloc<float>(VDIM, false); s.a = dalloc<float>(D, false);
+                    s.ffg = dalloc<float>((size_t)TOPK * EE, false); s.ffu = dalloc<float>((size_t)TOPK * EE, false);
+                    s.ffa = dalloc<float>((size_t)TOPK * EE, false);
+                    s.logits = dalloc<float>(V, false);
+                    s.xq1 = dalloc<int8_t>(HCD, false); s.xq1_d = dalloc<float>(HCD / 32, false);
+                    s.xq1_s = dalloc<float>(HCD / 32, false);
+                    s.xqk = dalloc<int8_t>(HCD, false); s.xqk_b = dalloc<int16_t>(HCD / 16, false);
+                    s.xqk_d = dalloc<float>(HCD / 256, false);
+                    s.xq0 = dalloc<int8_t>(HCD, false); s.xd0 = dalloc<float>(HCD / 32, false);
+                    s.xs0 = dalloc<int>(HCD / 32, false);
+                }
+                {
+                    const double slab_gib = nr * (double)TOPK * 2.0 * EE * 840.0 / (1ull << 30) +
+                                            nr * (double)TOPK * (double)D * 360.0 / (1ull << 30);
+                    size_t free_b = 0, total_b = 0;
+                    CK(cudaMemGetInfo(&free_b, &total_b));
+                    if ((double)free_b < slab_gib * (1ull << 30) * 1.02)
+                        throw std::runtime_error("the verify union slabs need " + std::to_string(slab_gib) +
+                                                 " GiB, only " + std::to_string((double)free_b / (1ull << 30)) +
+                                                 " GiB free");
+                    fprintf(stderr, "[cf] verify block: nr=%d, union slabs (worst case) %.2f GiB\n", nr, slab_gib);
+                }
+                alloc_packed(v->uni_gu, 0, fmt_for(GT_Q2_K), (int64_t)nr * TOPK * 2 * EE, D);
+                alloc_packed(v->uni_dn, 0, fmt_for(GT_Q4_0), (int64_t)nr * TOPK * D, EE);
+                const double v_dur = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                fprintf(stderr, "[cf] verify block loaded (nr=%d) %.1f s\n", nr, v_dur);
+            }
         }
         CK(cudaMallocHost(&c->h_router, (size_t)NE * 4));
         CK(cudaMallocHost(&c->we_h, (size_t)TOPK * 4));

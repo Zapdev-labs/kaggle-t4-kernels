@@ -133,9 +133,11 @@ void attention(CfCtx* c, CfLayer& L, CfScratch& s) {
 // The PLE n-gram hash gather + key/value/norms/s-gate/conv. Runs before layer 1's hc mix.
 // r19v split: ple_host (the u64 hash + the 16-row host dequant) is the driver's host
 // window work; emit_ple_kernels (the H2D + the 8 launches) is the segment emission.
-void ple_host(CfCtx* c, int token) {
+// r19x: the core takes (token, pos, dst) - the verify's per-row gather runs it at the
+// ROW's position into the row's pinned slice (no cross-row H2D race); ple_host is the
+// trunk's single-row instance.
+void ple_host_core(CfCtx* c, int token, int pos, float* dst) {
     // host: the u64 hash. ctx[0] = the token; predecessors cut at EOS/missing (missing reads EOS).
-    const int pos = c->pos;
     int64_t ctx[PLE_NGRAM];
     ctx[0] = token;
     bool cut = false;
@@ -151,11 +153,13 @@ void ple_host(CfCtx* c, int token) {
             const int h = (n - 2) * (PLE_NHEADS / 2) + g;
             const uint64_t row = mixed % c->ple.head_vocab[h] + c->ple.head_off[h];
             if (!dequant_row_cpu(GT_Q4_0, c->ple.table->data + (size_t)row * c->ple.table->row_bytes,
-                                 c->h_ple + (size_t)h * PLE_DIM, PLE_DIM))
+                                 dst + (size_t)h * PLE_DIM, PLE_DIM))
                 throw std::runtime_error("ple row dequant failed");
         }
     }
 }
+
+void ple_host(CfCtx* c, int token) { ple_host_core(c, token, c->pos, c->h_ple); }
 
 void emit_ple_kernels(CfCtx* c) {
     CfScratch& s = c->sc;
@@ -205,32 +209,37 @@ void emit_router(CfCtx* c, CfLayer& L) {
 
 // the order-exact host router loops (r19t: the fp accumulation ORDER is the correctness bar
 // for the G2 device router and every other consumer; ONE source, shared by the trunk's host
-// window and the draft's forward - the draft's routing MUST be the same order-exact form)
-void host_top10(CfCtx* c) {
+// window, the draft's forward, and the verify's per-row window - the routing MUST be the
+// same order-exact form everywhere). The row variant takes the row's buffers (the router
+// row is scratch, softmaxed in place exactly as the trunk's does); host_top10 is the
+// trunk's single-row instance.
+void host_top10_row(float* router, int* eid, float* we_h) {
     // host softmax over 512 (fp32, exact formula), then top-10 renormalized
-    float m = c->h_router[0];
-    for (int i = 1; i < NE; i++) m = std::max(m, c->h_router[i]);
+    float m = router[0];
+    for (int i = 1; i < NE; i++) m = std::max(m, router[i]);
     float sum = 0.f;
     for (int i = 0; i < NE; i++) {
-        c->h_router[i] = std::exp(c->h_router[i] - m);
-        sum += c->h_router[i];
+        router[i] = std::exp(router[i] - m);
+        sum += router[i];
     }
-    for (int i = 0; i < NE; i++) c->h_router[i] /= sum;
-    for (int k = 0; k < TOPK; k++) c->eid[k] = -1;
+    for (int i = 0; i < NE; i++) router[i] /= sum;
+    for (int k = 0; k < TOPK; k++) eid[k] = -1;
     for (int k = 0; k < TOPK; k++) {
         int best = -1;
         for (int i = 0; i < NE; i++) {
-            if (c->h_router[i] < 0.f) continue;  // already picked
-            if (best < 0 || c->h_router[i] > c->h_router[best]) best = i;
+            if (router[i] < 0.f) continue;  // already picked
+            if (best < 0 || router[i] > router[best]) best = i;
         }
-        c->eid[k] = best;
-        c->we_h[k] = c->h_router[best];
-        c->h_router[best] = -1.f;
+        eid[k] = best;
+        we_h[k] = router[best];
+        router[best] = -1.f;
     }
     float wsum = 0.f;
-    for (int k = 0; k < TOPK; k++) wsum += c->we_h[k];
-    for (int k = 0; k < TOPK; k++) c->we_h[k] /= wsum;
+    for (int k = 0; k < TOPK; k++) wsum += we_h[k];
+    for (int k = 0; k < TOPK; k++) we_h[k] /= wsum;
 }
+
+void host_top10(CfCtx* c) { host_top10_row(c->h_router, c->eid, c->we_h); }
 
 // the host window between segments: the sync (the router D2H has landed), then the r19t
 // order-exact softmax/top-10/we renorm (the host loops verbatim), the census, and the staging
@@ -662,6 +671,218 @@ bool cf_draft_step(CfCtx* c, int token, const float* h) {
     }
 }
 
+// cf-m4 (r19x): the MTP verify - nr candidate rows through the WHOLE trunk in ONE pass
+// (the frozen CF_MTP.md section 5, THE GATE form). Every op is the sequential step's op
+// with the ROW's slice (the same kernels, the same args, the same per-row order - the
+// rows run strictly in row order, so the rolling states (KV, GDN S/conv, the PLE ring)
+// evolve exactly as the sequential steps would; the per-row attention is inherently
+// causal - row r's n_kv = pos_r+1 never reaches the later rows' slots). The ONE
+// structural change: the per-layer MoE host window BATCHES the rows - all the rows'
+// router gemvs + D2Hs (the [nr][NE] pinned slices, no cross-row race), ONE sync, the
+// per-row order-exact top-10 (host_top10_row, the r19t bar), the picks' UNION deduped +
+// staged/read ONCE (the dedup is the verify's staging win), the per-row W-table views
+// into the union slabs, then the per-row batched gemvs + the shared expert + moe_out.
+// The rows' logits land in v->h_logits [nr][V] (row r = the prediction for pos+r+1); the
+// trunk's pos advances by nr. The per-row pos words ride the [nr] device array (the
+// row's pos_dev = d_pos + r) - the single-word form would race the per-row async
+// uploads (the write-after-enqueue trap, the r19v class).
+bool cf_verify(CfCtx* c, const int* toks, int nr) {
+    try {
+        if (!c->verify) throw std::runtime_error("cf_verify: no verify block (T4Q_CF_MTP=1 at load)");
+        if (nr < 1 || nr > c->verify->nr) throw std::runtime_error("cf_verify: nr out of range");
+        if (c->pos + nr > c->max_ctx) throw std::runtime_error("context full");
+        CfVerify* v = c->verify;
+        cudaStream_t st = c->st;
+        CK(cudaSetDevice(c->gpu));
+        // ---- the head (per row): the embedding dequants into the pinned [nr][D] slices
+        // (all rows up front - the per-row H2Ds read disjoint slices, no race), the toks
+        // records (the PLE predecessors + the record order match the sequential), the pos
+        // words (the writes precede the ONE upload's enqueue), then the per-row emb H2D +
+        // the wide-residual identity init
+        for (int r = 0; r < nr; r++) {
+            if (toks[r] < 0 || toks[r] >= V) throw std::runtime_error("verify token id out of range");
+            if (!dequant_row_cpu(c->tok_embd->type, c->tok_embd->data + (size_t)toks[r] * c->tok_embd->row_bytes,
+                                 v->h_emb + (size_t)r * D, D))
+                throw std::runtime_error("verify embedding dequant failed");
+            c->toks[c->pos + r] = toks[r];
+            v->h_pos[r] = c->pos + r;
+        }
+        CK(cudaMemcpyAsync(v->d_pos, v->h_pos, (size_t)nr * 4, cudaMemcpyHostToDevice, st));
+        for (int r = 0; r < nr; r++) {
+            CfScratch& s = v->sc[r];
+            CK(cudaMemcpyAsync(s.h, v->h_emb + (size_t)r * D, (size_t)D * 4, cudaMemcpyHostToDevice, st));
+            launch_cf_res_init(s.h, s.h, st);  // in-place: first-D writes are identities, safe
+        }
+        check_launch("verify head");
+        // ---- the layers: per row [the PLE at layer 1] pre -> router; then the ONE
+        // batched host window; then per row the moe rest + the combine
+        for (int il = 0; il < NL; il++) {
+            CfLayer& L = c->layers[il];
+            for (int r = 0; r < nr; r++) {
+                CfScratch& s = v->sc[r];
+                const int* pos_dev = v->d_pos + r;  // the row's pos word (the array form)
+                if (il == PLE_LAYER) {
+                    // the PLE twin per row: the hash + the 16-row dequant into the row's
+                    // pinned slice (no cross-row H2D race), then emit_ple_kernels verbatim
+                    // with the row's scratch (the ple_key/ple_query/ple_s/ple_gate/
+                    // ple_gated buffers are shared - the stream order serializes the rows,
+                    // the same device-side reuse the sequential steps make) + the ring
+                    ple_host_core(c, toks[r], v->h_pos[r], v->h_ple + (size_t)r * D);
+                    CK(cudaMemcpyAsync(s.mixed, v->h_ple + (size_t)r * D, (size_t)D * 4, cudaMemcpyHostToDevice, st));
+                    gemv(s, c->ple.key, s.mixed, c->ple_key, st);
+                    gemv(s, c->ple.value, s.mixed, s.block, st);
+                    launch_cf_hc_norm(c->ple_key, c->ple.norm_key, c->ple_key, st);
+                    launch_cf_hc_norm(s.h, c->ple.norm_query, c->ple_query, st);
+                    launch_cf_ple_sg(c->ple_key, c->ple_query, c->ple_s, c->ple_gate, st);
+                    launch_cf_ple_gated(s.block, c->ple_gate, c->ple_gated, st);
+                    launch_cf_hc_norm(c->ple_gated, c->ple.norm_conv, c->ple_key, st);  // reuse the dead key buffer
+                    launch_cf_ple_conv(c->ple_key, c->ple_hist, c->ple.conv_w, c->ple_query, st);
+                    launch_add(c->ple_query, c->ple_gated, HCD, st);  // t = gated + conv
+                    launch_add(s.h, c->ple_query, HCD, st);           // res += t (the row's h)
+                }
+                // the pre twin (emit_pre verbatim with the row's slices)
+                hc_mix(c, s.h, L.hc_norm[0], L.hc_down[0], L.hc_up[0], &L.hc_inject[0], s);
+                if (L.attn) {
+                    gemv(s, L.wq, s.mixed, s.qfull, st);
+                    gemv(s, L.wk, s.mixed, s.k, st);
+                    gemv(s, L.wv, s.mixed, s.v, st);
+                    check_launch("verify attn proj");
+                    launch_cf_qk_norm_rope(s.qfull, s.k, L.q_norm, L.k_norm, s.aq, s.ak, pos_dev, EPS, ROPE_BASE,
+                                          NROT, st);
+                    launch_cf_kv_store(s.ak, s.v, L.kc, L.vc, pos_dev, c->max_ctx, st);
+                    launch_cf_attn_decode(s.aq, L.kc, L.vc, s.att, s.scores, pos_dev, c->max_ctx, 1.0f / 16.0f, st);
+                    check_launch("verify attn");
+                    launch_gate_sigmoid(s.att, s.qfull, s.attg, st);  // 24 blocks, [24][512]: same layout
+                    gemv(s, L.wo, s.attg, s.block, st);
+                    check_launch("verify attn out");
+                } else {
+                    deltanet(c, L, s);  // the row's scratch; L.S/L.conv_state evolve in row order
+                }
+                hc_combine(c, s.h, s.block, s.inj);
+                hc_mix(c, s.h, L.hc_norm[1], L.hc_down[1], L.hc_up[1], &L.hc_inject[1], s);
+                // the router twin (emit_router verbatim with the row's slices): the gemv
+                // borrows the row's logits scratch [512 of V], the D2H lands in the row's
+                // pinned router slice
+                gemv(s, L.router, s.mixed, s.logits, st);
+                CK(cudaMemcpyAsync(v->h_router + (size_t)r * NE, s.logits, (size_t)NE * 4, cudaMemcpyDeviceToHost,
+                                   st));
+            }
+            // ---- the ONE batched host window: the sync (the layer's routers have landed),
+            // the per-row order-exact top-10, the union dedup, the union staging (the OFF
+            // chunked passes through the trunk's raw_stage / the UVA scatters), the per-row
+            // W-table compose + the uploads
+            CK(cudaStreamSynchronize(st));
+            v->nu = 0;
+            for (int r = 0; r < nr; r++)
+                host_top10_row(v->h_router + (size_t)r * NE, v->eid + (size_t)r * TOPK, v->we_h + (size_t)r * TOPK);
+            for (int r = 0; r < nr; r++)
+                for (int k = 0; k < TOPK; k++) {
+                    const int e = v->eid[(size_t)r * TOPK + k];
+                    if (v->uidx[e] < 0) { v->uidx[e] = v->nu; v->uids[v->nu++] = e; }
+                }
+            const size_t gu_row = L.t_gate_exps->row_bytes;   // 840
+            const size_t dn_row = L.t_down_exps->row_bytes;   // 360
+            const size_t up_bytes = (size_t)TOPK * 2 * EE * gu_row;  // the raw_stage layout
+            if (c->uva && L.il < c->uva_n) {
+                // the UVA union scatters (cf-m3): each union expert's OWN slab read once
+                // through the registered aliases (the dedup preserved), the same address
+                // math as the OFF passes' memcpy sources, the same repack block decode
+                // into the union slabs - byte-identical by construction, no host staging
+                CK(cudaMemcpyAsync(v->uids_dev, v->uids, (size_t)v->nu * 4, cudaMemcpyHostToDevice, st));
+                launch_repack_eid_q2k(v->uni_gu, L.uva_gate, L.uva_up, v->uids_dev, 0, (int64_t)v->nu * 2 * EE,
+                                      (int64_t)2 * EE, (int64_t)EE, st);
+                launch_repack_eid_q4(v->uni_dn, L.uva_dn, v->uids_dev, 0, (int64_t)v->nu * D, (int64_t)D, st);
+            } else {
+                // the OFF chunked passes (the hot-set tier's pass form): the union's experts
+                // through the trunk's raw_stage (TOPK experts per pass), the repacks into
+                // the union slabs at the slot row offsets
+                for (int p0 = 0; p0 < v->nu; p0 += TOPK) {
+                    const int ch = std::min(TOPK, v->nu - p0);
+                    CK(cudaStreamSynchronize(st));  // the previous pass's H2D must drain before the refill
+                    for (int j = 0; j < ch; j++) {
+                        const int64_t e = v->uids[p0 + j];
+                        uint8_t* dst = c->raw_stage + (size_t)j * 2 * EE * gu_row;
+                        memcpy(dst, L.t_gate_exps->data + (size_t)e * EE * gu_row, (size_t)EE * gu_row);
+                        memcpy(dst + (size_t)EE * gu_row, L.t_up_exps->data + (size_t)e * EE * gu_row,
+                               (size_t)EE * gu_row);
+                        memcpy(c->raw_stage + up_bytes + (size_t)j * D * dn_row,
+                               L.t_down_exps->data + (size_t)e * D * dn_row, (size_t)D * dn_row);
+                    }
+                    CK(cudaMemcpyAsync(c->raw_dev, c->raw_stage, (size_t)ch * 2 * EE * gu_row, cudaMemcpyHostToDevice,
+                                       st));
+                    CK(cudaMemcpyAsync(c->raw_dev + up_bytes, c->raw_stage + up_bytes, (size_t)ch * D * dn_row,
+                                       cudaMemcpyHostToDevice, st));
+                    launch_repack(v->uni_gu, GT_Q2_K, c->raw_dev, (int64_t)p0 * 2 * EE, (int64_t)ch * 2 * EE, st);
+                    launch_repack(v->uni_dn, GT_Q4_0, c->raw_dev + up_bytes, (int64_t)p0 * D, (int64_t)ch * D, st);
+                    CK(cudaGetLastError());
+                }
+            }
+            // the per-row W tables: the row's pick k -> the union slot of eid[r][k] (the
+            // tiering's hit-branch view math verbatim), then the map sweep for the next
+            // layer's dedup
+            for (int r = 0; r < nr; r++)
+                for (int k = 0; k < TOPK; k++) {
+                    const int e = v->eid[(size_t)r * TOPK + k];
+                    const int64_t sl = v->uidx[e];
+                    PackedW& vg = v->h_wt_gu[r][k];
+                    vg = v->uni_gu;
+                    vg.rows = 2 * EE;
+                    vg.codes = v->uni_gu.codes + (size_t)sl * 2 * EE * (D / 4);
+                    vg.meta = v->uni_gu.meta + (size_t)sl * 2 * EE * (size_t)(D / 256) * 20;
+                    PackedW& wd = v->h_wt_dn[r][k];
+                    wd = v->uni_dn;
+                    wd.rows = D;
+                    wd.codes = v->uni_dn.codes + (size_t)sl * D * (EE / 2);
+                    wd.d = v->uni_dn.d + (size_t)sl * D * (EE / 32);
+                }
+            for (int i = 0; i < v->nu; i++) v->uidx[v->uids[i]] = -1;
+            CK(cudaMemcpyAsync(v->wt_gu, v->h_wt_gu, (size_t)nr * TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(v->wt_dn, v->h_wt_dn, (size_t)nr * TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(v->we_dev, v->we_h, (size_t)nr * TOPK * 4, cudaMemcpyHostToDevice, st));
+            // ---- the per-row moe rest + the combine (emit_moe_rest/emit_post verbatim with
+            // the row's slices): the gu gemv borrows the row's logits scratch (the router's
+            // D2H long since drained - stream order), the down gemv's y is the row's ye
+            // slice, the moe_out reads the row's we slice
+            for (int r = 0; r < nr; r++) {
+                CfScratch& s = v->sc[r];
+                float* ye_r = v->ye + (size_t)r * TOPK * D;
+                launch_quantize_q8_K(s.mixed, D, s.xqk, s.xqk_b, s.xqk_d, st);
+                launch_gemv_q8k_b(v->wt_gu + (size_t)r * TOPK, FMT_K2, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0,
+                                  0, 0, (int64_t)2 * EE, TOPK, st);
+                launch_cf_silu_mul_b(s.logits, s.ffa, EE, TOPK, st);  // [gate n | up n] per expert, stride 2n
+                launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, s.xs0, st);
+                launch_gemv_q8_0_b(v->wt_dn + (size_t)r * TOPK, D, s.xq0, s.xd0, s.xs0, ye_r, EE, D, EE / 32, TOPK,
+                                   st);
+                gemv(s, L.sh_gate, s.mixed, s.ffg, st);
+                gemv(s, L.sh_up, s.mixed, s.ffu, st);
+                launch_silu_mul(s.ffg, s.ffu, s.ffa, EE, st);
+                gemv(s, L.sh_down, s.ffa, v->ysh + (size_t)r * D, st);
+                gemv(s, L.sh_ginp, s.mixed, v->sh_gate_raw + r, st);
+                launch_cf_moe_out(ye_r, v->we_dev + (size_t)r * TOPK, v->ysh + (size_t)r * D, v->sh_gate_raw + r,
+                                  s.block, st);
+                check_launch("verify moe");
+                hc_combine(c, s.h, s.block, s.inj);
+            }
+        }
+        // ---- the tail (per row): the final mixer + the lm_head + the logits D2H into the
+        // row's pinned slice (emit_tail verbatim with the row's slices)
+        for (int r = 0; r < nr; r++) {
+            CfScratch& s = v->sc[r];
+            hc_mix(c, s.h, c->o_norm, c->o_down, c->o_up, nullptr, s);
+            gemv(s, c->output, s.mixed, s.logits, st);
+            check_launch("verify lm_head");
+            CK(cudaMemcpyAsync(v->h_logits + (size_t)r * V, s.logits, (size_t)V * 4, cudaMemcpyDeviceToHost, st));
+        }
+        CK(cudaStreamSynchronize(st));
+        c->have_logits = false;  // the trunk's h_logits is stale (the rows' logits are in v->h_logits)
+        c->pos += nr;
+        return true;
+    } catch (const std::exception& e) {
+        c->err = e.what();
+        return false;
+    }
+}
+
 void cf_reset(CfCtx* c) {
     CK(cudaSetDevice(c->gpu));
     for (int il = 0; il < NL; il++) {
@@ -702,6 +923,16 @@ void cf_free(CfCtx* c) {
         cudaFreeHost(c->draft->h_e);
         cudaFreeHost(c->draft->h_logits);
         delete c->draft;
+    }
+    if (c->verify) {  // cf-m4 (r19x): the verify's pinned host planes (the per-row scratch
+        // and the union slabs fall to the cudaDeviceReset, the trunk's own style)
+        cudaFreeHost(c->verify->h_pos);
+        cudaFreeHost(c->verify->h_emb);
+        cudaFreeHost(c->verify->h_ple);
+        cudaFreeHost(c->verify->h_router);
+        cudaFreeHost(c->verify->we_h);
+        cudaFreeHost(c->verify->h_logits);
+        delete c->verify;
     }
     delete[] c->toks;
     for (int il = 0; il < NL; il++) {  // the resident tier (cf-m3): the device bases + the host maps
