@@ -2118,3 +2118,51 @@ moe pattern (the expert gu slab is a contiguous 1.075 MB region; the ALU is a tr
 sum so the loads dominate), and the probe prints the A/B ratio + the decision rule
 (>= ~0.6 supports the pointer-swap form). Run on the L4 host: ./build/uva_probe <model>
 0 2 b. The parallel session (the L4 host) runs it; the measured class freezes the design.
+
+## r19p - the CUDA-graph LAUNCH CENSUS (static, from the engine code; lever 2's probe)
+
+The graph capture's cf-m0-doctrine probe (measure the structure before designing the
+capture): the full audit of cf_engine.cu's decode step. THE LAUNCH CENSUS: ~2,578
+launches/token -
+- per GDN layer 54: hc_mix 9 (hc_norm 1 + the Q5_1 down pair 2 + hc_lo 1 + the up pair 2 +
+  hc_mixed 1 + the inject pair 2), deltanet 15 (the qkv/z/beta/alpha pairs 8 + the
+  gates/conv/l2/recur/gnorm 5 + the ssm_out pair 2), hc_combine 1, the ffn hc_mix 9,
+  moe 19 (the router pair 2 + the 2 repacks (the OFF staging path) + the batched five
+  (quantize_q8_K + gemv_q8k_b + silu_mul_b + quantize_q8_0 + gemv_q8_0_b) + the shared
+  four pairs 8 + silu_mul 1 + moe_out 1), hc_combine 1;
+- per attn layer 51: the same shell with attention 12 (the wq/wk/wv pairs 6 +
+  qk_norm_rope/kv_store/attn_decode/gate_sigmoid 4 + the wo pair 2);
+- the step-level: the PLE 12 (the key/value pairs 4 + three hc_norms + sg + gated + conv +
+  the two adds), the head/tail 10 (res_init + the final hc_mix 7 (no inject) + the lm_head
+  pair).
+36x54 + 12x51 + 12 + 10 = 2,578, at the measured ~22 us/launch = the ~57 ms wall - the
+r19i decomposition's "~54/layer = ~2600/token" CONFIRMED independently, this time counted
+from the code. THE SYNC CENSUS: 49 syncs/token (the moe router's D2H + host
+softmax/top-10/renorm x48 + the final logits sync x1) - the step is ~49 sync-bounded
+segments, and the ~1,440 host staging memcpys (~62 ms) + the router host loop ride the
+windows between them (the serialization's engine). THE MEMCPY CENSUS (the OFF path):
+~243 async transfers/token (the router D2H x48, the we H2D x48, the raw H2D x48 (~960 MB),
+the wt_gu/wt_dn H2D x96, h_emb + h_ple + the logits D2H). THE FIXED-SHAPE AUDIT: every
+launch's grid is CONSTANT ACROSS STEPS (the fixed families' grids are compile-time
+(HC/LORA/D/HCD/HV/HQ/HKV/EE/TOPK/CONV/V), the gemv grids are the load-time W.rows); only
+VALUES vary - pos in exactly 3 attention kernels (qk_norm_rope, kv_store,
+attn_decode's n_kv) and the W-table/we contents (host-built, uploaded each step). The
+tiered path's nmiss-dependent repack rows are dead (the tiering is OFF per the r19n
+verdict). VERDICT: BOTH graph forms are shape-viable -
+- G1 (pre-UVA, the HEDGE): ~50 per-segment graphs (the boundaries at the moe syncs, the
+  merged [layer-tail + next-layer-head] segments); the refactors: the device step-params
+  buffer (the 3 attention kernels read pos from it; the graph's own memcpy node refreshes
+  it from pinned host memory), the pinned h_wt_gu/h_wt_dn/we_h (a nicety - the unpinned
+  memcpy nodes stage through the driver bounce at today's cost), the capture wrapper +
+  the replay driver. The launch wall ~57 ms -> ~1 ms; the staging wall stays: the staged
+  ~150-165 -> ~95-110 ms/token class WITHOUT the UVA.
+- G2 (post-UVA, the FULL WIN): the UVA kills the staging memcpys/H2D/repacks, then the
+  device-side router (the softmax over 512 + the top-10 + the we renorm + the W-table
+  view build as kernels - all fixed-shape, single-CTA-sized work) kills the 48 mid-step
+  syncs, the segments MERGE into one full-step graph: ~1 replay/token, the remaining
+  memcpy nodes h_emb + h_ple + the params in, the pinned logits out, ONE sync at the step
+  boundary. The T4 class: ~75 ms UVA reads + ~7 ms GPU + ~1 replay ~ ~83 ms/token (~12
+  t/s class, from the ~6-8 mmap-floor decode); the L4's measured 341 ms/token gets the
+  same lever classes (its exact split awaits the parallel session's UVA A/B on that host).
+THE ORDER STANDS: the UVA first (the bigger cut AND G2's unlock), G1 the hedge that does
+not need it, MTP after both (cf-m4). The PLAN_CF lever-2 text rebased onto this census.

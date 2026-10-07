@@ -189,9 +189,26 @@ dequant rates and the platform paths are measured, no more assumptions**:
   region as mapped host memory and have the moe gemvs read the RAW GGUF bytes directly
   over PCIe - no pinned staging, no H2D, no repack, the single touch; ~960 MB/token over
   the T4's gen3 x16 (~12.8 GB/s) ~ 75 ms vs the ~150-165 ms staged path, a ~2x staging
-  cut; the L4's gen4 makes it ~38 ms), (2) the CUDA-graph capture of the static-shape
-  sections (the ~57 ms launch overhead is hidden under the staging today and becomes the
-  wall only after the UVA), (3) MTP (cf-m4).
+  cut; the L4's gen4 makes it ~38 ms), (2) the CUDA-graph capture - the r19p LAUNCH CENSUS
+  (static, from the engine code; the full table is the PROGRESS r19p record): ~2,578
+  launches/token (54/layer on the 36 GDN layers, 51 on the 12 attn layers, the PLE 12, the
+  head/tail 10) x the measured ~22 us/launch = the ~57 ms wall CONFIRMED independently of
+  the r19i decomposition, and the step splits into ~49 sync-bounded segments (the moe
+  router's D2H + host softmax/top-10 x48 + the logits sync x1) with the ~1,440 host
+  staging memcpys (~62 ms) riding the windows; every launch's grid is CONSTANT ACROSS
+  STEPS (the fixed families' grids are compile-time, the gemv grids are the load-time
+  W.rows) - only VALUES vary (pos in the 3 attention kernels, fixable by a device
+  step-params buffer the graph's own memcpy node refreshes; the W-table/we contents are
+  host tables the graph's memcpy nodes re-upload) - so BOTH graph forms are shape-viable:
+  **G1** (pre-UVA, the ~50 per-segment graphs: the pos-params fix + the pinned tables +
+  the capture wrapper; the launch wall ~57 ms -> ~1 ms while the staging wall stays -
+  the staged ~150-165 -> ~95-110 ms/token class; the no-UVA HEDGE if the probe's ratio
+  disappoints) and **G2** (post-UVA, the full-step single graph: the device-side router -
+  the softmax/top-10/the W-table view build/the we renorm as kernels - kills the 48
+  mid-step syncs so the segments merge, and the staging memcpys are already dead) = ~1
+  replay/token (the T4: ~75 ms UVA reads + ~7 ms GPU + ~1 replay ~ ~83 ms/token class).
+  The UVA stays first (the bigger cut, and it unlocks G2); G1 is the hedge that does not
+  need it, (3) MTP (cf-m4).
 - **cf-m2 - the census**: VERDICT LANDED (r19n): near-uniform routing (168,938/168,960
   slots touched in 353 steps; the top-64 = 10.7% of the draws) - no tier split pays; the
   UVA zero-copy is the lever. The census tooling stays (any future model/file re-checks
