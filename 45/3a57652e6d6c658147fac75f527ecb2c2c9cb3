@@ -1,0 +1,41 @@
+t4q/tests/test_iq1s.cpp
+  s_ac85989787ca8c::t_566fba3b55e5a5 110-115
+  s_ac85989787ca8c::t_6bfaf225997776 94
+  s_ac85989787ca8c::t_170de866191ff6 1-93,95-109,116-125
+t4q/src/requant.h
+  s_ac85989787ca8c::t_4acc86450f4dac 34
+  s_ac85989787ca8c::t_5ed63212836f38 47
+  s_ac85989787ca8c::t_60c8b67563f68b 1-11,13-20,23-24,41-43,360
+  s_ac85989787ca8c::t_045cbd27ce6690 374
+  s_ac85989787ca8c::t_4fdde95f19519f 12,21-22,25-33,35-40,44-46,48-359,361-373,375-380
+t4q/src/repack.cu
+  s_ac85989787ca8c::t_95b9eceac2a808 11
+t4q/src/packed.h
+  s_ac85989787ca8c::t_64a27d88869fd3 17-19
+t4q/src/kernels/deq.cuh
+  s_ac85989787ca8c::t_fc875e718074e2 24
+  s_ac85989787ca8c::t_64ba7a871dbdcf 160-181
+t4q/Makefile
+  s_ac85989787ca8c::t_6d4173196d4dae 60
+  s_ac85989787ca8c::t_2a62bf4e8c614e 45-56
+t4q/src/iq1s_table.h
+  s_ac85989787ca8c::t_639fb30e97cf29 16-23
+research/CF_REQUANT.md
+  s_ac85989787ca8c::t_d22b4eb0fc4303 168-195
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "453a57652e6d6c658147fac75f527ecb2c2c9cb3",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
