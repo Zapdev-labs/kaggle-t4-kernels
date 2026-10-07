@@ -2166,3 +2166,33 @@ verdict). VERDICT: BOTH graph forms are shape-viable -
   same lever classes (its exact split awaits the parallel session's UVA A/B on that host).
 THE ORDER STANDS: the UVA first (the bigger cut AND G2's unlock), G1 the hedge that does
 not need it, MTP after both (cf-m4). The PLAN_CF lever-2 text rebased onto this census.
+
+## r19q - the cf-m4 MTP design FROZEN pre-implementation (research/CF_MTP.md)
+
+The third lever's design (the first two being the parallel session's UVA lane + the graph
+capture), done statically while the quota window holds: the draft block (blk.48, ALL
+Q8_0) is specified end-to-end from cf-arch section 6 - the exact forward (the eh_proj
+per-stream concat over [e_norm ; h_norm_s], the draft's own KV at p+1, the own hc mixers
++ Q8_0 MoE + hc_head -> the SHARED full-vocab lm_head; NO GDN, NO PLE in the draft), the
+catch-up (the pending_h ring of the trunk's [10240] pre-final-mixer residuals + the
+draft's KV over the prompt, ~2.5 ms/prompt-token one-time), the batched verify's kernel
+surface (the per-row variants of every trunk family; the 27B's k_pf_attn/k_pf_gdn/
+k_pf_gdnc are the in-repo templates) with THE GATE named up front (the batched rows must
+reproduce the sequential decode BIT-EXACTLY - any per-row reduction reorder can flip the
+near-tie argmaxes (the r19n battery's own flips sat at gaps 2.68/0.49) and break the
+oracle agreement), the rollback state list (the GDN S snapshots ~57 MB, the conv states,
+the PLE 9-column history ~5.9 MB, the KV pos counter, the draft's own chain), and the
+key structural finding: THE Q8_0 GEMV PATH ALREADY EXISTS IN-REPO AND IS GATE-PROVEN -
+repack.cu's GT_Q8_0 case (k_repack_q8, the 34 B/block ggml layout), the FAST_Q8 int8-dp4a
+gemv family (gemv.cuh/tp_gemv_impl.cuh, the 27B's own eh_proj launch form), and the
+activation pairing is the CF engine's existing launch_quantize_q8_0 (the symmetric
+Q8_0-form) - so the draft's FMT_Q8 case is a REUSE of an already-oracle-proven path, not
+a new kernel family to verify from scratch. The draft's 2.49 GiB experts + the shared
+lm_head are RESIDENT (the trunk leaves ~12 GiB free on a 15.36 GiB T4): the draft steps
+are staging-free ~2-3 ms. The speed math: on the UVA'd T4 (~83 ms/token, ~12 t/s after
+cf-m3 + G2), k=3 gives the verify union ~1.44 GB ~ 112 ms + ~8 ms of drafts at the
+expected ~2.2 tokens/verify ~ 55 ms/token ~ 18 t/s (a ~1.5x over the G2 engine; the
+all-resident ceiling ladder stays the reference). The PLAN_CF cf-m4 bullet carries the
+summary + the pointer. The implementation stays ordered after the UVA + the graphs (the
+verify's union staging rides whichever expert path wins the A/B; the draft steps join the
+G2 graph as fixed-shape work).

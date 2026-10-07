@@ -235,9 +235,19 @@ dequant rates and the platform paths are measured, no more assumptions**:
   ratio all print). Gate: the correctness gates intact +
   the staged-vs-UVA A/B tok/s on the same hardware (the L4 locally, the T4 on the next
   quota window).
-- **cf-m4 - MTP spec**: the draft/verify/rollback wiring on the UVA engine, the n-gram
-  table prefetch driven by the sampled token, k tuned on the measured acceptance.
-  Gate: >= 40-60 tok/s, byte-identical greedy at every k.
+- **cf-m4 - MTP spec**: the DESIGN IS FROZEN (r19q, `research/CF_MTP.md` - the
+  pre-implementation spec: the draft block's exact forward (cf-arch section 6), the Q8_0
+  gemv path ALREADY IN-REPO and gate-proven (the repack's GT_Q8_0 case + the FAST_Q8
+  int8-dp4a gemv family, the 27B's byte-identical spec gates), the activation pairing
+  (the existing launch_quantize_q8_0, the symmetric form), the eh_proj gather (the only
+  new op), the resident 2.49 GiB draft experts (staging-free ~2-3 ms draft steps), the
+  catch-up (pending_h ring + the draft's KV over the prompt), the batched verify's
+  kernel surface (the 27B's k_pf templates) with THE GATE (the batched rows MUST
+  reproduce the sequential decode bit-exactly - the near-tie argmaxes flip otherwise),
+  the rollback state list, and the speed math (the UVA'd T4: k=3 ~ 55 ms/token ~ 18
+  t/s, a ~1.5x over the G2 engine)). Implementation: the draft/verify/rollback wiring
+  on the UVA engine, the n-gram table prefetch driven by the sampled token, k tuned on
+  the measured acceptance. Gate: >= 40-60 tok/s, byte-identical greedy at every k.
 - **cf-m5 - the closure rounds**: the r4-r16 method (every lever A/B'd, every bucket measured
   or roof-closed, PROGRESS.md sections per round). Stretch goals: the TC verify columns at
   the M=4 batch (the int4 mma path exists), the draft's lm_head truncation (0.34 GiB of the
