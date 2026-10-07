@@ -25,6 +25,74 @@ static uint32_t lcg() {
     return rs >> 8;
 }
 
+// ---- r2 gates: the M=1 kernel arithmetic, host-twinned (build-gated locally, the L4 confirms) ----
+static int dp4a(int a, int b, int c) {  // the signed-byte dp4a emulation
+    for (int i = 0; i < 4; i++) {
+        int8_t av, bv;
+        memcpy(&av, (const char*)&a + i, 1);
+        memcpy(&bv, (const char*)&b + i, 1);
+        c += (int)av * (int)bv;
+    }
+    return c;
+}
+
+// the host twin of k_quantize_q8_K (the sequential ggml quantize_row_q8_K_ref form: the
+// first-occurrence argmax, iscale = -127/maxv, MIN(127, v), the per-16 bsums, d = 1/iscale)
+static void quant_q8_K_row(const float* x, int K, int8_t* qs, int16_t* bsums, float* d) {
+    for (int sb = 0; sb < K / 256; sb++) {
+        const float* xb = x + sb * 256;
+        float amax = 0, maxv = 0;
+        for (int i = 0; i < 256; i++)
+            if (fabsf(xb[i]) > amax) { amax = fabsf(xb[i]); maxv = xb[i]; }  // the first occurrence wins
+        if (amax == 0.f) {
+            memset(qs + (size_t)sb * 256, 0, 256);
+            memset(bsums + (size_t)sb * 16, 0, 32);
+            d[sb] = 0.f;
+            continue;
+        }
+        const float iscale = -127.f / maxv;
+        for (int i = 0; i < 256; i++) {
+            int q = t4q_iq1s::nearest_int(iscale * xb[i]);
+            if (127 < q) q = 127;  // ggml's MIN(127, v)
+            qs[(size_t)sb * 256 + i] = (int8_t)q;
+        }
+        for (int h = 0; h < 16; h++) {
+            int s = 0;
+            for (int i = 0; i < 16; i++) s += qs[(size_t)sb * 256 + 16 * h + i];
+            bsums[(size_t)sb * 16 + h] = (int16_t)s;
+        }
+        d[sb] = 1.f / iscale;
+    }
+}
+
+// the host twin of dot_q8k<FMT_IQ1S> (the exact kernel arithmetic, dp4a emulated), plus
+// the INDEPENDENT per-elem sum (the u16 table's L fields): the two sumi paths must be
+// INTEGER-IDENTICAL - the gate that pins the nibble pairing and the halves packing.
+static float dot_iq1s_sim(const PackedW& W, int64_t row, int64_t g, const int8_t* xv, int16_t bs0, int16_t bs1,
+                          float yd, int& sumi_mismatch) {
+    const int64_t nb = W.cols / 256;
+    const int64_t blk = row * nb + (g >> 3);
+    const int ib = (int)(g & 7);
+    const uint8_t* qs = W.codes + blk * 32 + 4 * ib;
+    const int qh = ((const uint16_t*)W.hi + blk * 8)[ib];
+    int sumi = 0, ref = 0;
+    for (int k = 0; k < 4; ++k) {
+        const int idx = qs[k] | (((qh >> (3 * k)) & 0x07) << 8);
+        const int grid = t4q_iq1s_grid_gpu[idx];
+        const int grid0 = (grid >> 0) & 0x0F0F0F0F;
+        const int grid1 = (grid >> 4) & 0x0F0F0F0F;
+        const int* xw = (const int*)xv;
+        sumi = dp4a(grid0, xw[2 * k], sumi);
+        sumi = dp4a(grid1, xw[2 * k + 1], sumi);
+        const uint16_t u16e = t4q_kgrid_1bit_2048[idx];  // the independent walk
+        for (int j = 0; j < 8; j++) ref += ((u16e >> (2 * j)) & 3) * (int)xv[8 * k + j];
+    }
+    if (sumi != ref) sumi_mismatch++;
+    const float d1q = t4q_fp16_to_fp32(W.d[blk]) * (float)(((qh >> 11) & 0x0E) + 1);
+    const float delta = -1.f + T4Q_IQ1S_DELTA - (float)(qh & 0x8000) * (2.f * T4Q_IQ1S_DELTA / 0x8000);
+    return d1q * yd * ((float)sumi + delta * (float)((int)bs0 + (int)bs1));
+}
+
 int main() {
     // ---- gate 1: the fp16 conversions ----
     int bad16 = 0;
@@ -73,7 +141,20 @@ int main() {
         }
     }
 
-    // ---- gate 3: the packer/deq32 round-trip + gate 4: the RMSE ----
+    // ---- gate 3: the packer/deq32 round-trip + gate 4: the RMSE + the r2 dot gates ----
+    // r2 gate A: the u32 nibble table vs the u16 table - the halves-interleave packing
+    // identity must hold for every entry (the kernel's dp4a pairing rides on it).
+    for (int k = 0; k < t4q_iq1s::NG; k++) {
+        uint32_t C = 0;
+        for (int b = 0; b < 4; b++) {
+            C |= (uint32_t)((t4q_kgrid_1bit_2048[k] >> (2 * b)) & 3) << (8 * b);
+            C |= (uint32_t)((t4q_kgrid_1bit_2048[k] >> (2 * (b + 4))) & 3) << (8 * b + 4);
+        }
+        if (t4q_iq1s_grid_gpu[k] != C) {
+            printf("gpu nibble table mismatch k=%d\n", k);
+            return 1;
+        }
+    }
     const int K = 2048, rows = 4096;  // 8 blocks per row
     std::vector<float> x(K), a(K), b(K);
     std::vector<t4q_iq1s::Block> blocks(K / 256);
@@ -86,8 +167,11 @@ int main() {
     W.codes = codes.data();
     W.hi = hi.data();
     W.d = dd.data();
-    int bad = 0;
-    double sq = 0, sq0 = 0;
+    std::vector<int8_t> xq(K);
+    std::vector<int16_t> bs(K / 16);
+    std::vector<float> xqd(K / 256);
+    int bad = 0, sumi_bad = 0, dot_bad = 0;
+    double sq = 0, sq0 = 0, dot_err = 0, dot_l1 = 0;
     for (int r = 0; r < rows; r++) {
         const int cls = r & 7;
         for (int i = 0; i < K; i++) {
@@ -118,8 +202,30 @@ int main() {
             sq += (double)(a[i] - x[i]) * (a[i] - x[i]);
             sq0 += (double)x[i] * x[i];
         }
+        // r2 gate B: the M=1 dot twin - the exact kernel arithmetic (the nibble dp4a +
+        // the bsums correction) vs the deq32-decode fp dot over the SAME x. The two sumi
+        // paths (nibble-unpacked vs the u16 per-elem walk) must be INTEGER-IDENTICAL
+        // (sumi_bad); the fp dot agrees to the honest q8_K activation error class
+        // (checked L1-normalized, the cancellation-safe bound).
+        quant_q8_K_row(x.data(), K, xq.data(), bs.data(), xqd.data());
+        double dkin = 0, dref = 0, l1 = 0;
+        for (int g = 0; g < K / 32; g++) {
+            const int sb = g >> 3, sub = 2 * (g & 7);
+            dkin += dot_iq1s_sim(W, 0, g, xq.data() + g * 32, bs[sb * 16 + sub], bs[sb * 16 + sub + 1],
+                                 xqd[sb], sumi_bad);
+        }
+        for (int i = 0; i < K; i++) {
+            dref += (double)a[i] * x[i];
+            l1 += fabs((double)a[i] * x[i]);
+        }
+        dot_err += fabs(dkin - dref);
+        dot_l1 += l1;
+        if (l1 > 0 && fabs(dkin - dref) > 0.02 * l1) dot_bad++;
     }
     printf("iq1s round-trip rows=%d %s  rmse=%.6f rel=%.4f\n", rows, bad ? "MISMATCH" : "OK",
            sqrt(sq / ((double)rows * K)), sqrt(sq / sq0));
-    return bad != 0;
+    printf("iq1s M=1 dot twin: sumi-int %s (%d)  dot %s (%d rows over, err=%.3e l1=%.3e rel=%.2e)\n",
+           sumi_bad ? "MISMATCH" : "EXACT", sumi_bad, dot_bad ? "FAIL" : "OK", dot_bad, dot_err, dot_l1,
+           dot_l1 > 0 ? dot_err / dot_l1 : 0.0);
+    return (bad || sumi_bad || dot_bad) != 0;
 }

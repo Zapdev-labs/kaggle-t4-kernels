@@ -321,6 +321,32 @@ __device__ __forceinline__ float dot_q8k(const PackedW& W, int64_t row, int64_t 
 #pragma unroll
         for (int l = 0; l < 8; l++) sumi = __dp4a(hin ? (qi[l] >> 4) & m : qi[l] & m, xi[l], sumi);
         return (dx * yd) * (float)(sc * sumi) - (dminx * yd) * (float)(((int)bs0 + (int)bs1) * mi);
+    } else if constexpr (FMT == FMT_IQ1S) {
+        // ggml vec_dot_iq1_s_q8_1 translated to the PackedW planes + the q8_K pairing:
+        // the nibble grid (the halves-interleave, t4q_iq1s_grid_gpu) unpacks to 2 dp4a
+        // byte-quads per 8 elems, 4 iterations per 32-group; the weight value = L +
+        // (delta-1), delta = +-0.125 by the qh shift bit, so the group dot = d1q*yd*(sumi +
+        // (delta-1)*(bs0+bs1)) - the SAME two bsums the K2/K4 branch reads (no new
+        // activation format; the ggml q8_1 s-term becomes the bsums pair here).
+        const int64_t nb = W.cols / 256;
+        const int64_t blk = row * nb + (g >> 3);
+        const int ib = (int)(g & 7);
+        const int qs4 = *(const int*)(W.codes + blk * 32 + 4 * ib);
+        const uint8_t* qs = (const uint8_t*)&qs4;
+        const int qh = ((const uint16_t*)W.hi + blk * 8)[ib];
+        int sumi = 0;
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const int grid = t4q_iq1s_grid_gpu[qs[k] | (((qh >> (3 * k)) & 0x07) << 8)];
+            const int grid0 = (grid >> 0) & 0x0F0F0F0F;  // bytes = L_0..L_3 (elems 8k+0..3)
+            const int grid1 = (grid >> 4) & 0x0F0F0F0F;  // bytes = L_4..L_7 (elems 8k+4..7)
+            const int* xw = (const int*)xv;
+            sumi = __dp4a(grid0, xw[2 * k], sumi);
+            sumi = __dp4a(grid1, xw[2 * k + 1], sumi);
+        }
+        const float d1q = h2f(W.d[blk]) * (float)(((qh >> 11) & 0x0E) + 1);
+        const float delta = -1.f + T4Q_IQ1S_DELTA - (float)(qh & 0x8000) * (2.f * T4Q_IQ1S_DELTA / 0x8000);
+        return d1q * yd * ((float)sumi + delta * (float)((int)bs0 + (int)bs1));
     } else {
         return 0.f;
     }
@@ -340,7 +366,7 @@ __global__ void __launch_bounds__(256) k_gemv_q8k(PackedW W, const int8_t* __res
         *(int4*)xv = __ldg((const int4*)(xq + g * 32));
         *(int4*)(xv + 16) = __ldg((const int4*)(xq + g * 32 + 16));
         const int64_t sb = g >> 3;
-        const int sub = 2 * (int)(g & 7);  // K2: the subs s0, s0+1; K4: the bsums 2s, 2s+1
+        const int sub = 2 * (int)(g & 7);  // K2: the subs s0, s0+1; K4/IQ1S: the bsums 2s, 2s+1
         acc += dot_q8k<FMT>(W, row, g, xv, bsums[sb * 16 + sub], bsums[sb * 16 + sub + 1], yd[sb]);
     }
 #pragma unroll
@@ -354,6 +380,11 @@ void launch_gemv_q8k(const PackedW& W, const int8_t* xq, const int16_t* bsums, c
     switch (W.fmt) {
         case FMT_K2: k_gemv_q8k<FMT_K2><<<G, 256, 0, s>>>(W, xq, bsums, yd, y); break;
         case FMT_K4: k_gemv_q8k<FMT_K4><<<G, 256, 0, s>>>(W, xq, bsums, yd, y); break;
+        // cf-m6 r2 (CF_REQUANT.md section 4): the M=1 greedy path for the iq1_s experts.
+        // NOTE: NOT the batched _b form (it re-decodes W per (row, batch) pair - the spec
+        // freezes the amortized M=8 verify kernel as r5, a different kernel, not this
+        // dot's drop-in).
+        case FMT_IQ1S: k_gemv_q8k<FMT_IQ1S><<<G, 256, 0, s>>>(W, xq, bsums, yd, y); break;
         default: break;
     }
 }

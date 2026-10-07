@@ -193,9 +193,36 @@ primary source: the eps path really does skip the packing (a zero group inside a
 block decodes to the -0.875*d bias quirk - the ggml behavior, replicated), and the
 ggml itself uses the float-pairs + int-aliasing + value-only comparator form (the
 port's form is canonical, not an invention).
-r2: the tables (the 2048-entry nibble grid + the kmap/neighbour init from it) + the
-launch_gemv_iq1s M=1 kernel + the FMT_IQ1S gemv dispatch - build-gated locally, value-
-gated by the host sim vs the device deq (the loader round-trip, the L4 confirms).
+r2 [LANDED, build-gated locally]: the tables (the 2048-entry nibble grid) + the
+launch_gemv_iq1s M=1 kernel + the FMT_IQ1S gemv dispatch. LANDED AS: the second table in
+iq1s_table.h - t4q_iq1s_grid_gpu[2048] uint32, the ggml iq1s_grid_gpu values VERBATIM
+(fetched ggml-common.h), the halves-interleave packing (the LOW nibble of byte b = L_b =
+the sub-vector elems 0-3, the HIGH nibble = L_{b+4} = elems 4-7) - the packing pinned
+EMPIRICALLY at the extraction (the halves form matches the fetched table 2048/2048; the
+naive nibble-j=L_j form matches only 42/2048 and would mispair L_2 with q_1 in the dp4a);
+the same host/device form switch as the u16 table. The kernel: the dot_q8k FMT_IQ1S
+branch in gemv_ref.cu - the ggml vec_dot_iq1_s_q8_1 translated to the PackedW planes +
+the q8_K pairing (4 iterations per 32-group: the index build, ONE u32 grid load, the
+3-op nibble unpack to 2 dp4a byte-quads, 2 dp4a; then the d1q = h2f(d)*((qh>>11)&0xE)+1
+tail with the ggml's one-shift trick, delta = -1 + 0.125 - (qh&0x8000)*(2*0.125/0x8000)
+= -0.875/-1.125, and the group dot = d1q*yd*(sumi + delta*(bs0+bs1)) - the SAME two
+bsums the K2/K4 branch reads, the ggml q8_1 s-term's equivalent at the q8_K pairing, NO
+new activation format); the launch_gemv_q8k FMT_IQ1S case (the M=1 greedy path, the
+k_gemv_q8k warp-per-row form unchanged) + the gemv() dispatch branch in cf_engine.cu
+(FMT_IQ1S joins the K2/K4 q8_K pairing). NOT the batched _b form - the spec's r5
+amortized M=8 kernel replaces it, the drop-in re-decodes W per (row, batch) pair. THE
+GATES (test_iq1s.cpp, host): the u32-vs-u16 packing identity 2048/2048; the int-exact
+sumi gate - the nibble-unpacked dp4a sum vs the INDEPENDENT u16 per-elem walk,
+INTEGER-IDENTICAL over 4096 rows x 64 groups (0 mismatches - the pairing bug class is
+deterministically excluded); the fp-dot gate - the full kernel-arithmetic twin (incl.
+the host q8_K quantizer twin: the first-occurrence argmax, iscale = -127/maxv,
+MIN(127, v), the bsums, d = 1/iscale) vs the deq32-decode dot over the same x: rel
+6.9e-05 L1-normalized (the honest q8_K activation error class). THE BUILD GATE: nvcc
+clean, k_gemv_q8k<9> = 41 registers / 0 spills / 0 smem (the K2 twin is 63), the ptxas
+warnings exactly HEAD's 77. THE DEVICE-FORM NOTE: the grid reads go straight to the
+__device__ table (the ggml MMVQ's own form, L1-resident at 8 KB) - the spec's
+shared-memory staging stays a RATE-tuning option for the L4 measure, not a correctness
+difference.
 r3: the packer kernel (the Kaggle streaming pipeline) + the dataset push.
 r4: the stage-1 tiered residency (the loader reads the slabs, the HIT branch dispatches
 FMT_IQ1S) + the L4 smoke + the A/B + the rate measure.

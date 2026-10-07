@@ -28,7 +28,10 @@ void gemv(CfScratch& sc, const PackedW& W, const float* x, float* y, cudaStream_
     static int nofast = -1;
     if (nofast < 0) { const char* e = getenv("T4Q_CF_NOFAST"); nofast = (e && atoi(e)) ? 1 : 0; }
     if (nofast) { launch_gemv(W, x, y, st); return; }
-    if (W.fmt == FMT_K2 || W.fmt == FMT_K4) {
+    if (W.fmt == FMT_K2 || W.fmt == FMT_K4 || W.fmt == FMT_IQ1S) {
+        // cf-m6 r2 (CF_REQUANT.md section 4): FMT_IQ1S rides the same q8_K pairing - the
+        // launch_gemv_q8k FMT_IQ1S dot (the nibble-grid dp4a + the bsums correction); no new
+        // activation format, the same quantize the K2/K4 trunk uses.
         launch_quantize_q8_K(x, (int)W.cols, sc.xqk, sc.xqk_b, sc.xqk_d, st);
         launch_gemv_q8k(W, sc.xqk, sc.xqk_b, sc.xqk_d, y, st);
     } else if (W.fmt == FMT_Q51) {
