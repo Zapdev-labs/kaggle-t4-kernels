@@ -3,19 +3,19 @@ ptxas info    : Compiling entry function '_Z14k_gate_sigmoidPKfS0_Pf' for 'sm_75
 ptxas info    : Function properties for _Z14k_gate_sigmoidPKfS0_Pf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 15 registers, used 0 barriers, 376 bytes cmem[0]
-ptxas info    : Compile time = 3.476 ms
+ptxas info    : Compile time = 3.530 ms
 ptxas info    : Compiling entry function '_Z13k_attn_decodePKfPK6__halfS3_PfS4_iif' for 'sm_75'
 ptxas info    : Function properties for _Z13k_attn_decodePKfPK6__halfS3_PfS4_iif
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 53 registers, used 1 barriers, 1056 bytes smem, 404 bytes cmem[0]
-ptxas info    : Compile time = 23.784 ms
+ptxas info    : Compile time = 23.286 ms
 ptxas info    : Compiling entry function '_Z10k_kv_storePKfS0_P6__halfS2_ii' for 'sm_75'
 ptxas info    : Function properties for _Z10k_kv_storePKfS0_P6__halfS2_ii
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 14 registers, used 0 barriers, 392 bytes cmem[0]
-ptxas info    : Compile time = 0.990 ms
+ptxas info    : Compile time = 0.980 ms
 ptxas info    : Compiling entry function '_Z14k_qk_norm_ropePKfS0_S0_S0_PfS1_iffi' for 'sm_75'
 ptxas info    : Function properties for _Z14k_qk_norm_ropePKfS0_S0_S0_PfS1_iffi
     32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 24 registers, used 1 barriers, 32 bytes cumulative stack size, 1056 bytes smem, 416 bytes cmem[0], 8 bytes cmem[2]
-ptxas info    : Compile time = 10.569 ms
+ptxas info    : Compile time = 9.939 ms

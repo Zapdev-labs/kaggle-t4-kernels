@@ -3,119 +3,119 @@ ptxas info    : Compiling entry function '_Z10k_gemv_q80ILi1EEv7PackedWPKaPKfPKi
 ptxas info    : Function properties for _Z10k_gemv_q80ILi1EEv7PackedWPKaPKfPKiPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 472 bytes cmem[0]
-ptxas info    : Compile time = 9.576 ms
+ptxas info    : Compile time = 11.252 ms
 ptxas info    : Compiling entry function '_Z12k_gemv_q80_bPK7PackedWPKaPKfPKiPflll' for 'sm_75'
 ptxas info    : Function properties for _Z12k_gemv_q80_bPK7PackedWPKaPKfPKiPflll
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 62 registers, used 0 barriers, 416 bytes cmem[0]
-ptxas info    : Compile time = 9.303 ms
+ptxas info    : Compile time = 11.829 ms
 ptxas info    : Compiling entry function '_Z15k_quantize_q8_0PKfiPaPfPi' for 'sm_75'
 ptxas info    : Function properties for _Z15k_quantize_q8_0PKfiPaPfPi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 16 registers, used 0 barriers, 392 bytes cmem[0]
-ptxas info    : Compile time = 7.527 ms
+ptxas info    : Compile time = 7.023 ms
 ptxas info    : Compiling entry function '_Z12k_gemv_q8k_bILi7EEvPK7PackedWPKaPKsPKfPfllll' for 'sm_75'
 ptxas info    : Function properties for _Z12k_gemv_q8k_bILi7EEvPK7PackedWPKaPKsPKfPfllll
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 52 registers, used 0 barriers, 424 bytes cmem[0]
-ptxas info    : Compile time = 6.623 ms
+ptxas info    : Compile time = 6.804 ms
 ptxas info    : Compiling entry function '_Z12k_gemv_q8k_bILi6EEvPK7PackedWPKaPKsPKfPfllll' for 'sm_75'
 ptxas info    : Function properties for _Z12k_gemv_q8k_bILi6EEvPK7PackedWPKaPKsPKfPfllll
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 63 registers, used 0 barriers, 424 bytes cmem[0]
-ptxas info    : Compile time = 10.181 ms
+ptxas info    : Compile time = 9.656 ms
 ptxas info    : Compiling entry function '_Z10k_gemv_q8kILi7EEv7PackedWPKaPKsPKfPf' for 'sm_75'
 ptxas info    : Function properties for _Z10k_gemv_q8kILi7EEv7PackedWPKaPKsPKfPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 48 registers, used 0 barriers, 472 bytes cmem[0]
-ptxas info    : Compile time = 6.247 ms
+ptxas info    : Compile time = 5.694 ms
 ptxas info    : Compiling entry function '_Z10k_gemv_q8kILi6EEv7PackedWPKaPKsPKfPf' for 'sm_75'
 ptxas info    : Function properties for _Z10k_gemv_q8kILi6EEv7PackedWPKaPKsPKfPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 472 bytes cmem[0]
-ptxas info    : Compile time = 9.673 ms
+ptxas info    : Compile time = 8.772 ms
 ptxas info    : Compiling entry function '_Z15k_quantize_q8_KPKfiPaPsPf' for 'sm_75'
 ptxas info    : Function properties for _Z15k_quantize_q8_KPKfiPaPsPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 21 registers, used 1 barriers, 72 bytes smem, 392 bytes cmem[0]
-ptxas info    : Compile time = 10.960 ms
+ptxas info    : Compile time = 9.033 ms
 ptxas info    : Compiling entry function '_Z9k_gemv_q8ILi8EEv7PackedWPKaPKfS4_Pf' for 'sm_75'
 ptxas info    : Function properties for _Z9k_gemv_q8ILi8EEv7PackedWPKaPKfS4_Pf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 44 registers, used 0 barriers, 472 bytes cmem[0]
-ptxas info    : Compile time = 5.363 ms
+ptxas info    : Compile time = 4.639 ms
 ptxas info    : Compiling entry function '_Z9k_gemv_q8ILi5EEv7PackedWPKaPKfS4_Pf' for 'sm_75'
 ptxas info    : Function properties for _Z9k_gemv_q8ILi5EEv7PackedWPKaPKfS4_Pf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 472 bytes cmem[0]
-ptxas info    : Compile time = 12.213 ms
+ptxas info    : Compile time = 11.708 ms
 ptxas info    : Compiling entry function '_Z9k_gemv_q8ILi4EEv7PackedWPKaPKfS4_Pf' for 'sm_75'
 ptxas info    : Function properties for _Z9k_gemv_q8ILi4EEv7PackedWPKaPKfS4_Pf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 63 registers, used 0 barriers, 472 bytes cmem[0]
-ptxas info    : Compile time = 14.091 ms
+ptxas info    : Compile time = 15.910 ms
 ptxas info    : Compiling entry function '_Z9k_gemv_q8ILi3EEv7PackedWPKaPKfS4_Pf' for 'sm_75'
 ptxas info    : Function properties for _Z9k_gemv_q8ILi3EEv7PackedWPKaPKfS4_Pf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 472 bytes cmem[0]
-ptxas info    : Compile time = 6.919 ms
+ptxas info    : Compile time = 6.634 ms
 ptxas info    : Compiling entry function '_Z9k_gemv_q8ILi2EEv7PackedWPKaPKfS4_Pf' for 'sm_75'
 ptxas info    : Function properties for _Z9k_gemv_q8ILi2EEv7PackedWPKaPKfS4_Pf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 46 registers, used 0 barriers, 472 bytes cmem[0]
-ptxas info    : Compile time = 6.792 ms
+ptxas info    : Compile time = 6.306 ms
 ptxas info    : Compiling entry function '_Z9k_gemv_q8ILi1EEv7PackedWPKaPKfS4_Pf' for 'sm_75'
 ptxas info    : Function properties for _Z9k_gemv_q8ILi1EEv7PackedWPKaPKfS4_Pf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 44 registers, used 0 barriers, 472 bytes cmem[0]
-ptxas info    : Compile time = 6.218 ms
+ptxas info    : Compile time = 5.779 ms
 ptxas info    : Compiling entry function '_Z15k_quantize_q8_1PKfiPaPfS2_' for 'sm_75'
 ptxas info    : Function properties for _Z15k_quantize_q8_1PKfiPaPfS2_
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 15 registers, used 0 barriers, 392 bytes cmem[0]
-ptxas info    : Compile time = 7.196 ms
+ptxas info    : Compile time = 6.779 ms
 ptxas info    : Compiling entry function '_Z6k_gemvILi8EEv7PackedWPKfPf' for 'sm_75'
 ptxas info    : Function properties for _Z6k_gemvILi8EEv7PackedWPKfPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 456 bytes cmem[0]
-ptxas info    : Compile time = 10.126 ms
+ptxas info    : Compile time = 10.106 ms
 ptxas info    : Compiling entry function '_Z6k_gemvILi7EEv7PackedWPKfPf' for 'sm_75'
 ptxas info    : Function properties for _Z6k_gemvILi7EEv7PackedWPKfPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 456 bytes cmem[0]
-ptxas info    : Compile time = 11.712 ms
+ptxas info    : Compile time = 10.864 ms
 ptxas info    : Compiling entry function '_Z6k_gemvILi6EEv7PackedWPKfPf' for 'sm_75'
 ptxas info    : Function properties for _Z6k_gemvILi6EEv7PackedWPKfPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 77 registers, used 0 barriers, 456 bytes cmem[0]
-ptxas info    : Compile time = 10.746 ms
+ptxas info    : Compile time = 10.253 ms
 ptxas info    : Compiling entry function '_Z6k_gemvILi5EEv7PackedWPKfPf' for 'sm_75'
 ptxas info    : Function properties for _Z6k_gemvILi5EEv7PackedWPKfPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 456 bytes cmem[0]
-ptxas info    : Compile time = 13.386 ms
+ptxas info    : Compile time = 12.784 ms
 ptxas info    : Compiling entry function '_Z6k_gemvILi4EEv7PackedWPKfPf' for 'sm_75'
 ptxas info    : Function properties for _Z6k_gemvILi4EEv7PackedWPKfPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 456 bytes cmem[0]
-ptxas info    : Compile time = 15.129 ms
+ptxas info    : Compile time = 14.757 ms
 ptxas info    : Compiling entry function '_Z6k_gemvILi3EEv7PackedWPKfPf' for 'sm_75'
 ptxas info    : Function properties for _Z6k_gemvILi3EEv7PackedWPKfPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 63 registers, used 0 barriers, 456 bytes cmem[0]
-ptxas info    : Compile time = 6.599 ms
+ptxas info    : Compile time = 7.187 ms
 ptxas info    : Compiling entry function '_Z6k_gemvILi2EEv7PackedWPKfPf' for 'sm_75'
 ptxas info    : Function properties for _Z6k_gemvILi2EEv7PackedWPKfPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 456 bytes cmem[0]
-ptxas info    : Compile time = 7.580 ms
+ptxas info    : Compile time = 7.658 ms
 ptxas info    : Compiling entry function '_Z6k_gemvILi1EEv7PackedWPKfPf' for 'sm_75'
 ptxas info    : Function properties for _Z6k_gemvILi1EEv7PackedWPKfPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 456 bytes cmem[0]
-ptxas info    : Compile time = 6.615 ms
+ptxas info    : Compile time = 6.706 ms
 ptxas info    : Compiling entry function '_Z6k_gemvILi0EEv7PackedWPKfPf' for 'sm_75'
 ptxas info    : Function properties for _Z6k_gemvILi0EEv7PackedWPKfPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 456 bytes cmem[0]
-ptxas info    : Compile time = 4.458 ms
+ptxas info    : Compile time = 4.656 ms
