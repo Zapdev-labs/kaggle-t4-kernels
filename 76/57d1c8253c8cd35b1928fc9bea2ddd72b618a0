@@ -1,0 +1,27 @@
+t4q/src/cf_engine.cu
+  s_ee78a6a141091d::t_139dc6ae0d3310 358
+  s_ee78a6a141091d::t_3843c42623e9a2 172
+  s_ee78a6a141091d::t_10b98deaa9a8d1 316
+  s_ee78a6a141091d::t_8ed2a6a2aa49d8 347-349
+  s_ee78a6a141091d::t_45f7e1372d8d99 52-54,61-62
+  s_ee78a6a141091d::t_a6a719a189190b 177-180
+  s_ee78a6a141091d::t_3180099f390633 357,360-361
+t4q/src/cf_loader.cu
+  s_ee78a6a141091d::t_7baaca86e209d0 324-327
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7657d1c8253c8cd35b1928fc9bea2ddd72b618a0",
+  "prompts": {},
+  "sessions": {
+    "s_ee78a6a141091d": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "b8aa02a6-d6f7-4c6a-a2a4-8dd7cbfc6088",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
