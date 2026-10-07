@@ -1,0 +1,20 @@
+research/PLAN_CF.md
+  s_ac85989787ca8c::t_c6560fe77690b8 491,493-503
+  s_ac85989787ca8c::t_6ee98d9aeb35d7 505-520
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8dcd86802e76270a46ded7313f46b6cf339b6c97",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
