@@ -1,0 +1,33 @@
+t4q/src/cf_engine.cu
+  s_ac85989787ca8c::t_9e6116616e77db 224-235
+  s_ac85989787ca8c::t_e702cacb074bdb 436,439
+research/PLAN_CF.md
+  s_ac85989787ca8c::t_5e1c3729fa7290 275-286
+t4q/src/repack.cu
+  s_ac85989787ca8c::t_5f26766f31762a 69-100,102-103
+  s_ac85989787ca8c::t_7ac042f9a339ce 101
+  s_ac85989787ca8c::t_0ea32e5d6450ce 122-140
+t4q/src/cf_model.h
+  s_ac85989787ca8c::t_0c2b2cea1ce725 76-80
+  s_ac85989787ca8c::t_b5689fa056a907 144-148
+t4q/src/kernels/kernels.h
+  s_ac85989787ca8c::t_1fd13f86e3eb57 11-17
+t4q/src/cf_loader.cu
+  s_ac85989787ca8c::t_52a6c680c8b411 435-478
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "31afadbb727ef086555d991dff7adbe78eb5f5d8",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
