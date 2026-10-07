@@ -1937,3 +1937,28 @@ dump-gated). The payload REGENERATED a FOURTH time (6fc49468 at 7657d1c,
 byte-verified, all four catches + the tiering + the tooling packed). The ladder
 gains the overflow fix between the block-input fix and the Q4_K fix (all three
 are the real-value changes; the rest is zero-change machinery).
+
+The post-regen static audit of the tiered path (the next round's payload - a
+fifth catch here would burn the tiered A/B round): CLEAN, no fifth killer. The
+repack semantics settled first (kernels.h: launch_repack's raw staging holds
+GGUF rows [r0, r0+nr) CONTIGUOUSLY AT THE FRONT and writes them into W AT THE
+SAME ROWS, dst block index = (r0 + r) * nbr + b) - so the loader's chunked
+resident packing (h0 offset, ch slabs staged at the raw front) is correct, and
+the engine's miss path (r0 = 0, nmiss slabs at the front, views at slot m)
+matches. The full geometry closes end-to-end: D = 2560 (the gate|up codes
+640 B/row + meta 200 B/row = 10 blocks x 84 B raw = gu_row 840; the down codes
+320 B/row, d 20 fp16/row, dn_row 360; the moe down K = EE = 640), EE = 640,
+HCD = 10240 (the hyper-connection state, the trunk Q4_0/Q5_1 gemv K - the hc
+FFN maps 10240 -> 320, the moe maps 2560 -> 640 -> 2560, the token_embd/lm_head
+are [2560, 248320]); every plane stride in the engine's hit/miss views equals
+the loader's packed allocs (res_gu [hn*2*EE, 2560] K2, res_dn [hn*D, 640] P4),
+and the VRAM check's ~2.0 MB/expert-layer agrees. The slab order: the loader
+packs slab j from expert hot_ids[j] (hot_idx the correct inverse), and the
+engine's hit view h = hot_idx[e] lands on the right slab. The byte-identity:
+the repack is per-row deterministic, so the resident slab is byte-identical to
+what the per-step staging would produce for the same expert. The stream
+ordering: the miss repack, the W-table upload, and the gemv chain serialize on
+the engine stream. The dump tooling also re-checked: the router fprintf is
+cfdump_active()-gated (dead in the round), and the cfdump copies ride the
+engine stream AND sync before the host reads - the parallel session's race fix
+is complete.
