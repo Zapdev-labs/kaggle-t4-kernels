@@ -152,16 +152,29 @@ void ple(CfCtx* c, int token) {
         }
     }
     CK(cudaMemcpyAsync(s.mixed, c->h_ple, (size_t)D * 4, cudaMemcpyHostToDevice, st));
+    if (cfdump_active()) {  // host gather result, no race
+        uint32_t nl = 7;
+        fwrite(&nl, 4, 1, cfdump); fwrite("ple_emb", 1, 7, cfdump);
+        fwrite(&cfdump_tag, 4, 1, cfdump);
+        int64_t ne[4] = {D, 1, 1, 1}; fwrite(ne, 8, 4, cfdump);
+        fwrite(c->h_ple, 4, D, cfdump);
+    }
     gemv(s, c->ple.key, s.mixed, c->ple_key, st);
     gemv(s, c->ple.value, s.mixed, s.block, st);
+    if (cfdump_active()) { cfdump_rec("ple_key_raw", c->ple_key, HCD); cfdump_rec("ple_value_raw", s.block, D); }
     // grouped norms: key in place, query from the current wide residual
     launch_cf_hc_norm(c->ple_key, c->ple.norm_key, c->ple_key, st);
     launch_cf_hc_norm(s.h, c->ple.norm_query, c->ple_query, st);
+    if (cfdump_active()) { cfdump_rec("ple_key_norm", c->ple_key, HCD); cfdump_rec("ple_query_norm", c->ple_query, HCD); }
     launch_cf_ple_sg(c->ple_key, c->ple_query, c->ple_s, c->ple_gate, st);
+    if (cfdump_active()) { cfdump_rec("ple_s", c->ple_s, HC); cfdump_rec("ple_gate", c->ple_gate, HC); }
     launch_cf_ple_gated(s.block, c->ple_gate, c->ple_gated, st);  // gated = value * gate[s]
+    if (cfdump_active()) cfdump_rec("ple_gated", c->ple_gated, HCD);
     // conv over the normed gated, then res += gated + conv (exact add order)
     launch_cf_hc_norm(c->ple_gated, c->ple.norm_conv, c->ple_key, st);  // reuse the dead key buffer
+    if (cfdump_active()) cfdump_rec("ple_normed", c->ple_key, HCD);
     launch_cf_ple_conv(c->ple_key, c->ple_hist, c->ple.conv_w, c->ple_query, st);
+    if (cfdump_active()) cfdump_rec("ple_conv_out", c->ple_query, HCD);
     launch_add(c->ple_query, c->ple_gated, HCD, st);  // t = gated + conv
     launch_add(s.h, c->ple_query, HCD, st);           // res += t
 }

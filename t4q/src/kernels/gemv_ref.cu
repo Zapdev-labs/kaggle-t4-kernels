@@ -41,21 +41,30 @@ void launch_gemv(const PackedW& W, const float* x, float* y, cudaStream_t s) {
 }
 
 // ------------------------------------------------------------------------------------------- q8_1 activations
+// ggml quantize_row_q8_1_ref: q = roundf(x*id), d = amax/127 as FP16, s = FP16(sum(q) * d)
+// (the sum of the QUANTIZED ints scaled back by d - NOT the raw float sum; the m-terms of the
+// q4_0/q4_1/q5_1 dots consume exactly this dequantized-block-sum).
 __global__ void k_quantize_q8_1(const float* __restrict__ x, int K, int8_t* xq, float* xd, float* xs) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;  // K % 32 == 0, blockDim multiple of 32
     if (i >= K) return;
     const float xi = x[i];
-    float amax = fabsf(xi), sum = xi;
+    float amax = fabsf(xi);
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) {
         amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
-        sum += __shfl_xor_sync(0xffffffffu, sum, o);
     }
     const float d = amax / 127.0f;
-    xq[i] = amax == 0.0f ? 0 : (int8_t)roundf(xi / d);
+    const float id = d ? 1.0f / d : 0.0f;
+    const int8_t q = (int8_t)roundf(xi * id);
+    xq[i] = q;
+    float sum = (float)q;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        sum += __shfl_xor_sync(0xffffffffu, sum, o);
+    }
     if ((i & 31) == 0) {
         xd[i >> 5] = __half2float(__float2half_rn(d));
-        xs[i >> 5] = __half2float(__float2half_rn(sum));
+        xs[i >> 5] = __half2float(__float2half_rn(d * sum));
     }
 }
 
