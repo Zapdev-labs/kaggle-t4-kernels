@@ -2802,3 +2802,57 @@ register, and the r1-r6 round order - r1 is ALL LOCAL (FMT_IQ1S + the deq32 host
 the quota gate. PLAN_CF section 5's ORDER updated to the landed state. STILL AHEAD:
 the spec's r1 (the local format + packer core round), then r2+ as gated; the
 L4-blocked r19w-r19aa battery rides the same Saturday sessions.
+
+## cf-m6 r1: the requant LOCAL round landed (the format + the packer core + the round-trip gate, ALL GREEN)
+
+THE LANDED SURFACE: t4q/src/iq1s_table.h (the 2048-entry u16 lattice extracted from the
+r19ad-saved ggml-common.h - bounds re-verified 2918..3045 = exactly 2048 entries, the
+adjacent kgrid_2bit_1024 disambiguated; NGRID/KMAP_SIZE=43692/DELTA=0.125 defines; the
+__device__ vs plain static form switched by T4Q_HOST_SIM/T4Q_TABLE_HOST so the same
+table serves the kernels, the host sim, and the packer); FMT_IQ1S = 9 in packed.h
+(codes = qs 32 B/256, hi = qh 16 B/256, d 2 B/256 = the 50 B/256 = 1.5625 bpw block) +
+the pack_fmt_name case; the deq32 FMT_IQ1S branch in deq.cuh (the exact reference
+fp-op order: dl = d*(2*sc+1), v = L-1, delta = +-0.125 at qh bit 15, the grid index =
+qs[4*ib+l] | ((qh >> 3l) & 7) << 8); t4q/src/requant.h (the packer core: the standard
+fp16 converters - RNE narrowing, exact widening, payload-preserving inf/NaN so the
+all-65536 round-trip holds; the exact iq2xs_init_impl 3-pass table build with the
+(dist2, k) qsort and the nwant=3 distinct-distance cut; quant_row = the exact
+quantize_row_iq1_s_impl port - the self-scaled weights w = sqrt(sigma2 + x*x) (qw = 1
+first, the imatrix the named fallback), the exhaustive 2-boundary SSD split search
+over 33 boundaries in both shift directions, the kmap + the fudge-free
+find_best_neighbour2 fallback, the !all_on_grid scale refit, the l = round(0.5*(id*s -
+1)) clamped [0,7] packing with the shift at l bit 3, and the d = (max_scale/15)*1.125
+fudge replicated EXACTLY; plus the independent {1,3,5}-byte-grid reference decode);
+t4q/tests/test_iq1s.cpp + the Makefile test_iq1s target (HOSTCXX g++, host-only).
+
+THE GATE (CF_REQUANT.md section 7, gate 1) PASSED: (a) the fp16 all-65536-pattern
+round-trip + 11 RNE spot checks (the exact ties -> even, the subnormal ties, the 65520
+overflow boundary -> inf, 65519.9 -> the max finite); (b) the kmap self-check - every
+on-grid u maps back to its k AND the byte-grid/u16-table nibbles agree over all 2048
+entries; (c) THE ROUND-TRIP: quant_row -> the deq32 host sim (the kernel's own decode
+path) vs dequant_row_ref (the independent byte-grid walk) BIT-IDENTICAL over 4096
+rows x 2048 cols x 4 input classes (normal amplitudes / the all-zero eps path / the
+all-negative flip path / constant rows); (d) the RMSE diagnostic rel ~0.40 on the
+synthetic mix - the honest ternary-lattice + 15-step-scale-grid error on
+uniform/constant synthetic data, NOT a quality verdict (the quality bar is the L4
+perplexity A/B per the spec; the all-zero rows decode exactly 0 via the block-level
+d = 0 path). THE BUILD GATE: the podman nvcc library + cf_run build clean, the ptxas
+warnings EXACTLY HEAD's 77 (41 tp_prefill + 36 tp_spec, pre-existing, no new warnings
+from the __device__ table in every kernel TU).
+
+THE GATE'S TWO CATCHES, both fixed before landing: (1) the reference decode was
+missing the 32*ib group offset (every 8-elem sub-group overwrote slots 0..31 and the
+rest of the row stayed zeroed) - found by the one-block probe at the first differing
+element (deq32 = +0.011816 correct, ref = 0.000000), and the deq32 kernel path was
+the CORRECT one all along; (2) the test's own LCG normalization treated the 24-bit
+return as 8-bit (~1e5 inputs -> a false 2494 RMSE explosion that looked like a scale
+bug in the quantizer - it was the test, not the code). ALSO VERIFIED against the
+fetched primary source before landing: the eps path really skips the packing (a zero
+group inside a live block decodes to the -0.875*d bias quirk - the ggml behavior,
+replicated not fixed), the ggml itself uses the float pairs + int-aliasing +
+value-only comparator form (the port's sort is canonical), and the search's x_p-then-
+x_m evaluation order, the sumqx > 0 && sumq2 > 0 refit condition, and id = 1/d from
+the UNFUDGED d all match verbatim. THE HONEST NOTE: the packer's same-input
+determinism holds per-platform (the SSD sort's value-only comparator keeps libc
+qsort's tie order - the ggml-inherited property), and the round-trip gate covers the
+format's decode consistency, not the L4 quality/rate/VRAM gates which stay ahead.

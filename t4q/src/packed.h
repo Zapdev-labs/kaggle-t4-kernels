@@ -14,6 +14,9 @@ enum PackFmt : int {
     FMT_K2 = 6,    // Q2_K: qs [rows][cols/4] (64 B / 256), meta 20 B / 256 (d, dmin fp16, scales[16])
     FMT_K4 = 7,    // Q4_K: qs [rows][cols/2] (128 B / 256), meta 16 B / 256 (d, dmin, scales[12]; same meta shape as K5)
     FMT_Q51 = 8,   // Q5_1: codes [rows][cols/2] (16 B / 32), hi [rows][cols/8] (4 B / 32), d/m fp16 [rows][cols/32]
+    // cf-m6 requant (CF_REQUANT.md): the iq1_s class, 50 B / 256 = 1.5625 bpw
+    FMT_IQ1S = 9,  // codes = qs (32 B / 256: one u8 grid index per 8 elems), hi = qh (16 B / 256: 8 u16
+                   // per-32 scale/shift/index-halves), d fp16 [rows][cols/256]; the t4q_kgrid_1bit_2048 lattice
 };
 
 struct PackedW {

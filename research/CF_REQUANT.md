@@ -165,9 +165,34 @@ per-(layer,tensor) slabs (~23.6 GB total, ~1-2 min one-time load).
 
 ## 9. The order (the implementation rounds)
 
-r1: FMT_IQ1S in packed.h + the deq32 template + the host sim + the packer core (the SSD
-search, the kmap init, the scale/d/shift packing) + the round-trip test - ALL LOCAL (no
-GPU needed), the r1 gate is the round-trip.
+r1 [LANDED, all local]: FMT_IQ1S in packed.h + the deq32 template + the host sim + the
+packer core (the SSD search, the kmap init, the scale/d/shift packing) + the round-trip
+test - ALL LOCAL (no GPU needed), the r1 gate is the round-trip. LANDED AS:
+t4q/src/iq1s_table.h (the extracted 2048-entry u16 lattice, host/device form switch),
+FMT_IQ1S = 9 (packed.h, 50 B/256 = 1.5625 bpw), the deq32 FMT_IQ1S branch (deq.cuh,
+the exact reference fp-op order), t4q/src/requant.h (the packer core: the standard
+fp16 converters with RNE and payload-preserving inf/NaN, the exact iq2xs_init_impl
+3-pass table build, the exact quantize_row_iq1_s_impl port with the self-scaled
+weights, find_best_neighbour2 with NO fudge, the d=(max_scale/15)*1.125 fudge
+replicated exactly, and the independent {1,3,5}-byte-grid reference decode),
+t4q/tests/test_iq1s.cpp + the Makefile test_iq1s target. THE GATE PASSED: the fp16
+all-65536 round-trip + 11 RNE spot checks (the ties, the subnormals, the 65520
+overflow boundary); the kmap self-check + the byte-grid/u16-table agreement over all
+2048 entries; the packer->deq32(host sim) vs the reference decode BIT-IDENTICAL over
+4096 rows x 2048 cols across 4 input classes (normal / all-zero-eps / all-negative /
+constant); the RMSE diagnostic rel ~0.40 on the synthetic mix (the honest
+ternary-lattice + 15-step-scale error on uniform/constant synthetic data - NOT a
+quality verdict; the quality gate is the L4 A/B, section 7). The nvcc podman build
+gate: the library + cf_run compile clean, ptxas warnings exactly HEAD's 77 (41
+tp_prefill + 36 tp_spec, pre-existing). THE GATE'S TWO CATCHES (both fixed): the
+reference decode was missing the 32*ib group offset (every group overwrote slots
+0-31 - found by the probe at the first differing element, the deq32 kernel path was
+the correct one), and the test's own LCG normalization bug (a 24-bit return treated
+as 8-bit -> ~1e5 inputs -> a false 2494 RMSE explosion). Verified against the fetched
+primary source: the eps path really does skip the packing (a zero group inside a live
+block decodes to the -0.875*d bias quirk - the ggml behavior, replicated), and the
+ggml itself uses the float-pairs + int-aliasing + value-only comparator form (the
+port's form is canonical, not an invention).
 r2: the tables (the 2048-entry nibble grid + the kmap/neighbour init from it) + the
 launch_gemv_iq1s M=1 kernel + the FMT_IQ1S gemv dispatch - build-gated locally, value-
 gated by the host sim vs the device deq (the loader round-trip, the L4 confirms).

@@ -21,6 +21,7 @@ __device__ __forceinline__ float h2f(uint16_t v) { return __half2float(__ushort_
 #endif
 
 #include "../packed.h"
+#include "../iq1s_table.h"
 
 T4Q_HD void dev_scale_min_k4(int j, const uint8_t* q, int& d, int& m) {
     if (j < 4) { d = q[j] & 63; m = q[j + 4] & 63; }
@@ -155,6 +156,28 @@ T4Q_HD void deq32(const PackedW& W, int64_t row, int64_t g, float* w) {
             const int hb = (qh[l] >> (2 * qd)) & 3;
             const int q = (lo | (hb << 4)) - 32;
             w[l] = __fmul_rn(l < 16 ? ds0 : ds1, (float)q);
+        }
+    } else if constexpr (FMT == FMT_IQ1S) {
+        // IQ1_S (cf-m6 requant, CF_REQUANT.md section 2): 50 B / 256. Group g (32 elems) =
+        // block (g>>3)'s qh[g&7] (the scale/shift/index-halves) + 4 grid indices at
+        // qs[4*ib+l]; each index selects one 8-elem lattice vector (t4q_kgrid_1bit_2048,
+        // L_j at bits 2j). The exact reference fp-op order (y = dl*(v + delta)):
+        // dl = d*(2*sc + 1), v = L - 1 (in {-1,0,1}), delta = +-0.125 (qh bit 15).
+        const int64_t nb = W.cols / 256;
+        const int64_t blk = row * nb + (g >> 3);
+        const int ib = (int)(g & 7);
+        const uint8_t* qs = W.codes + blk * 32;
+        const uint16_t qhi = ((const uint16_t*)W.hi + blk * 8)[ib];
+        const float d = h2f(W.d[blk]);
+        const float dl = __fmul_rn(d, (float)(2 * ((qhi >> 12) & 7) + 1));
+        const float delta = (qhi & 0x8000u) ? -T4Q_IQ1S_DELTA : T4Q_IQ1S_DELTA;
+#pragma unroll
+        for (int l = 0; l < 4; ++l) {
+            const int idx = qs[4 * ib + l] | (int)(((qhi >> (3 * l)) & 7) << 8);
+            const uint16_t kv = t4q_kgrid_1bit_2048[idx];
+#pragma unroll
+            for (int j = 0; j < 8; ++j)
+                w[8 * l + j] = __fmul_rn(dl, __fadd_rn((float)(((kv >> (2 * j)) & 3) - 1), delta));
         }
     }
 }

@@ -15,6 +15,7 @@ __pycache__/
 *.so
 *.exe
 t4q/build/cf_run
+t4q/build/test_iq1s
 
 # Editor / OS
 .vscode/

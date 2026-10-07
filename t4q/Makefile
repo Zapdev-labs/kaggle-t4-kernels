@@ -42,7 +42,19 @@ $(BUILD)/graph_probe: tools/graph_probe.cu
 	@mkdir -p $(BUILD)
 	$(NVCC) $(NVFLAGS) -Isrc -o $@ $<
 
+# cf-m6 r1 (CF_REQUANT.md section 7, gate 1): the iq1_s host round-trip - the packer's blocks
+# decoded by the deq32 host sim must be bit-identical to the packer's own reference decode,
+# plus the fp16 all-pattern round-trip + the RNE spot checks + the kmap self-check.
+# Host-only (T4Q_HOST_SIM), no CUDA: builds and runs on any host with g++.
+HOSTCXX ?= g++
+$(BUILD)/test_iq1s: tests/test_iq1s.cpp src/requant.h src/iq1s_table.h src/packed.h src/kernels/deq.cuh
+	@mkdir -p $(BUILD)
+	$(HOSTCXX) -O2 -std=c++17 -ffp-contract=off -o $@ $<
+
+test_iq1s: $(BUILD)/test_iq1s
+	$(BUILD)/test_iq1s
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all clean
+.PHONY: all clean test_iq1s
