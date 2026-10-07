@@ -739,6 +739,9 @@ bool cf_verify(CfCtx* c, const int* toks, int nr) {
                     launch_cf_ple_conv(c->ple_key, c->ple_hist, c->ple.conv_w, c->ple_query, st);
                     launch_add(c->ple_query, c->ple_gated, HCD, st);  // t = gated + conv
                     launch_add(s.h, c->ple_query, HCD, st);           // res += t (the row's h)
+                    if (r < nr - 1)  // r19y: the PLE ring snapshot (the shift register, not pos-indexed)
+                        CK(cudaMemcpyAsync(v->ple_snap + (size_t)r * PLE_HIST * HCD, c->ple_hist,
+                                           (size_t)PLE_HIST * HCD * 4, cudaMemcpyDeviceToDevice, st));
                 }
                 // the pre twin (emit_pre verbatim with the row's slices)
                 hc_mix(c, s.h, L.hc_norm[0], L.hc_down[0], L.hc_up[0], &L.hc_inject[0], s);
@@ -757,6 +760,15 @@ bool cf_verify(CfCtx* c, const int* toks, int nr) {
                     check_launch("verify attn out");
                 } else {
                     deltanet(c, L, s);  // the row's scratch; L.S/L.conv_state evolve in row order
+                    if (r < nr - 1) {  // r19y: the GDN S/conv snapshots for the partial-accept
+                        // rollback: stream-ordered D2Ds after the row's gdn_recur/conv writes,
+                        // before the next row overwrites L.S/L.conv_state
+                        const size_t ro = (size_t)v->gord[L.il] * (v->nr - 1) + r;
+                        CK(cudaMemcpyAsync(v->s_snap + ro * (size_t)HV * DK * DK, L.S, (size_t)HV * DK * DK * 4,
+                                           cudaMemcpyDeviceToDevice, st));
+                        CK(cudaMemcpyAsync(v->conv_snap + ro * (size_t)CONV * 3, L.conv_state,
+                                           (size_t)CONV * 3 * 4, cudaMemcpyDeviceToDevice, st));
+                    }
                 }
                 hc_combine(c, s.h, s.block, s.inj);
                 hc_mix(c, s.h, L.hc_norm[1], L.hc_down[1], L.hc_up[1], &L.hc_inject[1], s);
@@ -868,6 +880,10 @@ bool cf_verify(CfCtx* c, const int* toks, int nr) {
         // row's pinned slice (emit_tail verbatim with the row's slices)
         for (int r = 0; r < nr; r++) {
             CfScratch& s = v->sc[r];
+            // r19y: the pending_h capture - the row's pre-final-mixer residual (the tail's
+            // hc_mix only READS s.h, so the capture rides the row's tail; the catch-up's pair
+            // (yv[t], pending_h[t]) mirrors the smoke's (x_{i+1}, h_i))
+            CK(cudaMemcpyAsync(v->pending_h + (size_t)r * HCD, s.h, (size_t)HCD * 4, cudaMemcpyDeviceToDevice, st));
             hc_mix(c, s.h, c->o_norm, c->o_down, c->o_up, nullptr, s);
             gemv(s, c->output, s.mixed, s.logits, st);
             check_launch("verify lm_head");
@@ -883,6 +899,136 @@ bool cf_verify(CfCtx* c, const int* toks, int nr) {
     }
 }
 
+// cf-m4 (r19y): the greedy pick - the FIRST max (the lowest index on ties), cf_run's
+// argmax verbatim, so the spec emissions pick identically to the reference modes on the
+// byte-identical logits (a differing tie-break could split an exact tie).
+static int pick(const float* x, int n) {
+    int b = 0;
+    for (int i = 1; i < n; i++)
+        if (x[i] > x[b]) b = i;
+    return b;
+}
+
+// cf-m4 (r19y): the speculative driver's prompt pass (CF_MTP.md section 4) - the trunk
+// over the prompt (one cf_step per token, the same path the reference modes run) with the
+// draft paired one step behind (the pairs (ids[j], h_{j-1}), h_{-1} = 0 - the catch-up
+// form; the h source c->sc.h is stable until the next trunk step overwrites it, and the
+// draft's D2D is enqueued before that step's launches, stream-ordered), then the PENDING
+// pair (the greedy argmax after the prompt, h_{np-1}) at the draft's position np. This
+// establishes the spec loop's invariant: the draft has processed every position 0..np (its
+// own KV slots), its h_logits predict position np+1, and v->pending = the token at np.
+// Each cf_step/cf_draft_step call drains the stream before returning, so the pairing never
+// interleaves a trunk op with a draft op mid-flight (the r19w rule).
+int cf_spec_prime(CfCtx* c, const int* ids, int np) {
+    try {
+        if (!c->draft || !c->verify) throw std::runtime_error("cf_spec_prime: no MTP block (T4Q_CF_MTP=1 at load)");
+        if (np < 1) throw std::runtime_error("cf_spec_prime: empty prompt");
+        if (c->pos != 0 || c->draft->pos != 0)
+            throw std::runtime_error("cf_spec_prime: not at pos 0 (cf_reset first)");
+        for (int j = 0; j < np; j++) {
+            if (!cf_draft_step(c, ids[j], j ? c->sc.h : nullptr)) return -1;
+            if (!cf_step(c, ids[j])) return -1;
+        }
+        const int pending = pick(c->h_logits, V);  // the trunk's greedy pick after the prompt
+        if (!cf_draft_step(c, pending, c->sc.h)) return -1;
+        c->verify->pending = pending;
+        return pending;
+    } catch (const std::exception& e) {
+        c->err = e.what();
+        return -1;
+    }
+}
+
+// cf-m4 (r19y): ONE speculative round - the 27B's gate-proven tp_spec.cu arithmetic
+// adapted to the CF engine (CF_MTP.md sections 1/5/6). IN: the loop invariant (the draft
+// processed 0..c->pos, its h_logits predicting position c->pos+1; v->pending = the token at
+// c->pos - cf_spec_prime or the previous round's catch-up left it so). The round:
+// (1) the k drafts: vt[0] = the pending, vt[1] = the pending's draft prediction (in hand),
+//     vt[2..k] chained (the draft's own hres as the h input - section 1's chain form; the
+//     D2D in cf_draft_step decouples hres from h_in, so the forward's hres overwrite is
+//     stream-ordered after the copy);
+// (2) the verify over the k+1 rows (the r19x GATE form, now with the r19y per-row
+//     snapshot captures + pending_h);
+// (3) the argmaxes yv[r] = pick(row r) + the accept scan n = the longest prefix with
+//     vt[n+1] == yv[n] (the 27B's scan verbatim; row 0's argmax is always emitted - the
+//     pending token's consumption is never rejected);
+// (4) the rollback (n < k): the GDN S/conv + PLE snapshots restored to the after-row-n
+//     state (stream-ordered D2Ds on the drained stream; the verify's own end sync makes
+//     them land before the next round's first op), c->pos = p+n+1 (the attention KV cells
+//     and the toks entries beyond are stale-but-invisible - every read is at a position
+//     whose entry was written by an accepted consumption or rewritten first);
+// (5) the emission yv[0..n] (n+1 tokens; the new pending = yv[n]);
+// (6) the catch-up: the draft over the accepted tokens (yv[t], pending_h[t] = the verify
+//     row t's pre-final-mixer residual, the same pairing the acceptance smoke ran) at the
+//     draft positions p+1..p+n+1 (d->pos rewound to p+1 first - the chain's speculative
+//     draft KV slots are re-consumed in order), restoring the invariant (the last call's
+//     h_logits predict the new pending's successor = the next round's vt[1]; its hres is
+//     the next round's chain state).
+// The emitted prefix is the sequential greedy's stream by construction: the verify's rows
+// reproduce the sequential logits byte-exactly (the r19x gate), so yv[0..n] are the
+// sequential's tokens and the restored state is the sequential's state - the round is the
+// reference's own arithmetic, re-batched.
+int cf_spec_step(CfCtx* c, int* out) {
+    try {
+        if (!c->draft || !c->verify) throw std::runtime_error("cf_spec_step: no MTP block (T4Q_CF_MTP=1 at load)");
+        CfDraft* d = c->draft;
+        CfVerify* v = c->verify;
+        const int k = v->nr - 1;
+        if (k < 1) throw std::runtime_error("cf_spec_step: k < 1 (T4Q_CF_K >= 1 for the spec driver)");
+        const int p = c->pos;  // the pending token's position (v->pending sits here)
+        int vt[cf::MAXR];
+        vt[0] = v->pending;
+        if (vt[0] < 0 || vt[0] >= V) throw std::runtime_error("cf_spec_step: no pending token (cf_spec_prime first)");
+        // ---- (1) the drafts: vt[1] from the pending's prediction in hand, vt[2..k] chained
+        auto t0 = std::chrono::steady_clock::now();
+        vt[1] = pick(d->h_logits, V);
+        for (int i = 2; i <= k; i++) {
+            if (!cf_draft_step(c, vt[i - 1], d->hres)) return 0;
+            vt[i] = pick(d->h_logits, V);
+        }
+        v->draft_s += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        // ---- (2) the verify over the k+1 rows (its own captures ride the per-(layer,row)
+        // boundaries; its end sync drains the stream for the rollback below)
+        auto t1 = std::chrono::steady_clock::now();
+        if (!cf_verify(c, vt, k + 1)) return 0;
+        v->verify_s += std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+        // ---- (3) the argmaxes + the accept scan (the 27B's arithmetic)
+        int yv[cf::MAXR];
+        for (int r = 0; r <= k; r++) yv[r] = pick(v->h_logits + (size_t)r * V, V);
+        int n = 0;
+        while (n < k && vt[n + 1] == yv[n]) n++;
+        // ---- (4) the rollback (n < k): the after-row-n snapshots + the pos rewind
+        if (n < k) {
+            for (int il = 0; il < NL; il++) {
+                CfLayer& L = c->layers[il];
+                if (L.attn) continue;  // the KV cells beyond the rewound pos are invisible
+                const size_t ro = (size_t)v->gord[il] * k + n;
+                CK(cudaMemcpyAsync(L.S, v->s_snap + ro * (size_t)HV * DK * DK, (size_t)HV * DK * DK * 4,
+                                   cudaMemcpyDeviceToDevice, c->st));
+                CK(cudaMemcpyAsync(L.conv_state, v->conv_snap + ro * (size_t)CONV * 3, (size_t)CONV * 3 * 4,
+                                   cudaMemcpyDeviceToDevice, c->st));
+            }
+            CK(cudaMemcpyAsync(c->ple_hist, v->ple_snap + (size_t)n * PLE_HIST * HCD, (size_t)PLE_HIST * HCD * 4,
+                               cudaMemcpyDeviceToDevice, c->st));
+        }
+        c->pos = p + n + 1;  // the trunk's new pending position (the verify advanced it by nr)
+        // ---- (5) the emission (the new pending rides yv[n])
+        for (int i = 0; i <= n; i++) out[i] = yv[i];
+        v->pending = yv[n];
+        // ---- (6) the catch-up: the draft over the accepted tokens, then the invariant
+        auto t2 = std::chrono::steady_clock::now();
+        d->pos = p + 1;
+        for (int t = 0; t <= n; t++)
+            if (!cf_draft_step(c, yv[t], v->pending_h + (size_t)t * HCD)) return 0;
+        v->catch_s += std::chrono::duration<double>(std::chrono::steady_clock::now() - t2).count();
+        v->rounds++;
+        return n + 1;
+    } catch (const std::exception& e) {
+        c->err = e.what();
+        return 0;
+    }
+}
+
 void cf_reset(CfCtx* c) {
     CK(cudaSetDevice(c->gpu));
     for (int il = 0; il < NL; il++) {
@@ -894,6 +1040,7 @@ void cf_reset(CfCtx* c) {
     CK(cudaMemset(c->ple_hist, 0, (size_t)PLE_HIST * HCD * 4));
     memset(c->toks, -1, (size_t)c->max_ctx * sizeof(int));
     if (c->draft) c->draft->pos = 0;  // cf-m4: the draft's own KV pos (cells beyond it are never read)
+    if (c->verify) c->verify->pending = -1;  // r19y: the spec driver's pending (cf_spec_prime re-arms it)
     CK(cudaDeviceSynchronize());
     c->pos = 0;
     c->have_logits = false;

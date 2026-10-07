@@ -661,6 +661,36 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                     s.xq0 = dalloc<int8_t>(HCD, false); s.xd0 = dalloc<float>(HCD / 32, false);
                     s.xs0 = dalloc<int>(HCD / 32, false);
                 }
+                // cf-m4 (r19y): the speculative driver's snapshot planes (the 27B's tp_spec.cu
+                // rollback adapted to the CF rolling states - the GDN S/conv and the PLE ring
+                // are SHIFT REGISTERS, not position-indexed, so a partial accept restores the
+                // after-row-n state from the verify's per-row captures): the S/conv snapshots
+                // [ngdn][k] (the state AFTER row r, r = 0..k-1; the accept n = k leaves the
+                // rolling L.S itself correct, no capture), the PLE ring snapshots [k], and
+                // the pending_h ring [MAXR] (the per-row pre-final-mixer residuals - the
+                // catch-up's h inputs, CF_MTP.md section 4). The attention KV needs NO plane
+                // (the cells beyond the rewound pos are invisible). Pure scratch: every plane
+                // is written before any read (the verify captures rows 0..k-1 before the
+                // restore reads slot n <= k-1), so no zeroing.
+                v->ngdn = 0;
+                for (int il = 0; il < NL; il++) v->gord[il] = is_attn(il) ? -1 : v->ngdn++;
+                v->pending_h = dalloc<float>((size_t)MAXR * HCD, false);
+                if (k > 0) {
+                    const double snap_gib =
+                        (double)v->ngdn * k * ((double)HV * DK * DK * 4 + (double)CONV * 3 * 4) / (1ull << 30) +
+                        (double)k * PLE_HIST * HCD * 4.0 / (1ull << 30);
+                    size_t free_b = 0, total_b = 0;
+                    CK(cudaMemGetInfo(&free_b, &total_b));
+                    if ((double)free_b < snap_gib * (1ull << 30) * 1.02)
+                        throw std::runtime_error("the spec snapshots need " + std::to_string(snap_gib) +
+                                                 " GiB, only " + std::to_string((double)free_b / (1ull << 30)) +
+                                                 " GiB free");
+                    fprintf(stderr, "[cf] verify block: spec snapshots (GDN S/conv + PLE + pending_h) %.2f GiB\n",
+                            snap_gib);
+                    v->s_snap = dalloc<float>((size_t)v->ngdn * k * HV * DK * DK, false);
+                    v->conv_snap = dalloc<float>((size_t)v->ngdn * k * CONV * 3, false);
+                    v->ple_snap = dalloc<float>((size_t)k * PLE_HIST * HCD, false);
+                }
                 {
                     const double slab_gib = nr * (double)TOPK * 2.0 * EE * 840.0 / (1ull << 30) +
                                             nr * (double)TOPK * (double)D * 360.0 / (1ull << 30);

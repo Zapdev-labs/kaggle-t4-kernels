@@ -2474,3 +2474,84 @@ rewind), the speculative driver (the draft chain + the verify + the accept/rejec
 loop), the verify's segment graphs, k tuned on the measured acceptance. The PLAN_CF
 cf-m4 block carries the verify's landed note; the r19w register-count record corrected
 (k_cf_eh_gather 8 regs, not 19).
+
+## r19y - the SPECULATIVE DRIVER landed (the 27B's tp_spec.cu arithmetic adapted; the snapshots, not the ring)
+
+The third lever's third half (CF_MTP.md sections 1/4/6): the draft chain + the verify
++ the accept scan + the rollback + the catch-up, landed build-clean 0 errors/0 warnings,
+NO new kernels (host code only - the ptxas diffs are compile-time noise, the cf kernel
+register counts identical vs HEAD), INERT until cf_spec_prime/cf_spec_step are called
+(the same T4Q_CF_MTP=1 gate; the snapshot planes ~0.34 GiB at k=3 ride the verify block
+with their own VRAM check). THE DESIGN DECISION (the r19y plan's open point, resolved
+against the plan's ring form): the 27B's rollback is a ns = k+2 SNAPSHOT RING because its
+k_gdn_m writes each token's state directly into the ring; the CF verify reuses the
+SEQUENTIAL step's single-token launch_gdn_recur IN PLACE on L.S, so the ring form would
+need a separate-in/out change to that gate-proven kernel AND the true S size (HV*DK*DK
+f32 = 3.15 MB/layer x 36 GDN layers = ~113 MB per state set - the CF_MTP.md section 6
+"[24,128,128] ~ 57 MB" note and the r19y plan's "~37 MB/snapshot" were both ~2-3x low)
+would cost ~566 MB for 5 ring slots. THE LANDED FORM: per-(layer,row) SNAPSHOT
+CAPTURES - stream-ordered D2Ds enqueued inside cf_verify at the exact boundaries (after
+the row's deltanet, before the next row overwrites L.S/L.conv_state; after the row's
+PLE roll; the pending_h capture rides the row's tail because the tail's hc_mix only
+READS s.h), the states AFTER rows 0..k-1 (k = nr-1 slots; the accept n = k leaves the
+rolling L.S itself correct, no capture, no restore), and on a partial accept (n < k)
+the restore D2Ds (per GDN layer L.S/L.conv_state <- snap[gord*k+n], the PLE ring <-
+ple_snap[n]) on the drained stream (cf_verify's own end sync makes them land before
+the next round's first op). Zero kernel surface, ~340 MB of planes at k=3, and the
+honest copy cost: ~113 MB of S captures + the conv/PLE/pending_h per verify (~2-4 ms
+in the direct-launch form) + ~1-2 ms of restores on a partial accept - the
+multi-token ring kernel / the verify's segment graphs remove it in the later rounds.
+THE STATE LIST (CF_MTP.md section 6, each item proven stale-but-invisible or restored):
+the GDN S/conv (the snapshots above), the PLE ring (the snapshots above), the trunk
+attention KV (pos-only - the cells beyond the rewound pos are invisible; each row's
+own slot is written before its read), c->toks (the rejected drafts' entries are never
+read before the next round's head rewrites them - every read is at a position whose
+entry was written by an accepted consumption or by an earlier row of the same verify),
+the draft's own KV pos + its res' chain state (the catch-up reprocesses the accepted
+tokens at the draft positions p+1..p+n+1, d->pos rewound to p+1 first, so the chain's
+speculative draft slots are re-consumed in order and the last call's hres IS the next
+round's chain state), the trunk pos (c->pos = p+n+1).
+THE ARITHMETIC (tp_spec.cu verbatim where it applies): the accept scan n = the longest
+prefix with vt[n+1] == yv[n] (vt[0] = the pending token, yv[r] = the argmax of verify
+row r - row 0's consumption is never rejected, so every round emits >= 1); the
+emission yv[0..n] with the new pending = yv[n] (every position emitted exactly once:
+the prime's pending by the mode, each later position by exactly one round); the picks
+use the FIRST-max rule (cf_run's argmax verbatim as the engine's pick() - a differing
+tie-break could split an exact tie). The chain (CF_MTP.md section 1's form): vt[1] =
+the pending's draft prediction (IN HAND from the prime / the previous catch-up's last
+call), vt[2..k] chained with the draft's OWN hres as the h input (the D2D in
+cf_draft_step decouples hres from h_in, so the forward's hres overwrite is
+stream-ordered after the copy); the catch-up pairs (yv[t], pending_h[t]) - the verify
+row t's pre-final-mixer residual, the same ground-truth pairing the acceptance smoke
+measured alpha1 on.
+THE INVARIANT (established by cf_spec_prime, restored by every round): the draft has
+processed positions 0..c->pos (its own KV slots), so its h_logits predict position
+c->pos+1 and d->pos = c->pos+1. THE PRIME (cf_spec_prime): the trunk over the prompt
+(one cf_step per token - the same path the reference modes run) with the draft paired
+one step behind (the pairs (ids[j], h_{j-1}) with h_{-1} = 0 - the catch-up form; the
+draft's D2D from c->sc.h is enqueued before the next trunk step's launches, so the
+source is stable, stream-ordered), then the PENDING pair (the greedy pick after the
+prompt, h_{np-1}) at the draft's position np. Each cf_step/cf_draft_step call drains
+before returning, so no trunk op interleaves a draft op mid-flight (the r19w rule,
+kept); the prime guards pos == 0 (fail loud beats silent misalignment). THE ROUND
+(cf_spec_step): the k drafts -> the verify (k+1 rows, its own captures riding) -> the
+argmaxes + the accept scan -> the rollback (n < k) + c->pos = p+n+1 -> the emission ->
+the catch-up (d->pos = p+1, n+1 draft calls) -> the invariant. Returns the emitted
+count (n+1), 0 on error.
+THE GATE TOOL (cf_run's new `spec` mode): run A = the prompt + n-1 greedy steps (the
+reference tokens); cf_reset; run B = cf_spec_prime + the spec rounds until n tokens -
+every emitted token must equal the reference's token at its position (first_diff +
+match count; pass = first_diff < 0). The construction argument: the verify's rows
+reproduce the sequential logits byte-exactly (the r19x gate), so the emitted prefix is
+the sequential's own stream, and the restored state is the sequential's own state -
+the round is the reference's arithmetic, re-batched; the gate is that argument's
+runtime proof (and the r19x `verify` gate re-proves the rows WITH the captures now
+riding them). Prints the accept histogram hist[0..k] (the k-tuning eye), the
+tokens/round, the ms/token vs the sequential, and the per-round draft/verify/catch-up
+ms splits (the engine's timers). Runtime verification (the L4): T4Q_CF_MTP=1 +
+`cf_run spec <model> <ids> <n>` -> the pass gate + the measured acceptance (the
+histogram's mean decides k; the 27B's class ~2.2 accepted/verify) + the honest speed
+note: the DIRECT per-row-launch form pays the ~22 us launch wall x ~2600 x nr + the
+snapshot copies - the CF_MTP speed math (~55 ms/token ~ 18 t/s at k=3 on the UVA'd T4)
+still assumes the verify's own segment graphs + the UVA union scatters, the next
+rounds. The PLAN_CF cf-m4 block carries the driver's landed note.

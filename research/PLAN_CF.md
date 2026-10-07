@@ -382,6 +382,47 @@ dequant rates and the platform paths are measured, no more assumptions**:
   catch-up (pending_h ring), the rollback (the reject path: the GDN S/conv snapshots +
   the KV/PLE pos rewind), the speculative driver (the draft chain + the verify + the
   accept/reject loop), the verify's segment graphs, k tuned on the measured acceptance.
+  THE SPECULATIVE DRIVER LANDED (r19y, build-clean 0 errors/0 warnings, NO new kernels -
+  host code only, the cf kernel register counts identical vs HEAD; the same
+  T4Q_CF_MTP=1 gate; INERT until cf_spec_prime/cf_spec_step are called): the 27B's
+  gate-proven tp_spec.cu arithmetic adapted to the CF engine. THE ROLLBACK FORM (the
+  design decision against the plan's ring form): the CF verify reuses the sequential
+  step's single-token launch_gdn_recur IN PLACE on L.S, so the 27B's ns = k+2 ring
+  would need a separate-in/out change to that gate-proven kernel AND the true S size
+  (HV*DK*DK f32 = 3.15 MB/layer x 36 GDN layers = ~113 MB per state set - the CF_MTP
+  section 6 note was ~2x low) would cost ~566 MB; the LANDED form is per-(layer,row)
+  SNAPSHOT CAPTURES - stream-ordered D2Ds inside cf_verify at the exact boundaries
+  (after the row's deltanet/PLE roll, before the next row overwrites), the states after
+  rows 0..k-1 (the accept n = k leaves the rolling L.S correct, no capture), and the
+  restore D2Ds on the drained stream on a partial accept - zero kernel surface, ~0.34
+  GiB of planes at k=3 (their own VRAM check in the verify block), the honest copy
+  cost ~2-4 ms/verify + ~1-2 ms/restore (the segment-graph round removes it). THE
+  DRIVER: cf_spec_prime (the trunk over the prompt with the draft paired one step
+  behind - the pairs (ids[j], h_{j-1}), h_{-1} = 0, each call drained so no mid-flight
+  interleave; then the PENDING pair at the draft's position np) establishes the loop
+  invariant (the draft processed 0..pos, its h_logits predicting pos+1); cf_spec_step
+  runs ONE round: the k drafts (vt[1] from the pending's prediction in hand, vt[2..k]
+  chained on the draft's own hres - section 1's chain form), the verify (k+1 rows, the
+  r19y captures riding), the argmaxes (the FIRST-max pick, cf_run's argmax verbatim -
+  a differing tie-break could split an exact tie) + the accept scan n = the longest
+  prefix with vt[n+1] == yv[n], the rollback (n < k: the S/conv/PLE snapshots to the
+  after-row-n state; c->pos = p+n+1; the attention KV cells + the toks entries beyond
+  are stale-but-invisible, the draft's own KV pos + hres re-established by the
+  catch-up), the emission yv[0..n] (the new pending = yv[n]; every position emitted
+  exactly once), and the catch-up (d->pos = p+1, the draft over (yv[t],
+  pending_h[t] = the verify row t's pre-final-mixer residual - the same ground-truth
+  pairing the alpha1 smoke measured), restoring the invariant). THE GATE TOOL
+  (cf_run's new `spec` mode): run A = the reference greedy; cf_reset; run B = the
+  prime + the spec rounds until n tokens - every emitted token must equal the
+  reference's (the construction: the r19x-verified rows make the emitted prefix the
+  sequential's own stream; the gate is the runtime proof). Prints the accept histogram
+  (the k-tuning eye), the tokens/round, the ms/token vs the sequential, and the
+  draft/verify/catch-up ms splits. Runtime verification (the L4): T4Q_CF_MTP=1 +
+  `cf_run spec <model> <ids> <n>`; the honest speed note: the direct-launch form pays
+  the launch wall + the snapshot copies - the CF_MTP speed math (~55 ms/token ~ 18
+  t/s at k=3 on the UVA'd T4) still assumes the verify's segment graphs + the UVA
+  union scatters. STILL AHEAD: the verify's own segment graphs, k tuned on the
+  measured acceptance, the lm_head truncation stretch.
 - **cf-m5 - the closure rounds**: the r4-r16 method (every lever A/B'd, every bucket measured
   or roof-closed, PROGRESS.md sections per round). Stretch goals: the TC verify columns at
   the M=4 batch (the int4 mma path exists), the draft's lm_head truncation (0.34 GiB of the

@@ -174,6 +174,30 @@ struct CfVerify {
     float* ysh = nullptr;             // device [MAXR][D] the per-row shared-expert outputs
     float* sh_gate_raw = nullptr;     // device [MAXR] the per-row shared-expert sigmoid gates
     float* h_logits = nullptr;        // pinned [MAXR][V] the per-row logits (the verify's output)
+    // cf-m4 (r19y): the speculative driver's snapshot planes + state. The 27B's tp_spec.cu
+    // rollback adapted to the CF rolling states: the GDN S/conv and the PLE ring are SHIFT
+    // REGISTERS (not position-indexed like the 27B's CR-slot conv ring), so a partial accept
+    // restores the after-row-n state from the verify's per-row captures - stream-ordered D2Ds
+    // enqueued at the exact per-(layer,row) boundaries inside cf_verify (after the row's
+    // deltanet/PLE roll, before the next row overwrites). The S/conv/PLE snapshots hold the
+    // states AFTER rows 0..k-1 (k = nr-1 slots; the accept n = k leaves the rolling L.S
+    // itself correct, no capture); pending_h holds every row's pre-final-mixer residual (the
+    // catch-up's h inputs - CF_MTP.md section 4's ring; the tail's hc_mix only READS s.h, so
+    // the capture rides the row's tail). The attention KV needs NO plane (the cells beyond
+    // the rewound pos are invisible). The per-snapshot S set is ngdn*HV*DK*DK f32 ~113 MB,
+    // so the 27B's ns = k+2 ring-index form would cost ~566 MB AND a separate-in/out change
+    // to the in-place launch_gdn_recur; the captures are zero-kernel-surface (~340 MB at
+    // k=3) and the copy cost (~4 ms/verify in the direct-launch form) is the later
+    // segment-graph round's to remove.
+    int ngdn = 0;                     // the GDN layer count (the gord map below)
+    int gord[cf::NL];                 // il -> the GDN ordinal (attn layers -1)
+    float* s_snap = nullptr;         // device [ngdn][k][HV*DK*DK] the per-row GDN S snapshots
+    float* conv_snap = nullptr;      // device [ngdn][k][CONV*3] the per-row GDN conv snapshots
+    float* ple_snap = nullptr;       // device [k][PLE_HIST*HCD] the per-row PLE ring snapshots
+    float* pending_h = nullptr;      // device [MAXR][HCD] the per-row pre-final-mixer residuals
+    int pending = -1;                 // the pending token (the one at position c->pos)
+    double draft_s = 0, verify_s = 0, catch_s = 0;  // the round timers (the k tuning's eyes)
+    long rounds = 0;
 };
 
 struct CfCtx {
@@ -313,4 +337,28 @@ bool cf_draft_step(CfCtx* c, int token, const float* h);
 // The rows' logits land in c->verify->h_logits [nr][V] (row r = the prediction for the
 // position pos+r+1); the trunk's pos/states advance by nr. Requires T4Q_CF_MTP=1 at load.
 bool cf_verify(CfCtx* c, const int* toks, int nr);
+// cf-m4 (r19y): the speculative driver's prompt pass (CF_MTP.md section 4) - the trunk
+// over the prompt (one cf_step per token, the same path the reference modes run) with the
+// draft paired one step behind (the pairs (ids[j], h_{j-1}), h_{-1} = 0; the h source
+// c->sc.h is stable until the next trunk step overwrites it - the draft's D2D is enqueued
+// first, stream-ordered), then the PENDING pair (the greedy argmax after the prompt,
+// h_{np-1}) at the draft's position np. Requires a fresh context (pos 0, cf_reset first).
+// Returns the pending token (the first generated token, the position-np prediction; the
+// draft's h_logits hold its prediction of position np+1) or -1 on error (c->err set).
+int cf_spec_prime(CfCtx* c, const int* ids, int np);
+// cf-m4 (r19y): ONE speculative round - the 27B's gate-proven tp_spec.cu arithmetic
+// adapted to the CF engine (CF_MTP.md sections 1/5/6). IN: the loop invariant (the draft
+// processed 0..c->pos so its h_logits predict position c->pos+1; v->pending = the token
+// at c->pos). (1) the k drafts: vt[0] = the pending, vt[1] = the pending's draft
+// prediction (in hand), vt[2..k] chained on the draft's own hres (section 1's chain form);
+// (2) the verify over the k+1 rows (the r19x GATE form + the r19y per-row captures);
+// (3) the argmaxes yv[r] (the same first-max pick as the reference modes) + the accept
+// scan n = the longest prefix with vt[n+1] == yv[n]; (4) the rollback (n < k): the GDN
+// S/conv + PLE snapshots restored to the after-row-n state (stream-ordered D2Ds; the
+// attention KV cells beyond the rewound pos are invisible - no copy), c->pos = p+n+1;
+// (5) the emission yv[0..n] (n+1 tokens, the new pending = yv[n]); (6) the catch-up: the
+// draft over the accepted tokens (yv[t], pending_h[t]) at the draft positions p+1..p+n+1
+// (d->pos rewound to p+1 first - the chain's speculative draft KV slots are re-consumed
+// in order), restoring the invariant. Returns the emitted count (n+1 >= 1), 0 on error.
+int cf_spec_step(CfCtx* c, int* out);
 void cf_reset(CfCtx* c);

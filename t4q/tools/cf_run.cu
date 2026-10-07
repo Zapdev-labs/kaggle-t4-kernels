@@ -12,6 +12,14 @@
 //                                                          the same prompt + the verify rounds over the SAME tokens
 //                                                          (nr = T4Q_CF_K+1 rows per round) - every row's logits
 //                                                          must BYTE-MATCH the sequential reference
+//   spec <model> <ids.i32> <n>                        -> cf-m4 (r19y): the speculative driver's gate (needs
+//                                                          T4Q_CF_MTP=1): run A = the prompt + n-1 greedy steps (the
+//                                                          reference tokens); cf_reset; run B = cf_spec_prime + the
+//                                                          spec rounds (the k drafts -> the verify -> the accept
+//                                                          scan -> the rollback -> the catch-up) until n tokens -
+//                                                          every emitted token must BYTE-MATCH the reference;
+//                                                          prints the accept histogram + the tokens/round + the
+//                                                          ms/token vs the sequential
 // Prints CF {json} summary lines; exits 0 on pass, 3 on mismatch.
 #include <algorithm>
 #include <chrono>
@@ -53,7 +61,7 @@ static int argmax(const float* x, int n) {
 int main(int argc, char** argv) {
     setbuf(stdout, nullptr);
     if (argc < 4) {
-        fprintf(stderr, "usage: %s seq|gen|time|census|draft|verify <model> <ids.i32> [args]\n", argv[0]);
+        fprintf(stderr, "usage: %s seq|gen|time|census|draft|verify|spec <model> <ids.i32> [args]\n", argv[0]);
         return 2;
     }
     const std::string mode = argv[1];
@@ -300,6 +308,76 @@ int main(int argc, char** argv) {
                "\"verify_ms_per_tok\":%.2f,\"pass\":%s}\n",
                n, nr, rows, bytematch, top1, first_diff, worst_rel, seq_ms, v_s * 1000,
                v_s * 1000 / std::max(1, rows), pass ? "true" : "false");
+        cf_free(c);
+        return pass ? 0 : 3;
+    }
+
+    if (mode == "spec") {
+        // cf-m4 (r19y): the speculative driver's gate - the emitted tokens must BYTE-MATCH
+        // the sequential greedy (the emissions ride the r19x-verified rows: the emitted
+        // prefix yv[0..n] IS the sequential's stream by construction, given the verify's
+        // byte-exactness - this gate is that construction's runtime proof). Run A: the
+        // prompt + n-1 greedy steps (the reference tokens). Run B (after cf_reset):
+        // cf_spec_prime (the prompt + the draft catch-up pairs + the pending pair) then the
+        // spec rounds until n tokens - every emission compared. Prints the accept
+        // histogram (the k tuning's eye), the tokens/round, and the ms/token vs the
+        // sequential (the honest note: the direct-launch form pays the launch wall; the
+        // verify's segment graphs + the union scatters are the later rounds).
+        const int n = atoi(argv[4]);
+        if (!c->verify || !c->draft) { printf("CF {\"error\":\"no MTP block (T4Q_CF_MTP=1 at load)\"}\n"); return 1; }
+        if (n < 2) { printf("CF {\"error\":\"spec needs n >= 2\"}\n"); return 1; }
+        const int k = c->verify->nr - 1;
+        // ---- run A: the reference greedy
+        for (int t : ids)
+            if (!cf_step(c, t)) { printf("CF {\"error\":\"prompt step: %s\"}\n", c->err.c_str()); return 1; }
+        std::vector<int32_t> ref;
+        for (int i = 0; i < n; i++) {
+            ref.push_back(argmax(c->h_logits, cf::V));
+            if (i + 1 < n && !cf_step(c, ref[i])) {
+                printf("CF {\"error\":\"gen step: %s\"}\n", c->err.c_str());
+                return 1;
+            }
+        }
+        const double seq_ms = c->step_s * 1000 / std::max(1, c->steps);
+        // ---- run B: cf_reset + the prime + the spec rounds
+        cf_reset(c);
+        const auto tp0 = std::chrono::steady_clock::now();
+        const int pending0 = cf_spec_prime(c, ids.data(), (int)ids.size());
+        if (pending0 < 0) { printf("CF {\"error\":\"prime: %s\"}\n", c->err.c_str()); return 1; }
+        std::vector<int32_t> gen;
+        gen.push_back(pending0);
+        int hist[cf::MAXR] = {0};  // hist[n] = the rounds accepting n drafts
+        int first_diff = -1, rounds = 0;
+        long emitted = 0;
+        while ((int)gen.size() < n) {
+            int32_t out[cf::MAXR];
+            const int cnt = cf_spec_step(c, out);
+            if (cnt <= 0) { printf("CF {\"error\":\"spec round: %s\"}\n", c->err.c_str()); return 1; }
+            rounds++;
+            hist[cnt - 1]++;
+            emitted += cnt;
+            for (int i = 0; i < cnt; i++) {
+                if ((int)gen.size() >= n) break;  // the tail overshoot is dropped
+                gen.push_back(out[i]);
+                const int idx = (int)gen.size() - 1;
+                if (gen[idx] != ref[idx] && first_diff < 0) first_diff = idx;
+            }
+        }
+        const double spec_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - tp0).count();
+        int match = 0;
+        for (int i = 0; i < n; i++) match += gen[i] == ref[i];
+        const bool pass = first_diff < 0;
+        char hist_s[128] = "";
+        for (int i = 0; i <= k; i++) snprintf(hist_s + strlen(hist_s), sizeof(hist_s) - strlen(hist_s), "%s%d", i ? "," : "", hist[i]);
+        printf("CF {\"mode\":\"spec\",\"n\":%d,\"k\":%d,\"rounds\":%d,\"emitted\":%ld,\"match\":%d,"
+               "\"first_diff\":%d,\"tok_per_round\":%.3f,\"hist\":[%s],\"seq_ms\":%.2f,"
+               "\"spec_ms_per_tok\":%.2f,\"draft_ms\":%.2f,\"verify_ms\":%.2f,\"catch_ms\":%.2f,"
+               "\"load_s\":%.1f,\"pass\":%s}\n",
+               n, k, rounds, emitted, match, first_diff, (double)emitted / std::max(1, rounds), hist_s, seq_ms,
+               spec_s * 1000 / std::max(1L, emitted),
+               c->verify->draft_s * 1000 / std::max(1, (int)c->verify->rounds),
+               c->verify->verify_s * 1000 / std::max(1, (int)c->verify->rounds),
+               c->verify->catch_s * 1000 / std::max(1, (int)c->verify->rounds), load_s, pass ? "true" : "false");
         cf_free(c);
         return pass ? 0 : 3;
     }
