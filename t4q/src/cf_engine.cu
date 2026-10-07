@@ -22,6 +22,10 @@ namespace {
 // (~1.5 GB/token: attn_qkv/gate, ssm_out, the routers, the shexp, the ple key/value), the Q5_1
 // hc mixers (~0.44 GB/token), the Q4_K lm_head (~0.34 GB/token).
 void gemv(CfScratch& sc, const PackedW& W, const float* x, float* y, cudaStream_t st) {
+    // T4Q_CF_NOFAST=1: bypass the r18 q8 fast paths, run the float-reference gemv (debug bisect)
+    static int nofast = -1;
+    if (nofast < 0) { const char* e = getenv("T4Q_CF_NOFAST"); nofast = (e && atoi(e)) ? 1 : 0; }
+    if (nofast) { launch_gemv(W, x, y, st); return; }
     if (W.fmt == FMT_K2 || W.fmt == FMT_K4) {
         launch_quantize_q8_K(x, (int)W.cols, sc.xqk, sc.xqk_b, sc.xqk_d, st);
         launch_gemv_q8k(W, sc.xqk, sc.xqk_b, sc.xqk_d, y, st);
@@ -39,6 +43,25 @@ void gemv(CfScratch& sc, const PackedW& W, const float* x, float* y, cudaStream_
 void check_launch(const char* what) {
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) throw std::runtime_error(std::string("launch failed: ") + what + ": " + cudaGetErrorString(e));
+}
+
+// T4Q_CF_DUMP bisect support: file-scope so the sub-op functions can capture internals.
+static FILE* cfdump = (FILE*)1;
+static int cfdump_last = -2;
+static int cfdump_tag = -1;
+static bool cfdump_active() {
+    return cfdump && cfdump_tag >= 0;
+}
+static void cfdump_rec(const char* name, const float* dev, int n) {
+    if (!cfdump_active()) return;
+    std::vector<float> tmp(n);
+    cudaMemcpyAsync(tmp.data(), dev, (size_t)n * 4, cudaMemcpyDeviceToHost, nullptr);
+    cudaStreamSynchronize(nullptr);
+    uint32_t nl = (uint32_t)strlen(name);
+    fwrite(&nl, 4, 1, cfdump); fwrite(name, 1, nl, cfdump);
+    fwrite(&cfdump_tag, 4, 1, cfdump);
+    int64_t ne[4] = {n, 1, 1, 1}; fwrite(ne, 8, 4, cfdump);
+    fwrite(tmp.data(), 4, n, cfdump);
 }
 
 // res_hc -> xn (grouped norm), lo, gate(y_up), mixed, inj. side 0 = attn, 1 = ffn.
@@ -61,26 +84,35 @@ void hc_combine(CfCtx* c, float* res, const float* block, const float* inj) {
 
 void deltanet(CfCtx* c, CfLayer& L, CfScratch& s) {
     cudaStream_t st = c->st;
-    gemv(s, L.qkv, s.xn, s.qkv, st);
-    gemv(s, L.z, s.xn, s.zz, st);
-    gemv(s, L.beta, s.xn, s.braw, st);
-    gemv(s, L.alpha, s.xn, s.araw, st);
+    // the arch feeds every block projection the hc_mix OUTPUT (the sigmoid-gated, stream-mean
+    // collapsed mixed), not the raw grouped-norm xn (build_layer_attn_linear(cur) where cur =
+    // build_hc_mix(...) and build_qkvz(cur)): the r18 fast-path bisect phantom was this input.
+    gemv(s, L.qkv, s.mixed, s.qkv, st);
+    gemv(s, L.z, s.mixed, s.zz, st);
+    { std::string nm = "linear_attn_qkv_mixed-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.qkv, CONV); }
+    { std::string nm = "z-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.zz, VDIM); }
+    gemv(s, L.beta, s.mixed, s.braw, st);
+    gemv(s, L.alpha, s.mixed, s.araw, st);
     check_launch("gdn proj");
     launch_gdn_gates(s.braw, s.araw, L.ssm_a, L.ssm_dt, s.beta, s.g, HV, st);
+    { std::string nm = "beta_sigmoid-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.beta, HV); }
+    { std::string nm = "gate-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.g, HV); }
     launch_gdn_conv(s.qkv, L.conv_state, L.conv_w, s.conv, CONV, st);
+    { std::string nm = "conv_output_silu-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.conv, CONV); }
     launch_gdn_l2(s.conv, s.qn, s.kn, EPS, st);
     launch_gdn_recur(L.S, s.qn, s.kn, s.conv + 2 * HK * DK, s.beta, s.g, s.o, 1.0f / sqrtf((float)DK), st);
     check_launch("gdn recur");
     launch_cf_gdn_gnorm(s.o, s.zz, L.ssm_norm, s.on, EPS, st);
+    { std::string nm = "linear_attn_out_norm-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.on, VDIM); }
     gemv(s, L.ssm_out, s.on, s.block, st);
     check_launch("ssm_out");
 }
 
 void attention(CfCtx* c, CfLayer& L, CfScratch& s, int pos) {
     cudaStream_t st = c->st;
-    gemv(s, L.wq, s.xn, s.qfull, st);
-    gemv(s, L.wk, s.xn, s.k, st);
-    gemv(s, L.wv, s.xn, s.v, st);
+    gemv(s, L.wq, s.mixed, s.qfull, st);
+    gemv(s, L.wk, s.mixed, s.k, st);
+    gemv(s, L.wv, s.mixed, s.v, st);
     check_launch("attn proj");
     launch_cf_qk_norm_rope(s.qfull, s.k, L.q_norm, L.k_norm, s.aq, s.ak, pos, EPS, ROPE_BASE, NROT, st);
     launch_cf_kv_store(s.ak, s.v, L.kc, L.vc, pos, c->max_ctx, st);
@@ -134,7 +166,8 @@ void ple(CfCtx* c, int token) {
 // The MoE: router -> host softmax/top-10/renorm -> stage 10 experts -> repack -> gemv -> combine
 void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
     cudaStream_t st = c->st;
-    gemv(s, L.router, s.xn, s.logits, st);  // borrow the logits scratch [512 of V]
+    // the router and every expert/shared input is the ffn-side hc mixed (build_layer_ffn(cur))
+    gemv(s, L.router, s.mixed, s.logits, st);  // borrow the logits scratch [512 of V]
     CK(cudaMemcpyAsync(c->h_router, s.logits, (size_t)NE * 4, cudaMemcpyDeviceToHost, st));
     CK(cudaStreamSynchronize(st));
     // host softmax over 512 (fp32, exact formula), then top-10 renormalized
@@ -187,7 +220,7 @@ void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
     // the per-pick W table (the identity views of the staged slabs, bit-identical to the old
     // single launch's stride math; the tiering later swaps in resident views with zero kernel
     // change); the xn quantizes ONCE and is shared by all 10 picks (strides 0).
-    launch_quantize_q8_K(s.xn, D, s.xqk, s.xqk_b, s.xqk_d, st);
+    launch_quantize_q8_K(s.mixed, D, s.xqk, s.xqk_b, s.xqk_d, st);
     launch_gemv_q8k_b(c->wt_gu, FMT_K2, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0, (int64_t)2 * EE, TOPK,
                       st);
     launch_cf_silu_mul_b(s.logits, s.ffa, EE, TOPK, st);  // [gate n | up n] per expert, stride 2n
@@ -198,11 +231,11 @@ void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
         launch_gemv_q8_0_b(c->wt_dn, D, s.xq0, s.xd0, s.xs0, c->ye, EE, D, EE / 32, TOPK, st);
     }
     // shared expert + its sigmoid gate, then the weighted combine
-    gemv(s, L.sh_gate, s.xn, s.ffg, st);
-    gemv(s, L.sh_up, s.xn, s.ffu, st);
+    gemv(s, L.sh_gate, s.mixed, s.ffg, st);
+    gemv(s, L.sh_up, s.mixed, s.ffu, st);
     launch_silu_mul(s.ffg, s.ffu, s.ffa, EE, st);
     gemv(s, L.sh_down, s.ffa, c->ysh, st);
-    gemv(s, L.sh_ginp, s.xn, c->sh_gate_raw, st);
+    gemv(s, L.sh_ginp, s.mixed, c->sh_gate_raw, st);
     launch_cf_moe_out(c->ye, c->we, c->ysh, c->sh_gate_raw, s.block, st);
     check_launch("moe");
 }
@@ -217,32 +250,70 @@ bool cf_step(CfCtx* c, int token) {
         CfScratch& s = c->sc;
         cudaStream_t st = c->st;
         CK(cudaSetDevice(c->gpu));
+        // T4Q_CF_DUMP=<path> T4Q_CF_DUMP_LAST=<n-1>: T4QD-format bisect capture
+        // (header count is a placeholder; the reader goes to EOF).
+        if (cfdump == (FILE*)1) {
+            const char* p = getenv("T4Q_CF_DUMP");
+            cfdump = (p && *p) ? fopen(p, "wb") : nullptr;
+            if (cfdump) {
+                const char* lp = getenv("T4Q_CF_DUMP_LAST");
+                cfdump_last = lp ? atoi(lp) : -1;
+                uint32_t magic_hdr = 0x44513454;  // "T4QD"
+                uint32_t cnt = 0xFFFFFFFFu;
+                fwrite(&magic_hdr, 4, 1, cfdump);
+                fwrite(&cnt, 4, 1, cfdump);
+            }
+        }
+        cfdump_tag = (cfdump && (c->pos == 0 || c->pos == 1 || c->pos == cfdump_last)) ? c->pos : -1;
         // embedding row (Q4_K) dequantized on the host, then the 4 streams start as 4 copies
         if (!dequant_row_cpu(c->tok_embd->type, c->tok_embd->data + (size_t)token * c->tok_embd->row_bytes, c->h_emb,
                              D))
             throw std::runtime_error("embedding dequant failed");
         CK(cudaMemcpyAsync(s.h, c->h_emb, (size_t)D * 4, cudaMemcpyHostToDevice, st));
         launch_cf_res_init(s.h, s.h, st);  // in-place: first-D writes are identities, safe
+        if (cfdump_active()) {  // model.input_embed: the raw [D] host embedding, matching the oracle's cb name
+            uint32_t nl = 17;
+            fwrite(&nl, 4, 1, cfdump); fwrite("model.input_embed", 1, 17, cfdump);
+            fwrite(&cfdump_tag, 4, 1, cfdump);
+            int64_t ne[4] = {D, 1, 1, 1}; fwrite(ne, 8, 4, cfdump);
+            fwrite(c->h_emb, 4, D, cfdump);
+        }
         c->toks[c->pos] = token;
         for (int il = 0; il < NL; il++) {
             CfLayer& L = c->layers[il];
             if (il == PLE_LAYER) ple(c, token);
             hc_mix(c, s.h, L.hc_norm[0], L.hc_down[0], L.hc_up[0], &L.hc_inject[0], s);
+            // hc_norm: the FIRST (attn-side) norm output; the oracle's first-capture matches
+            { std::string nm = "hc_norm-" + std::to_string(il); cfdump_rec(nm.c_str(), s.xn, HCD); }
             if (L.attn) attention(c, L, s, c->pos);
             else deltanet(c, L, s);
+            {
+                std::string bn = (L.attn ? "attn_output-" : "linear_attn_out-") + std::to_string(il);
+                cfdump_rec(bn.c_str(), s.block, D);
+            }
             hc_combine(c, s.h, s.block, s.inj);
             hc_mix(c, s.h, L.hc_norm[1], L.hc_down[1], L.hc_up[1], &L.hc_inject[1], s);
             moe(c, L, s);
+            { std::string nm = "ffn_out-" + std::to_string(il); cfdump_rec(nm.c_str(), s.block, D); }
             hc_combine(c, s.h, s.block, s.inj);
+            { std::string nm = "l_out-" + std::to_string(il); cfdump_rec(nm.c_str(), s.h, HCD); }
             // live progress: the stage log shows the rate even when a run never finishes
             if ((il & 15) == 15) fprintf(stderr, "[cf] step %d: layer %d done\n", c->pos, il);
         }
         // the final mixer is the output norm, then the lm_head
         hc_mix(c, s.h, c->o_norm, c->o_down, c->o_up, nullptr, s);
+        cfdump_rec("result_norm", s.mixed, D);
         gemv(s, c->output, s.mixed, s.logits, st);
         check_launch("lm_head");
         CK(cudaMemcpyAsync(c->h_logits, s.logits, (size_t)V * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
+        if (cfdump_active()) {
+            uint32_t nl = 13;
+            fwrite(&nl, 4, 1, cfdump); fwrite("result_output", 1, 13, cfdump);
+            fwrite(&cfdump_tag, 4, 1, cfdump);
+            int64_t ne[4] = {V, 1, 1, 1}; fwrite(ne, 8, 4, cfdump);
+            fwrite(c->h_logits, 4, V, cfdump);
+        }
         c->have_logits = true;
         c->pos++;
         c->steps++;

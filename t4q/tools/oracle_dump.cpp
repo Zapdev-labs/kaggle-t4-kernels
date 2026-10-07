@@ -52,7 +52,10 @@ static std::map<std::pair<std::string, int>, Rec> g_recs;
 static const std::set<std::string> kNames = {
     "attn_norm", "linear_attn_qkv_mixed", "z", "beta_sigmoid", "gate", "conv_output_silu", "q_conv_predelta",
     "k_conv_predelta", "v_conv_predelta", "attn_output", "final_output", "linear_attn_out", "Qcur_full", "Qcur",
-    "Kcur", "Vcur", "attn_pregate", "attn_gated", "attn_residual", "attn_post_norm", "ffn_out", "l_out"};
+    "Kcur", "Vcur", "attn_pregate", "attn_gated", "attn_residual", "attn_post_norm", "ffn_out", "l_out",
+    // qwen4exp hyper-connection + gdn internals (cb names from the arch build)
+    "hc_norm", "hc_gate", "hc_mixed", "hc_inject", "hc_combine",
+    "beta", "alpha", "a_softplus", "state_predelta", "conv_output_raw"};
 
 static bool wanted(const char* name) {
     std::string n(name);
@@ -86,7 +89,9 @@ static bool cb_eval(struct ggml_tensor* t, bool ask, void*) {
                     else v = ggml_fp16_to_fp32(*(const ggml_fp16_t*)(raw.data() + off));
                     r.data[k++] = v;
                 }
-    g_recs[{r.name, r.tag}] = std::move(r);
+    // first eval wins: the qwen4exp graph evals "hc_norm-N" twice (attn side, then ffn side);
+    // keeping the FIRST makes it the attn-side norm, matching the engine's dump point
+    g_recs.try_emplace({r.name, r.tag}, std::move(r));
     return true;
 }
 
