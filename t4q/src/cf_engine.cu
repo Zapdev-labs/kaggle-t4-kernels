@@ -127,9 +127,9 @@ void attention(CfCtx* c, CfLayer& L, CfScratch& s) {
 }
 
 // The PLE n-gram hash gather + key/value/norms/s-gate/conv. Runs before layer 1's hc mix.
-void ple(CfCtx* c, int token) {
-    CfScratch& s = c->sc;
-    cudaStream_t st = c->st;
+// r19v split: ple_host (the u64 hash + the 16-row host dequant) is the driver's host
+// window work; emit_ple_kernels (the H2D + the 8 launches) is the segment emission.
+void ple_host(CfCtx* c, int token) {
     // host: the u64 hash. ctx[0] = the token; predecessors cut at EOS/missing (missing reads EOS).
     const int pos = c->pos;
     int64_t ctx[PLE_NGRAM];
@@ -151,6 +151,11 @@ void ple(CfCtx* c, int token) {
                 throw std::runtime_error("ple row dequant failed");
         }
     }
+}
+
+void emit_ple_kernels(CfCtx* c) {
+    CfScratch& s = c->sc;
+    cudaStream_t st = c->st;
     CK(cudaMemcpyAsync(s.mixed, c->h_ple, (size_t)D * 4, cudaMemcpyHostToDevice, st));
     if (cfdump_active()) {  // host gather result, no race
         uint32_t nl = 7;
@@ -179,13 +184,29 @@ void ple(CfCtx* c, int token) {
     launch_add(s.h, c->ple_query, HCD, st);           // res += t
 }
 
-// The MoE: router -> host softmax/top-10/renorm -> stage 10 experts -> repack -> gemv -> combine
-void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
+// The MoE: router -> host softmax/top-10/renorm -> stage 10 experts -> repack -> gemv -> combine.
+// r19v split (one emission source, two drivers): emit_router (the router gemv + the D2H, the
+// segment's last ops) / host_router (the sync + the order-exact host loops + the staging HOST
+// work) / emit_moe_rest (the staging/repack branch's stream ops + the we upload + the batched
+// gemv family + the shared expert + moe_out). The direct driver emits them in exactly the old
+// inline order; the graph driver captures them into the per-segment graphs.
+void emit_router(CfCtx* c, CfLayer& L) {
+    CfScratch& s = c->sc;
     cudaStream_t st = c->st;
     { std::string nm = "moe_mixed-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.mixed, D); }
     // the router and every expert/shared input is the ffn-side hc mixed (build_layer_ffn(cur))
     gemv(s, L.router, s.mixed, s.logits, st);  // borrow the logits scratch [512 of V]
     CK(cudaMemcpyAsync(c->h_router, s.logits, (size_t)NE * 4, cudaMemcpyDeviceToHost, st));
+}
+
+// the host window between segments: the sync (the router D2H has landed), then the r19t
+// order-exact softmax/top-10/we renorm (the host loops verbatim), the census, and the staging
+// HOST work (the OFF-path mmap->pinned memcpys; the tiered compose - the tiered mode never
+// runs under graphs) - the pinned sources (eid/we_h/raw_stage) the next segment's captured
+// H2D nodes re-carry at its replay
+void host_router(CfCtx* c, CfLayer& L) {
+    CfScratch& s = c->sc;
+    cudaStream_t st = c->st;
     CK(cudaStreamSynchronize(st));
     { std::string nm = "moe_router-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.logits, NE); }
     if (cfdump_active())
@@ -219,19 +240,11 @@ void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
         fwrite(c->we_h, 4, TOPK, c->census_f);
     }
     const size_t gu_row = L.t_gate_exps->row_bytes;   // 840
-    const size_t dn_row = L.t_down_exps->row_bytes;   // 360
+    const size_t dn_row = L.t_down_exps->row_bytes;  // 360
     const size_t up_bytes = (size_t)TOPK * 2 * EE * gu_row;
     if (c->uva && L.il < c->uva_n) {
-        // cf-m3 (r19u) the UVA pointer-swap path: the picks' raw slabs are read from the
-        // REGISTERED mmap'd expert pages through the device aliases - NO host memcpys,
-        // NO H2D, NO raw staging; the scatter repack's address math is exactly the OFF
-        // path's memcpy sources, the same block decode, the same identity W table + the
-        // same gemvs, so the packed slabs are byte-identical by construction (only the
-        // read path changes: the mapped pages over PCIe instead of the pinned VRAM copy)
-        CK(cudaMemcpyAsync(c->eid_dev, c->eid, (size_t)TOPK * 4, cudaMemcpyHostToDevice, st));
-        launch_repack_eid_q2k(c->up_stage, L.uva_gate, L.uva_up, c->eid_dev, 0,
-                              (int64_t)TOPK * 2 * EE, (int64_t)2 * EE, (int64_t)EE, st);
-        launch_repack_eid_q4(c->dn_stage, L.uva_dn, c->eid_dev, 0, (int64_t)TOPK * D, (int64_t)D, st);
+        // the UVA path stages NOTHING on the host (the picks' raw slabs stay in the
+        // registered pages; the next segment's captured eid H2D node carries the fresh ids)
     } else if (c->tiered) {
         // the dual-path moe (cf-m3, r19l part 2): a HIT pick reads its resident slab with ZERO
         // staging (the load-time repack already made it byte-identical to what the staging would
@@ -271,17 +284,9 @@ void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
                 w.d = c->dn_stage.d + (size_t)m * D * (EE / 32);
             }
         }
-        if (nmiss) {  // stage + repack ONLY the miss rows (an all-hit layer pays neither)
-            CK(cudaMemcpyAsync(c->raw_dev, c->raw_stage, (size_t)nmiss * 2 * EE * gu_row, cudaMemcpyHostToDevice, st));
-            CK(cudaMemcpyAsync(c->raw_dev + up_bytes, c->raw_stage + up_bytes, (size_t)nmiss * D * dn_row,
-                               cudaMemcpyHostToDevice, st));
-            launch_repack(c->up_stage, GT_Q2_K, c->raw_dev, 0, (int64_t)nmiss * 2 * EE, st);
-            launch_repack(c->dn_stage, GT_Q4_0, c->raw_dev + up_bytes, 0, (int64_t)nmiss * D, st);
-        }
-        CK(cudaMemcpyAsync(c->wt_gu, c->h_wt_gu, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
-        CK(cudaMemcpyAsync(c->wt_dn, c->h_wt_dn, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+        c->tier_nmiss = nmiss;  // r19v: the emission's tiered branch reads it (never captured)
     } else {
-        // OFF (no hot-set file): the verbatim full-staging path over the load-time identity table
+        // OFF (no hot-set file): the verbatim full-staging host memcpys over the load-time identity table
         for (int k = 0; k < TOPK; k++) {
             const int64_t e = c->eid[k];
             uint8_t* dst = c->raw_stage + (size_t)k * 2 * EE * gu_row;
@@ -290,6 +295,44 @@ void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
             memcpy(c->raw_stage + up_bytes + (size_t)k * D * dn_row, L.t_down_exps->data + (size_t)e * D * dn_row,
                    (size_t)D * dn_row);
         }
+    }
+}
+
+// the moe's post-router emission: the staging/repack branch's stream ops (the UVA scatters /
+// the tiered miss upload (never captured) / the OFF full upload), the we upload, the batched
+// gemv family, the shared expert, moe_out (the verbatim moved bodies)
+void emit_moe_rest(CfCtx* c, CfLayer& L) {
+    CfScratch& s = c->sc;
+    cudaStream_t st = c->st;
+    const size_t gu_row = L.t_gate_exps->row_bytes;   // 840
+    const size_t dn_row = L.t_down_exps->row_bytes;   // 360
+    const size_t up_bytes = (size_t)TOPK * 2 * EE * gu_row;
+    if (c->uva && L.il < c->uva_n) {
+        // cf-m3 (r19u) the UVA pointer-swap path: the picks' raw slabs are read from the
+        // REGISTERED mmap'd expert pages through the device aliases - NO host memcpys,
+        // NO H2D, NO raw staging; the scatter repack's address math is exactly the OFF
+        // path's memcpy sources, the same block decode, the same identity W table + the
+        // same gemvs, so the packed slabs are byte-identical by construction (only the
+        // read path changes: the mapped pages over PCIe instead of the pinned VRAM copy)
+        CK(cudaMemcpyAsync(c->eid_dev, c->eid, (size_t)TOPK * 4, cudaMemcpyHostToDevice, st));
+        launch_repack_eid_q2k(c->up_stage, L.uva_gate, L.uva_up, c->eid_dev, 0,
+                              (int64_t)TOPK * 2 * EE, (int64_t)2 * EE, (int64_t)EE, st);
+        launch_repack_eid_q4(c->dn_stage, L.uva_dn, c->eid_dev, 0, (int64_t)TOPK * D, (int64_t)D, st);
+    } else if (c->tiered) {
+        // the tiered stream ops (never captured - the miss-count-varying H2D sizes; the
+        // compose ran in host_router and left c->tier_nmiss)
+        if (c->tier_nmiss) {  // stage + repack ONLY the miss rows (an all-hit layer pays neither)
+            CK(cudaMemcpyAsync(c->raw_dev, c->raw_stage, (size_t)c->tier_nmiss * 2 * EE * gu_row,
+                               cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(c->raw_dev + up_bytes, c->raw_stage + up_bytes, (size_t)c->tier_nmiss * D * dn_row,
+                               cudaMemcpyHostToDevice, st));
+            launch_repack(c->up_stage, GT_Q2_K, c->raw_dev, 0, (int64_t)c->tier_nmiss * 2 * EE, st);
+            launch_repack(c->dn_stage, GT_Q4_0, c->raw_dev + up_bytes, 0, (int64_t)c->tier_nmiss * D, st);
+        }
+        CK(cudaMemcpyAsync(c->wt_gu, c->h_wt_gu, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(c->wt_dn, c->h_wt_dn, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+    } else {
+        // OFF (no hot-set file): the verbatim full-staging upload + repack over the identity table
         CK(cudaMemcpyAsync(c->raw_dev, c->raw_stage, up_bytes + (size_t)TOPK * D * dn_row, cudaMemcpyHostToDevice, st));
         launch_repack(c->up_stage, GT_Q2_K, c->raw_dev, 0, (int64_t)TOPK * 2 * EE, st);
         launch_repack(c->dn_stage, GT_Q4_0, c->raw_dev + up_bytes, 0, (int64_t)TOPK * D, st);
@@ -322,6 +365,63 @@ void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
     check_launch("moe");
 }
 
+// the post-router emission of one layer: the moe rest + the ffn_out rec + the combine + the
+// l_out rec (the verbatim tail of the old loop body; the recs no-op when the dump is off)
+void emit_post(CfCtx* c, CfLayer& L) {
+    CfScratch& s = c->sc;
+    emit_moe_rest(c, L);
+    { std::string nm = "ffn_out-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.block, D); }
+    hc_combine(c, s.h, s.block, s.inj);
+    { std::string nm = "l_out-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.h, HCD); }
+}
+
+// the step head emission: the embedding row H2D (the host dequant + the h_params[0] = pos
+// write ran in the DRIVER - the per-step host state must NOT live in the emission, which the
+// graph driver calls only at capture time) + the step-params upload + the residual init
+void emit_head(CfCtx* c) {
+    CfScratch& s = c->sc;
+    cudaStream_t st = c->st;
+    CK(cudaMemcpyAsync(s.h, c->h_emb, (size_t)D * 4, cudaMemcpyHostToDevice, st));
+    // r19v: the step params (pos) ride the pinned word -> the device word; the attention
+    // kernels read it from there (the same int, the same arithmetic - capture-constant)
+    CK(cudaMemcpyAsync(c->d_params, c->h_params, 4 * sizeof(int), cudaMemcpyHostToDevice, st));
+    launch_cf_res_init(s.h, s.h, st);  // in-place: first-D writes are identities, safe
+}
+
+// the pre-router emission of one layer: hc_mix -> (attention | deltanet) -> combine -> hc_mix
+void emit_pre(CfCtx* c, CfLayer& L) {
+    CfScratch& s = c->sc;
+    hc_mix(c, s.h, L.hc_norm[0], L.hc_down[0], L.hc_up[0], &L.hc_inject[0], s);
+    // hc_norm: the FIRST (attn-side) norm output; the oracle's first-capture matches
+    { std::string nm = "hc_norm-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.xn, HCD); }
+    { std::string nm = "hc_gate-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.gate, HCD); }
+    { std::string nm = "hc_mixed-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.mixed, D); }
+    { std::string nm = "hc_inject-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.inj, HC); }
+    if (L.attn) attention(c, L, s);
+    else deltanet(c, L, s);
+    {
+        std::string bn = (L.attn ? "attn_output-" : "linear_attn_out-") + std::to_string(L.il);
+        cfdump_rec(bn.c_str(), s.block, D);
+    }
+    hc_combine(c, s.h, s.block, s.inj);
+    { std::string nm = "res_mid-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.h, HCD); }
+    { std::string nm = "hc_combine-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.h, HCD); }
+    hc_mix(c, s.h, L.hc_norm[1], L.hc_down[1], L.hc_up[1], &L.hc_inject[1], s);
+    { std::string nm = "ffn_hc_norm-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.xn, HCD); }
+    { std::string nm = "ffn_mixed-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.mixed, D); }
+}
+
+// the tail emission: the final mixer (the output norm) + the lm_head + the logits D2H
+void emit_tail(CfCtx* c) {
+    CfScratch& s = c->sc;
+    // the final mixer is the output norm, then the lm_head
+    hc_mix(c, s.h, c->o_norm, c->o_down, c->o_up, nullptr, s);
+    cfdump_rec("result_norm", s.mixed, D);
+    gemv(s, c->output, s.mixed, s.logits, c->st);
+    check_launch("lm_head");
+    CK(cudaMemcpyAsync(c->h_logits, s.logits, (size_t)V * 4, cudaMemcpyDeviceToHost, c->st));
+}
+
 }  // namespace
 
 bool cf_step(CfCtx* c, int token) {
@@ -329,7 +429,6 @@ bool cf_step(CfCtx* c, int token) {
         if (token < 0 || token >= V) throw std::runtime_error("token id out of range");
         if (c->pos >= c->max_ctx) throw std::runtime_error("context full");
         auto t0 = std::chrono::steady_clock::now();
-        CfScratch& s = c->sc;
         cudaStream_t st = c->st;
         CK(cudaSetDevice(c->gpu));
         // T4Q_CF_DUMP=<path> T4Q_CF_DUMP_LAST=<n-1>: T4QD-format bisect capture
@@ -352,12 +451,12 @@ bool cf_step(CfCtx* c, int token) {
         if (!dequant_row_cpu(c->tok_embd->type, c->tok_embd->data + (size_t)token * c->tok_embd->row_bytes, c->h_emb,
                              D))
             throw std::runtime_error("embedding dequant failed");
-        CK(cudaMemcpyAsync(s.h, c->h_emb, (size_t)D * 4, cudaMemcpyHostToDevice, st));
-        // r19v: the step params (pos) ride the pinned word -> the device word; the attention
-        // kernels read it from there (the same int, the same arithmetic - capture-constant)
+        // r19v: the per-step host state (pos) - written EVERY step in the driver, BEFORE the
+        // emission (the params H2D's pinned source is read at execution time, so the write
+        // must precede the enqueue; and it must never ride the emission itself, which the
+        // graph driver calls only at capture time)
         c->h_params[0] = c->pos;
-        CK(cudaMemcpyAsync(c->d_params, c->h_params, 4 * sizeof(int), cudaMemcpyHostToDevice, st));
-        launch_cf_res_init(s.h, s.h, st);  // in-place: first-D writes are identities, safe
+        emit_head(c);
         if (cfdump_active()) {  // model.input_embed: the raw [D] host embedding, matching the oracle's cb name
             uint32_t nl = 17;
             fwrite(&nl, 4, 1, cfdump); fwrite("model.input_embed", 1, 17, cfdump);
@@ -366,41 +465,65 @@ bool cf_step(CfCtx* c, int token) {
             fwrite(c->h_emb, 4, D, cfdump);
         }
         c->toks[c->pos] = token;
-        for (int il = 0; il < NL; il++) {
-            CfLayer& L = c->layers[il];
-            if (il == PLE_LAYER) ple(c, token);
-            hc_mix(c, s.h, L.hc_norm[0], L.hc_down[0], L.hc_up[0], &L.hc_inject[0], s);
-            // hc_norm: the FIRST (attn-side) norm output; the oracle's first-capture matches
-            { std::string nm = "hc_norm-" + std::to_string(il); cfdump_rec(nm.c_str(), s.xn, HCD); }
-            { std::string nm = "hc_gate-" + std::to_string(il); cfdump_rec(nm.c_str(), s.gate, HCD); }
-            { std::string nm = "hc_mixed-" + std::to_string(il); cfdump_rec(nm.c_str(), s.mixed, D); }
-            { std::string nm = "hc_inject-" + std::to_string(il); cfdump_rec(nm.c_str(), s.inj, HC); }
-            if (L.attn) attention(c, L, s);
-            else deltanet(c, L, s);
-            {
-                std::string bn = (L.attn ? "attn_output-" : "linear_attn_out-") + std::to_string(il);
-                cfdump_rec(bn.c_str(), s.block, D);
+        if (!c->gmode) {
+            // ---- the direct driver: the verbatim op sequence via the emission functions ----
+            for (int il = 0; il < NL; il++) {
+                CfLayer& L = c->layers[il];
+                if (il == PLE_LAYER) { ple_host(c, token); emit_ple_kernels(c); }
+                emit_pre(c, L);
+                emit_router(c, L);
+                host_router(c, L);  // the sync + the order-exact host loops + the staging host work
+                emit_post(c, L);
+                // live progress: the stage log shows the rate even when a run never finishes
+                if ((il & 15) == 15) fprintf(stderr, "[cf] step %d: layer %d done\n", c->pos, il);
             }
-            hc_combine(c, s.h, s.block, s.inj);
-            { std::string nm = "res_mid-" + std::to_string(il); cfdump_rec(nm.c_str(), s.h, HCD); }
-            { std::string nm = "hc_combine-" + std::to_string(il); cfdump_rec(nm.c_str(), s.h, HCD); }
-            hc_mix(c, s.h, L.hc_norm[1], L.hc_down[1], L.hc_up[1], &L.hc_inject[1], s);
-            { std::string nm = "ffn_hc_norm-" + std::to_string(il); cfdump_rec(nm.c_str(), s.xn, HCD); }
-            { std::string nm = "ffn_mixed-" + std::to_string(il); cfdump_rec(nm.c_str(), s.mixed, D); }
-            moe(c, L, s);
-            { std::string nm = "ffn_out-" + std::to_string(il); cfdump_rec(nm.c_str(), s.block, D); }
-            hc_combine(c, s.h, s.block, s.inj);
-            { std::string nm = "l_out-" + std::to_string(il); cfdump_rec(nm.c_str(), s.h, HCD); }
-            // live progress: the stage log shows the rate even when a run never finishes
-            if ((il & 15) == 15) fprintf(stderr, "[cf] step %d: layer %d done\n", c->pos, il);
+            emit_tail(c);
+            CK(cudaStreamSynchronize(st));
+        } else {
+            // ---- the G1 segment-graph driver (r19v) ----
+            // NL+1 = 49 sync-bounded segments (the 48 router syncs + the final logits sync):
+            //   seg 0 = head + L0 pre + L0 router | seg k (1..47) = L(k-1) post + [the PLE
+            //   kernels if k == PLE_LAYER] + Lk pre + Lk router | seg 48 = L47 post + tail.
+            // The FIRST step captures each segment right before its first replay (the ops are
+            // RECORDED, not executed; every arg is a fixed steady-state buffer - the census
+            // found no varying arg after the pos fix), later steps replay only. The host
+            // windows between replays are exactly the direct path's host work (the sync + the
+            // router softmax/top-10/we + the census + the OFF staging memcpys + the PLE
+            // gather), refreshing the pinned sources the replayed memcpy nodes re-carry.
+            // The RELAXED capture mode keeps the emission's diagnostic queries
+            // (CK(cudaGetLastError)/check_launch) legal mid-capture (single-threaded engine).
+            for (int k = 0; k <= NL; k++) {
+                if ((int)c->gexec.size() <= k) {
+                    CK(cudaStreamBeginCapture(st, cudaStreamCaptureModeRelaxed));
+                    if (k == 0) {
+                        emit_head(c);
+                        emit_pre(c, c->layers[0]);
+                        emit_router(c, c->layers[0]);
+                    } else if (k < NL) {
+                        emit_post(c, c->layers[k - 1]);
+                        if (k == PLE_LAYER) emit_ple_kernels(c);  // ple_host ran in the window
+                        emit_pre(c, c->layers[k]);
+                        emit_router(c, c->layers[k]);
+                    } else {
+                        emit_post(c, c->layers[NL - 1]);
+                        emit_tail(c);
+                    }
+                    cudaGraph_t g;
+                    CK(cudaStreamEndCapture(st, &g));
+                    cudaGraphExec_t ex;
+                    CK(cudaGraphInstantiate(&ex, g, 0));
+                    c->ggraph.push_back(g);
+                    c->gexec.push_back(ex);
+                }
+                CK(cudaGraphLaunch(c->gexec[k], st));
+                if (k < NL) {
+                    host_router(c, c->layers[k]);  // the sync + the host window work
+                    if (k + 1 == PLE_LAYER) ple_host(c, token);  // the PLE gather for seg 1
+                    if ((k & 15) == 15) fprintf(stderr, "[cf] step %d: layer %d routed\n", c->pos, k);
+                }
+            }
+            CK(cudaStreamSynchronize(st));
         }
-        // the final mixer is the output norm, then the lm_head
-        hc_mix(c, s.h, c->o_norm, c->o_down, c->o_up, nullptr, s);
-        cfdump_rec("result_norm", s.mixed, D);
-        gemv(s, c->output, s.mixed, s.logits, st);
-        check_launch("lm_head");
-        CK(cudaMemcpyAsync(c->h_logits, s.logits, (size_t)V * 4, cudaMemcpyDeviceToHost, st));
-        CK(cudaStreamSynchronize(st));
         if (cfdump_active()) {
             uint32_t nl = 13;
             fwrite(&nl, 4, 1, cfdump); fwrite("result_output", 1, 13, cfdump);
@@ -437,6 +560,8 @@ void cf_reset(CfCtx* c) {
 void cf_free(CfCtx* c) {
     if (!c) return;
     if (c->st) { cudaStreamSynchronize(c->st); cudaStreamDestroy(c->st); }
+    for (auto& e : c->gexec) cudaGraphExecDestroy(e);  // r19v: the G1 segment graphs
+    for (auto& g : c->ggraph) cudaGraphDestroy(g);
     if (c->uva_reg) cudaHostUnregister(c->uva_reg);  // cf-m3 (r19u): the stream is drained
     if (c->raw_stage) cudaFreeHost(c->raw_stage);
     if (c->raw_dev) cudaFree(c->raw_dev);

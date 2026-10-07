@@ -219,6 +219,25 @@ dequant rates and the platform paths are measured, no more assumptions**:
   perturbation is ~6 orders smaller but the bar is byte-identity, not statistics). The
   W-table view build is integer-offset arithmetic - exact by construction, no risk. The
   G1 form keeps the host router as-is (no new arithmetic, no risk).
+  G1 LANDED (r19v, build-clean 0 errors, OFF by default - absent T4Q_CF_GRAPH = the
+  verbatim direct-emission path): the emission/driver split (one op source, two drivers -
+  the moved verbatim bodies: emit_head/emit_ple_kernels/emit_pre/emit_router/emit_moe_rest/
+  emit_post/emit_tail + ple_host/host_router holding ALL the per-step host state), the 49
+  sync-bounded segment graphs captured at the FIRST step right before each segment's first
+  replay (the ops recorded, not executed; every arg a fixed steady-state buffer - the census
+  found no varying arg after the pos device word, and every varying memcpy content rides a
+  pinned host source the captured H2D nodes re-carry at each replay), the host windows
+  between replays exactly the direct path's host work (the sync + the router softmax/
+  top-10/we + the census + the OFF staging memcpys + the PLE gather). The gmode exclusions:
+  tiered (the miss-varying H2D sizes are not capture-constant; the census verdict says the
+  tiering pays ~nothing at this entropy anyway) and T4Q_CF_DUMP (the mid-step D2H probes are
+  not capture-legal). The graphs survive cf_reset; cf_free destroys them. Two self-review
+  catches landed pre-battery: the h_params[0] = pos write must live in the DRIVER (the
+  emission runs only at capture time in the graph path - the stale-pos trap), and it must
+  precede the params H2D's ENQUEUE (a pinned async copy reads its source at execution time -
+  the write-after-enqueue race). Runtime verification: the gates with T4Q_CF_GRAPH=1 (the
+  greedy byte-compare vs the OFF path) + the A/B tok/s on the L4, then the T4 at the next
+  quota window; the graph_probe's measured differentials decide the adoption class.
   The UVA stays first (the bigger cut, and it unlocks G2); G1 is the hedge that does not
   need it, (3) MTP (cf-m4).
   PROBE (r19s, landed: t4q/tools/graph_probe.cu + the build/graph_probe target, compiles

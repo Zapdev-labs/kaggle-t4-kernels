@@ -152,6 +152,18 @@ struct CfCtx {
     // becomes capture-constant (the G1/G2 graph forms; the r19p census found no other).
     int* h_params = nullptr;         // pinned host [4]: h_params[0] = pos ([1..3] spare)
     int* d_params = nullptr;         // device [4]
+    // r19v: the tiered host window's miss count, feeding the emission's tiered branch (the
+    // compose ran in host_router); dead under graphs (the tiered mode is gmode-excluded)
+    int tier_nmiss = 0;
+    // cf-m3 (r19v) the G1 segment graphs: T4Q_CF_GRAPH=1 captures the NL+1 = 49 sync-bounded
+    // segments at the first step and replays them per step (the launch wall -> ~1 replay per
+    // segment; the host windows - the router softmax/top-10 + the OFF-path staging memcpys +
+    // the PLE gather - stay). OFF (absent env / tiered / dumping) = the verbatim emission
+    // path. The graphs survive cf_reset (the buffers are the same; the memsets run outside
+    // the graphs); cf_free destroys them after the stream drain.
+    std::vector<cudaGraphExec_t> gexec;   // [NL+1] the per-segment instantiated execs
+    std::vector<cudaGraph_t> ggraph;      // the captured sources (destroyed at free)
+    int gmode = 0;                       // 0 = the direct emission, 1 = the graph driver
     float* ye = nullptr;              // [TOPK*D] per-expert down outputs
     float* we = nullptr;              // [TOPK] renormalized router weights (device)
     float* ysh = nullptr;             // [D] shared expert out

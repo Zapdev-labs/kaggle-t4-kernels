@@ -2288,3 +2288,44 @@ host) or ~28-29 (the Kaggle class), then the staged-vs-UVA A/B tok/s (the uva_pr
 ratio decides the adoption; n is tuned per host from the probe's RSS report); the v9
 payload regen carries it after the L4 passes. The PLAN_CF cf-m3 section carries the
 landed note.
+
+## r19v - the G1 SEGMENT GRAPHS landed (build-clean, OFF by default) + the pos device word
+
+Two commits. (1) a02bd01 the pos device word (the G1 prerequisite, byte-identical by
+construction): pos - the ONLY per-step varying kernel arg in the whole step (the r19p
+census: every launch grid constant, only pos in the 3 attention kernels + the pinned-table
+contents vary) - now rides a pinned host word uploaded at every step head, and the 3
+attention kernels read it from the device word (the same int, the same downstream
+arithmetic: theta, the KV slot address, n_kv = pos+1); also eid becomes PINNED (a captured
+memcpy node must read pinned host memory). (2) the G1 SEGMENT-GRAPH DRIVER (T4Q_CF_GRAPH=1,
+OFF by default): the emission/driver split - ONE op source (the moved verbatim bodies:
+emit_head / emit_ple_kernels / emit_pre / emit_router / emit_moe_rest / emit_post /
+emit_tail, plus ple_host and host_router holding ALL the per-step host state) with TWO
+drivers: the direct driver (the exact old inline op sequence) and the G1 driver (49
+sync-bounded segments: the 48 router syncs + the final logits sync; seg 0 = head + L0 pre +
+L0 router, seg k = L(k-1) post + [the PLE kernels if k == PLE_LAYER] + Lk pre + Lk router,
+seg 48 = L47 post + tail; the FIRST step captures each segment right before its first
+replay - the ops RECORDED, not executed, every arg a fixed steady-state buffer - later
+steps replay only; the host windows between replays are exactly the direct path's host
+work, refreshing the pinned sources the replayed memcpy nodes re-carry). The gmode
+exclusions at load: tiered (the miss-varying H2D sizes are not capture-constant; the
+census verdict says the tiering pays ~nothing at this routing entropy anyway) and
+T4Q_CF_DUMP (the mid-step D2H probes are not capture-legal). The RELAXED capture mode keeps
+the emission's diagnostic queries (CK(cudaGetLastError)/check_launch) legal mid-capture
+(single-threaded engine). The graphs survive cf_reset (the buffers are the same, the
+memsets run outside the graphs); cf_free destroys them after the stream drain. TWO
+SELF-REVIEW CATCHES before the battery (the capture-only trap class): (a) the h_params[0]
+= pos write initially sat INSIDE emit_head - the graph driver calls the emission only at
+capture time, so from step 2 the write would never run and the replayed H2D would carry a
+STALE pos (the fix: the write lives in the driver, written every step); (b) the write must
+also PRECEDE the params H2D's enqueue - a pinned async copy reads its source at execution
+time, so a write after the enqueue is a race (the fix: the write precedes emit_head/the
+seg-0 launch). Build: libt4q + cf_run 0 errors, 0 warnings in the 12.8 podman (the 3
+attention kernels unchanged register counts). RUNTIME VERIFICATION (the L4 host): the
+correctness gates with T4Q_CF_GRAPH=1 (the greedy byte-compare vs the OFF path - the
+byte-identity argument: the replayed graph executes the recorded op list in the recorded
+order with the recorded args, which IS the direct path's op list/args, with the data
+flowing through the same fixed buffers), then the A/B tok/s (the graph_probe's measured
+differentials decide the adoption class); the T4 at the next quota window. The G2 (the
+full-step graph + the order-exact device router per the r19t spec) builds on this once the
+UVA's A/B passes. The PLAN_CF lever-2 block carries the landed note.

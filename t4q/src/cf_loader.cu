@@ -491,6 +491,25 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
         c->toks = new int[c->max_ctx];
         memset(c->toks, -1, (size_t)c->max_ctx * sizeof(int));
 
+        // cf-m3 (r19v) the G1 segment graphs: T4Q_CF_GRAPH=1 captures the 49 sync-bounded
+        // segments at the first step and replays them (the launch wall -> ~1 replay per
+        // segment). Requires the capture-constant form: NOT tiered (the miss-count-varying
+        // H2D sizes are not capture-constant; the census verdict says the tiering pays
+        // ~nothing at this routing entropy anyway) and NOT dumping (the T4Q_CF_DUMP mid-step
+        // D2H probes are not capture-legal). The OFF/UVA moe branches are per-layer constant,
+        // pos rides the device step-params word, and every varying memcpy content rides a
+        // pinned-fixed host source the captured H2D nodes re-carry at each replay.
+        if (const char* gv = getenv("T4Q_CF_GRAPH")) c->gmode = atoi(gv) ? 1 : 0;
+        if (c->gmode && c->tiered) {
+            c->gmode = 0;
+            fprintf(stderr, "[cf] graph OFF: the tiered moe's miss-varying H2D sizes are not capture-constant\n");
+        }
+        if (c->gmode && getenv("T4Q_CF_DUMP")) {
+            c->gmode = 0;
+            fprintf(stderr, "[cf] graph OFF: the T4Q_CF_DUMP mid-step probes are not capture-legal\n");
+        }
+        if (c->gmode) fprintf(stderr, "[cf] graph ON: %d segment graphs, captured at the first step\n", NL + 1);
+
         CK(cudaFree(dev));
         CK(cudaFreeHost(pin));
         if (rs.mismatched > 0)
