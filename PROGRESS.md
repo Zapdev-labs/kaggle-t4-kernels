@@ -2095,3 +2095,26 @@ flat is c*4+k = the engine's read; the dilation-3 taps k=0 -> hist[0] = t-9
 gated + conv (commutative, bit-exact). The MoE combine: sum we*ye +
 sigmoid(sh_gate)*ysh. The layout question that sent this to the census (the
 doc's ple_conv1d[k,c] vs [k,c]-major) resolved by the ne[0]-fast convention.
+
+## r19o - the UVA feasibility PROBE landed (the cf-m0 doctrine: measure before the design
+freezes)
+
+The cf-m3 UVA design (rebased on the r19n census verdict) hinges on one unmeasured number:
+the bandwidth a kernel sustains reading cudaHostRegisterMapped pages over PCIe, versus the
+staged path's cudaMemcpyAsync H2D + the kernel read over VRAM, on the same warm page-cache
+bytes. The minimal-UVA form (register the expert region once at load + swap the repack's
+input pointer to the mapped pages - the SAME repack kernel + the SAME gemvs, byte-identical
+by construction, no pinned staging, no H2D) only wins if the mapped reads carry a large
+fraction of the link; if the TLB/mapped-path behavior halves them, the fused raw gemv (the
+dequant fused into the dot, the repack eliminated) or the staged path stays. The probe:
+t4q/tools/uva_probe.cu (+ the build/uva_probe make target, compiles clean in the 12.8
+podman, 0 errors) - mmaps the file, touches the range once (both paths then read the SAME
+warm page cache), times cudaHostRegister(Mapped) + the RSS growth across the pinning (the
+Kaggle-host feasibility input: the ~28.8 GB expert region pinned vs the host's RAM), and
+benches both paths (3 passes x 3 reps, best): (A) the kernel reading the device alias of
+the mapped pages, (B) the staged form (the H2D from the same pages + the same kernel over
+the VRAM staging) - the coalesced 16-B grid-strided read kernel is the bandwidth-realistic
+moe pattern (the expert gu slab is a contiguous 1.075 MB region; the ALU is a trivial word
+sum so the loads dominate), and the probe prints the A/B ratio + the decision rule
+(>= ~0.6 supports the pointer-swap form). Run on the L4 host: ./build/uva_probe <model>
+0 2 b. The parallel session (the L4 host) runs it; the measured class freezes the design.

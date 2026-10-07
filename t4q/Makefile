@@ -32,6 +32,11 @@ $(BUILD)/oracle_dump: tools/oracle_dump.cpp
 	@mkdir -p $(BUILD)
 	g++ -O2 -std=c++17 -Itools/oracle_include -o $@ $< -L$(LLAMA_LIB) -lllama -lggml -lggml-base -Wl,-rpath,$(LLAMA_LIB)
 
+# cf-m3 (r19o): the UVA feasibility probe - mapped-read bandwidth vs the staged path
+$(BUILD)/uva_probe: tools/uva_probe.cu
+	@mkdir -p $(BUILD)
+	$(NVCC) $(NVFLAGS) -Isrc -o $@ $<
+
 clean:
 	rm -rf $(BUILD)
 

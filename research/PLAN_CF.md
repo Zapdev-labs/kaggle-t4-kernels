@@ -206,7 +206,16 @@ dequant rates and the platform paths are measured, no more assumptions**:
   (~960 MB/token ~ 75 ms on the T4's gen3 x16 vs the ~150-165 ms staged total). The
   dual-path/W-table mechanism already supports per-pick views; the raw-reading gemv
   becomes the third path (OFF by default until the A/B passes). The PLE 16-row async
-  prefetch after each sampling stays on the list. Gate: the correctness gates intact +
+  prefetch after each sampling stays on the list. PROBE FIRST (r19o, landed:
+  t4q/tools/uva_probe.cu + the build/uva_probe target, compiles clean in the 12.8 podman):
+  the mapped-read bandwidth vs the staged H2D+read on the same warm page-cache bytes - the
+  A/B ratio decides the form (>= ~0.6 supports the minimal pointer-swap UVA: cudaHostRegister
+  (Mapped) the expert region once at load + the repack's input pointer swapped to the
+  mapped pages - the SAME repack + the SAME gemvs, byte-identical by construction, no
+  pinned staging, no H2D; a halved ratio -> the fused raw gemv (the dequant fused into
+  the dot, the repack eliminated) or the staged path stays). Run on the L4 host:
+  `./build/uva_probe <model.gguf> 0 2 b` (the registration time, the RSS growth, the
+  ratio all print). Gate: the correctness gates intact +
   the staged-vs-UVA A/B tok/s on the same hardware (the L4 locally, the T4 on the next
   quota window).
 - **cf-m4 - MTP spec**: the draft/verify/rollback wiring on the UVA engine, the n-gram
