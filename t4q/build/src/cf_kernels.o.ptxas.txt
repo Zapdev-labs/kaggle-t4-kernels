@@ -3,74 +3,74 @@ ptxas info    : Compiling entry function '_Z14k_cf_eh_gatherPKfS0_Pf' for 'sm_75
 ptxas info    : Function properties for _Z14k_cf_eh_gatherPKfS0_Pf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 8 registers, used 0 barriers, 376 bytes cmem[0]
-ptxas info    : Compile time = 1.807 ms
+ptxas info    : Compile time = 1.887 ms
 ptxas info    : Compiling entry function '_Z15k_cf_silu_mul_bPKfPfii' for 'sm_75'
 ptxas info    : Function properties for _Z15k_cf_silu_mul_bPKfPfii
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 19 registers, used 0 barriers, 376 bytes cmem[0]
-ptxas info    : Compile time = 4.149 ms
+ptxas info    : Compile time = 4.488 ms
 ptxas info    : Compiling entry function '_Z12k_cf_moe_outPKfS0_S0_S0_Pf' for 'sm_75'
 ptxas info    : Function properties for _Z12k_cf_moe_outPKfS0_S0_S0_Pf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 30 registers, used 0 barriers, 392 bytes cmem[0]
-ptxas info    : Compile time = 3.066 ms
+ptxas info    : Compile time = 3.322 ms
 ptxas info    : Compiling entry function '_Z13k_cf_ple_convPKfPfS0_S1_' for 'sm_75'
 ptxas info    : Function properties for _Z13k_cf_ple_convPKfPfS0_S1_
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 28 registers, used 0 barriers, 384 bytes cmem[0]
-ptxas info    : Compile time = 4.371 ms
+ptxas info    : Compile time = 4.455 ms
 ptxas info    : Compiling entry function '_Z14k_cf_ple_gatedPKfS0_Pf' for 'sm_75'
 ptxas info    : Function properties for _Z14k_cf_ple_gatedPKfS0_Pf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 12 registers, used 0 barriers, 376 bytes cmem[0]
-ptxas info    : Compile time = 0.828 ms
+ptxas info    : Compile time = 0.736 ms
 ptxas info    : Compiling entry function '_Z11k_cf_ple_sgPKfS0_PfS1_' for 'sm_75'
 ptxas info    : Function properties for _Z11k_cf_ple_sgPKfS0_PfS1_
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 43 registers, used 0 barriers, 384 bytes cmem[0]
-ptxas info    : Compile time = 8.108 ms
+ptxas info    : Compile time = 8.265 ms
 ptxas info    : Compiling entry function '_Z16k_cf_attn_decodePKfPKtS2_PfS3_PKiif' for 'sm_75'
 ptxas info    : Function properties for _Z16k_cf_attn_decodePKfPKtS2_PfS3_PKiif
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 52 registers, used 1 barriers, 1056 bytes smem, 408 bytes cmem[0]
-ptxas info    : Compile time = 20.978 ms
+ptxas info    : Compile time = 20.098 ms
 ptxas info    : Compiling entry function '_Z13k_cf_kv_storePKfS0_PtS1_PKii' for 'sm_75'
 ptxas info    : Function properties for _Z13k_cf_kv_storePKfS0_PtS1_PKii
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 14 registers, used 0 barriers, 396 bytes cmem[0]
-ptxas info    : Compile time = 1.121 ms
+ptxas info    : Compile time = 1.032 ms
 ptxas info    : Compiling entry function '_Z17k_cf_qk_norm_ropePKfS0_S0_S0_PfS1_PKiffi' for 'sm_75'
 ptxas info    : Function properties for _Z17k_cf_qk_norm_ropePKfS0_S0_S0_PfS1_PKiffi
     32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 24 registers, used 1 barriers, 32 bytes cumulative stack size, 1056 bytes smem, 420 bytes cmem[0], 8 bytes cmem[2]
-ptxas info    : Compile time = 10.998 ms
+ptxas info    : Compile time = 10.863 ms
 ptxas info    : Compiling entry function '_Z14k_cf_gdn_gnormPKfS0_S0_Pff' for 'sm_75'
 ptxas info    : Function properties for _Z14k_cf_gdn_gnormPKfS0_S0_Pff
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 19 registers, used 1 barriers, 16 bytes smem, 388 bytes cmem[0]
-ptxas info    : Compile time = 4.414 ms
+ptxas info    : Compile time = 4.212 ms
 ptxas info    : Compiling entry function '_Z13k_cf_res_initPfPKf' for 'sm_75'
 ptxas info    : Function properties for _Z13k_cf_res_initPfPKf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 8 registers, used 0 barriers, 368 bytes cmem[0]
-ptxas info    : Compile time = 0.735 ms
+ptxas info    : Compile time = 0.841 ms
 ptxas info    : Compiling entry function '_Z15k_cf_hc_combinePfPKfS1_' for 'sm_75'
 ptxas info    : Function properties for _Z15k_cf_hc_combinePfPKfS1_
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 14 registers, used 0 barriers, 376 bytes cmem[0]
-ptxas info    : Compile time = 3.687 ms
+ptxas info    : Compile time = 3.731 ms
 ptxas info    : Compiling entry function '_Z13k_cf_hc_mixedPKfS0_Pf' for 'sm_75'
 ptxas info    : Function properties for _Z13k_cf_hc_mixedPKfS0_Pf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 18 registers, used 0 barriers, 376 bytes cmem[0]
-ptxas info    : Compile time = 3.954 ms
+ptxas info    : Compile time = 4.178 ms
 ptxas info    : Compiling entry function '_Z10k_cf_hc_loPKfPf' for 'sm_75'
 ptxas info    : Function properties for _Z10k_cf_hc_loPKfPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 14 registers, used 0 barriers, 368 bytes cmem[0]
-ptxas info    : Compile time = 3.631 ms
+ptxas info    : Compile time = 3.894 ms
 ptxas info    : Compiling entry function '_Z12k_cf_hc_normPKfS0_Pff' for 'sm_75'
 ptxas info    : Function properties for _Z12k_cf_hc_normPKfS0_Pff
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 39 registers, used 1 barriers, 32 bytes smem, 380 bytes cmem[0]
-ptxas info    : Compile time = 10.203 ms
+ptxas info    : Compile time = 10.487 ms

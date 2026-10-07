@@ -265,1234 +265,1234 @@ ptxas info    : Compiling entry function '_ZN2tp4spec10k_argmax_xILi1EEEvNS0_5XA
 ptxas info    : Function properties for _ZN2tp4spec10k_argmax_xILi1EEEvNS0_5XArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 21 registers, used 1 barriers, 32 bytes smem, 488 bytes cmem[0]
-ptxas info    : Compile time = 11.020 ms
+ptxas info    : Compile time = 11.086 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec10k_argmax_xILi0EEEvNS0_5XArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec10k_argmax_xILi0EEEvNS0_5XArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 32 registers, used 1 barriers, 32 bytes smem, 488 bytes cmem[0]
-ptxas info    : Compile time = 23.645 ms
+ptxas info    : Compile time = 23.523 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec7k_gdn_mILb0EEEvPKfiS3_PfS3_S3_S3_S4_miS4_PKNS_9StepStateEiPjS3_PaP4int2S4_S4_S4_' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec7k_gdn_mILb0EEEvPKfiS3_PfS3_S3_S3_S4_miS4_PKNS_9StepStateEiPjS3_PaP4int2S4_S4_S4_
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 1 barriers, 1232 bytes smem, 512 bytes cmem[0]
-ptxas info    : Compile time = 54.444 ms
+ptxas info    : Compile time = 54.142 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec7k_gdn_mILb1EEEvPKfiS3_PfS3_S3_S3_S4_miS4_PKNS_9StepStateEiPjS3_PaP4int2S4_S4_S4_' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec7k_gdn_mILb1EEEvPKfiS3_PfS3_S3_S3_S4_miS4_PKNS_9StepStateEiPjS3_PaP4int2S4_S4_S4_
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 1 barriers, 1232 bytes smem, 512 bytes cmem[0]
-ptxas info    : Compile time = 64.295 ms
+ptxas info    : Compile time = 63.089 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec11k_ar_norm_mILb1ELb0EEEvPKfPfS3_S3_PKjPNS_9StepStateEiS3_S4_PaP4int2S4_PjSC_' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec11k_ar_norm_mILb1ELb0EEEvPKfPfS3_S3_PKjPNS_9StepStateEiS3_S4_PaP4int2S4_PjSC_
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 1 barriers, 32 bytes smem, 464 bytes cmem[0]
-ptxas info    : Compile time = 18.240 ms
+ptxas info    : Compile time = 19.611 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec11k_ar_norm_mILb1ELb1EEEvPKfPfS3_S3_PKjPNS_9StepStateEiS3_S4_PaP4int2S4_PjSC_' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec11k_ar_norm_mILb1ELb1EEEvPKfPfS3_S3_PKjPNS_9StepStateEiS3_S4_PaP4int2S4_PjSC_
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 1 barriers, 32 bytes smem, 464 bytes cmem[0]
-ptxas info    : Compile time = 17.509 ms
+ptxas info    : Compile time = 19.276 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec11k_ar_norm_mILb0ELb0EEEvPKfPfS3_S3_PKjPNS_9StepStateEiS3_S4_PaP4int2S4_PjSC_' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec11k_ar_norm_mILb0ELb0EEEvPKfPfS3_S3_PKjPNS_9StepStateEiS3_S4_PaP4int2S4_PjSC_
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 1 barriers, 32 bytes smem, 464 bytes cmem[0]
-ptxas info    : Compile time = 15.355 ms
+ptxas info    : Compile time = 15.948 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec11k_ring_convEPKfiPfiPKi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec11k_ring_convEPKfiPfiPKi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 16 registers, used 0 barriers, 392 bytes cmem[0]
-ptxas info    : Compile time = 3.813 ms
+ptxas info    : Compile time = 3.698 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec7k_forceEPiPKiPKNS_9StepStateEii' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec7k_forceEPiPKiPKNS_9StepStateEii
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 17 registers, used 0 barriers, 384 bytes cmem[0]
-ptxas info    : Compile time = 6.087 ms
+ptxas info    : Compile time = 5.877 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec17k_mark_verify_endEv' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec17k_mark_verify_endEv
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 4 registers, used 0 barriers, 352 bytes cmem[0]
-ptxas info    : Compile time = 0.333 ms
+ptxas info    : Compile time = 0.292 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec16k_mark_draft_endEv' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec16k_mark_draft_endEv
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 4 registers, used 0 barriers, 352 bytes cmem[0]
-ptxas info    : Compile time = 0.240 ms
+ptxas info    : Compile time = 0.219 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec7k_ngramEPKiPNS_9StepStateEPiiii' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec7k_ngramEPKiPNS_9StepStateEPiiii
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 14 registers, used 1 barriers, 16 bytes smem, 388 bytes cmem[0]
-ptxas info    : Compile time = 3.853 ms
+ptxas info    : Compile time = 3.678 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec8k_selectEPKfPKaPK4int2PKNS_9StepStateEPfPaPS5_PKiPi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec8k_selectEPKfPKaPK4int2PKNS_9StepStateEPfPaPS5_PKiPi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 14 registers, used 0 barriers, 424 bytes cmem[0]
-ptxas info    : Compile time = 1.551 ms
+ptxas info    : Compile time = 1.427 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec15k_argmax_part_mEPKfiiPf' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec15k_argmax_part_mEPKfiiPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 18 registers, used 1 barriers, 2048 bytes smem, 376 bytes cmem[0]
-ptxas info    : Compile time = 4.666 ms
+ptxas info    : Compile time = 4.455 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec16k_attn_combine_mEPKfS2_iPKiiPaP4int2' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec16k_attn_combine_mEPKfS2_iPKiiPaP4int2
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 54 registers, used 1 barriers, 176 bytes smem, 408 bytes cmem[0]
-ptxas info    : Compile time = 21.812 ms
+ptxas info    : Compile time = 26.007 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec14k_attn_split_mEPKfPK6__halfS5_PfiPKii' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec14k_attn_split_mEPKfPK6__halfS5_PfiPKii
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 102 registers, used 1 barriers, 8384 bytes smem, 404 bytes cmem[0]
-ptxas info    : Compile time = 49.613 ms
+ptxas info    : Compile time = 49.962 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec13k_attn_prep_mEPKfiS2_S2_PfP6__halfS5_iPKiif' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec13k_attn_prep_mEPKfiS2_S2_PfP6__halfS5_iPKiif
     32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 36 registers, used 1 barriers, 32 bytes cumulative stack size, 1056 bytes smem, 432 bytes cmem[0], 8 bytes cmem[2]
-ptxas info    : Compile time = 14.919 ms
+ptxas info    : Compile time = 15.336 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec12k_gdn_replayEPfmPKNS_9StepStateEiPKfS6_S6_m' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec12k_gdn_replayEPfmPKNS_9StepStateEiPKfS6_S6_m
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 62 registers, used 0 barriers, 416 bytes cmem[0]
-ptxas info    : Compile time = 7.931 ms
+ptxas info    : Compile time = 8.195 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec8k_pull_mEPKjPKfPfPNS_9StepStateEiS4_S5_PjS8_' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec8k_pull_mEPKjPKfPfPNS_9StepStateEiS4_S5_PjS8_
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 20 registers, used 1 barriers, 424 bytes cmem[0]
-ptxas info    : Compile time = 3.203 ms
+ptxas info    : Compile time = 3.302 ms
 ptxas info    : Compiling entry function '_ZN2tp4spec9k_embed_mEPKhPKiPf' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp4spec9k_embed_mEPKhPKiPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 16 registers, used 0 barriers, 376 bytes cmem[0]
-ptxas info    : Compile time = 1.447 ms
+ptxas info    : Compile time = 1.327 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 127.964 ms
+ptxas info    : Compile time = 131.328 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 192.367 ms
+ptxas info    : Compile time = 208.067 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     200 bytes stack frame, 1016 bytes spill stores, 1016 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 200 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 494.027 ms
+ptxas info    : Compile time = 496.129 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     96 bytes stack frame, 460 bytes spill stores, 460 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 96 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 440.990 ms
+ptxas info    : Compile time = 462.736 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 8 bytes cumulative stack size, 7168 bytes smem, 836 bytes cmem[0]
-ptxas info    : Compile time = 461.643 ms
+ptxas info    : Compile time = 464.971 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 176.641 ms
+ptxas info    : Compile time = 179.176 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 111.548 ms
+ptxas info    : Compile time = 115.603 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 284.952 ms
+ptxas info    : Compile time = 297.733 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 157.928 ms
+ptxas info    : Compile time = 162.020 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi7EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 188.734 ms
+ptxas info    : Compile time = 196.005 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 104.218 ms
+ptxas info    : Compile time = 117.444 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 176.656 ms
+ptxas info    : Compile time = 201.105 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     176 bytes stack frame, 552 bytes spill stores, 552 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 176 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 404.339 ms
+ptxas info    : Compile time = 425.494 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     80 bytes stack frame, 184 bytes spill stores, 184 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 80 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 386.201 ms
+ptxas info    : Compile time = 393.224 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 6144 bytes smem, 836 bytes cmem[0]
-ptxas info    : Compile time = 383.994 ms
+ptxas info    : Compile time = 381.114 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 147.334 ms
+ptxas info    : Compile time = 145.822 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 99.538 ms
+ptxas info    : Compile time = 95.863 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 247.207 ms
+ptxas info    : Compile time = 232.893 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 139.231 ms
+ptxas info    : Compile time = 132.948 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi6EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 158.305 ms
+ptxas info    : Compile time = 155.804 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 84.429 ms
+ptxas info    : Compile time = 83.242 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 140.481 ms
+ptxas info    : Compile time = 139.034 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     120 bytes stack frame, 264 bytes spill stores, 264 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 120 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 327.022 ms
+ptxas info    : Compile time = 334.601 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 318.048 ms
+ptxas info    : Compile time = 313.950 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 5120 bytes smem, 836 bytes cmem[0]
-ptxas info    : Compile time = 324.356 ms
+ptxas info    : Compile time = 291.551 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 128.307 ms
+ptxas info    : Compile time = 117.126 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 90.852 ms
+ptxas info    : Compile time = 83.720 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 198.349 ms
+ptxas info    : Compile time = 194.619 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 106.875 ms
+ptxas info    : Compile time = 108.225 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi5EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 127.014 ms
+ptxas info    : Compile time = 130.763 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 70.860 ms
+ptxas info    : Compile time = 68.443 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 120.854 ms
+ptxas info    : Compile time = 116.702 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     24 bytes stack frame, 20 bytes spill stores, 20 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 24 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 255.871 ms
+ptxas info    : Compile time = 253.419 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 282.946 ms
+ptxas info    : Compile time = 276.486 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 4096 bytes smem, 836 bytes cmem[0]
-ptxas info    : Compile time = 242.062 ms
+ptxas info    : Compile time = 236.977 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 98.906 ms
+ptxas info    : Compile time = 95.625 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 73.497 ms
+ptxas info    : Compile time = 71.943 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 157.896 ms
+ptxas info    : Compile time = 151.070 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 87.910 ms
+ptxas info    : Compile time = 85.998 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi4EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 109.534 ms
+ptxas info    : Compile time = 105.816 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 57.728 ms
+ptxas info    : Compile time = 54.422 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 102.511 ms
+ptxas info    : Compile time = 96.878 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 243.650 ms
+ptxas info    : Compile time = 226.080 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 183.617 ms
+ptxas info    : Compile time = 165.504 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 3072 bytes smem, 836 bytes cmem[0]
-ptxas info    : Compile time = 175.268 ms
+ptxas info    : Compile time = 170.182 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 61.733 ms
+ptxas info    : Compile time = 59.971 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 51.613 ms
+ptxas info    : Compile time = 51.840 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 117.971 ms
+ptxas info    : Compile time = 118.124 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 72.454 ms
+ptxas info    : Compile time = 69.627 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi3EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 87.438 ms
+ptxas info    : Compile time = 82.081 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 44.869 ms
+ptxas info    : Compile time = 38.880 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 69.594 ms
+ptxas info    : Compile time = 64.460 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     8 bytes stack frame, 8 bytes spill stores, 8 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 8 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 193.588 ms
+ptxas info    : Compile time = 181.851 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 151.310 ms
+ptxas info    : Compile time = 145.520 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 2048 bytes smem, 836 bytes cmem[0]
-ptxas info    : Compile time = 122.672 ms
+ptxas info    : Compile time = 118.194 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 50.091 ms
+ptxas info    : Compile time = 50.787 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 126 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 41.343 ms
+ptxas info    : Compile time = 45.588 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 83.693 ms
+ptxas info    : Compile time = 82.762 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 41.610 ms
+ptxas info    : Compile time = 41.742 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi2EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 127 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 61.298 ms
+ptxas info    : Compile time = 58.492 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi1ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 27.325 ms
+ptxas info    : Compile time = 26.499 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi2ELi2ELi10ELb0ELb0ELi0ELb0ELi1ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 58.693 ms
+ptxas info    : Compile time = 56.991 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi3ELi4ELi17ELb0ELb0ELi0ELb0ELi1ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     16 bytes stack frame, 16 bytes spill stores, 16 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 16 bytes cumulative stack size, 836 bytes cmem[0]
-ptxas info    : Compile time = 114.309 ms
+ptxas info    : Compile time = 105.824 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi17ELb0ELb0ELi0ELb0ELi2ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 80.331 ms
+ptxas info    : Compile time = 70.980 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb1ELi2ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 1024 bytes smem, 836 bytes cmem[0]
-ptxas info    : Compile time = 66.342 ms
+ptxas info    : Compile time = 61.482 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi6ELb0ELb0ELi0ELb0ELi2ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 127 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 34.661 ms
+ptxas info    : Compile time = 30.489 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi4ELi2ELi6ELb0ELb0ELi0ELb0ELi1ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 123 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 30.004 ms
+ptxas info    : Compile time = 28.878 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi4ELi10ELb0ELb0ELi0ELb0ELi2ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 45.622 ms
+ptxas info    : Compile time = 43.962 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb0ELi0ELb0ELi2ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 34.839 ms
+ptxas info    : Compile time = 30.941 ms
 ptxas info    : Compiling entry function '_ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi' for 'sm_75'
 ptxas info    : Function properties for _ZN2tp43_GLOBAL__N__9737d622_10_tp_spec_cu_f2ab71c16k_gemvILi0ELi2ELi10ELb0ELb1ELi0ELb0ELi2ELi1EEEvN3t4q4gemv8GemvArgsENS_6ArArgsENS_7SegArgsENS_7ProArgsEi
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 0 barriers, 836 bytes cmem[0]
-ptxas info    : Compile time = 38.939 ms
+ptxas info    : Compile time = 37.404 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi0ELi2ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi0ELi2ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 166 registers, used 0 barriers, 568 bytes cmem[0], 8 bytes cmem[2]
-ptxas info    : Compile time = 97.708 ms
+ptxas info    : Compile time = 95.281 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi128ELi0ELi2ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi128ELi0ELi2ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 181 registers, used 0 barriers, 568 bytes cmem[0], 8 bytes cmem[2]
-ptxas info    : Compile time = 101.004 ms
+ptxas info    : Compile time = 95.560 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi128ELi1ELi2ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi128ELi1ELi2ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 181 registers, used 1 barriers, 568 bytes cmem[0], 8 bytes cmem[2]
-ptxas info    : Compile time = 126.280 ms
+ptxas info    : Compile time = 117.382 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi128ELi0ELi2ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi128ELi0ELi2ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 146 registers, used 0 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 79.330 ms
+ptxas info    : Compile time = 76.665 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi1ELi2ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi1ELi2ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 166 registers, used 1 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 108.877 ms
+ptxas info    : Compile time = 104.190 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi128ELi1ELi2ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi128ELi1ELi2ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 148 registers, used 1 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 101.205 ms
+ptxas info    : Compile time = 102.016 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi0ELi2ELi1ELi0ELi0ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi0ELi2ELi1ELi0ELi0ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 121 registers, used 0 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 96.175 ms
+ptxas info    : Compile time = 96.778 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi128ELi0ELi2ELi1ELi0ELi0ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi128ELi0ELi2ELi1ELi0ELi0ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 121 registers, used 0 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 94.864 ms
+ptxas info    : Compile time = 93.657 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi1ELi2ELi1ELi0ELi0ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi1ELi2ELi1ELi0ELi0ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 123 registers, used 1 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 116.600 ms
+ptxas info    : Compile time = 111.425 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi128ELi1ELi2ELi1ELi0ELi0ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi128ELi1ELi2ELi1ELi0ELi0ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 122 registers, used 1 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 121.120 ms
+ptxas info    : Compile time = 116.413 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi2ELi128ELi0ELi2ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi2ELi128ELi0ELi2ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 182 registers, used 0 barriers, 568 bytes cmem[0], 8 bytes cmem[2]
-ptxas info    : Compile time = 98.349 ms
+ptxas info    : Compile time = 92.023 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi2ELi128ELi0ELi2ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi2ELi128ELi0ELi2ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 146 registers, used 0 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 81.980 ms
+ptxas info    : Compile time = 78.027 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi2ELi64ELi0ELi2ELi1ELi0ELi0ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi2ELi64ELi0ELi2ELi1ELi0ELi0ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 121 registers, used 0 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 100.146 ms
+ptxas info    : Compile time = 91.391 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi2ELi128ELi0ELi2ELi1ELi0ELi0ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi2ELi128ELi0ELi2ELi1ELi0ELi0ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 121 registers, used 0 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 95.939 ms
+ptxas info    : Compile time = 88.807 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi1ELi4ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi1ELi4ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 227 registers, used 1 barriers, 568 bytes cmem[0], 8 bytes cmem[2]
-ptxas info    : Compile time = 294.643 ms
+ptxas info    : Compile time = 296.842 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi0ELi4ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi0ELi4ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 225 registers, used 0 barriers, 568 bytes cmem[0], 8 bytes cmem[2]
-ptxas info    : Compile time = 246.802 ms
+ptxas info    : Compile time = 237.191 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi0ELi4ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi0ELi4ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 183 registers, used 0 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 210.410 ms
+ptxas info    : Compile time = 192.844 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi2ELi64ELi0ELi4ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi2ELi64ELi0ELi4ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 224 registers, used 0 barriers, 568 bytes cmem[0], 8 bytes cmem[2]
-ptxas info    : Compile time = 240.249 ms
+ptxas info    : Compile time = 241.683 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi2ELi64ELi0ELi4ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi2ELi64ELi0ELi4ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 185 registers, used 0 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 211.061 ms
+ptxas info    : Compile time = 192.444 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi0ELi2ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi0ELi2ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 142 registers, used 0 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 87.845 ms
+ptxas info    : Compile time = 82.859 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi1ELi2ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi4ELi64ELi1ELi2ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 166 registers, used 1 barriers, 568 bytes cmem[0], 8 bytes cmem[2]
-ptxas info    : Compile time = 121.545 ms
+ptxas info    : Compile time = 112.375 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi2ELi64ELi0ELi2ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi2ELi64ELi0ELi2ELi2ELi1ELi1ELi0ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 140 registers, used 0 barriers, 568 bytes cmem[0]
-ptxas info    : Compile time = 87.725 ms
+ptxas info    : Compile time = 83.327 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc14gemv_tc_kernelILi2ELi64ELi0ELi2ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc14gemv_tc_kernelILi2ELi64ELi0ELi2ELi2ELi1ELi1ELi1ELi16EEEvNS0_6TcArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 168 registers, used 0 barriers, 568 bytes cmem[0], 8 bytes cmem[2]
-ptxas info    : Compile time = 110.138 ms
+ptxas info    : Compile time = 107.825 ms
 ptxas info    : Compiling entry function '_ZN3t4q3gtc7k_seg_mEPKfS2_Pfii' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q3gtc7k_seg_mEPKfS2_Pfii
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 52 registers, used 0 barriers, 384 bytes cmem[0]
-ptxas info    : Compile time = 4.204 ms
+ptxas info    : Compile time = 4.061 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi4ELi2ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi4ELi2ELi128ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 90.071 ms
+ptxas info    : Compile time = 88.146 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi4ELi2ELi256ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi4ELi2ELi256ELi0EEEvNS0_4ArgsE
     8 bytes stack frame, 8 bytes spill stores, 8 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 8 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 183.016 ms
+ptxas info    : Compile time = 174.404 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi4ELi4ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi4ELi4ELi128ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 91.448 ms
+ptxas info    : Compile time = 91.168 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi4ELi4ELi256ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi4ELi4ELi256ELi0EEEvNS0_4ArgsE
     8 bytes stack frame, 8 bytes spill stores, 8 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 8 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 182.075 ms
+ptxas info    : Compile time = 184.443 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi3ELi2ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi3ELi2ELi128ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 86.112 ms
+ptxas info    : Compile time = 84.950 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi3ELi2ELi256ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi3ELi2ELi256ELi0EEEvNS0_4ArgsE
     56 bytes stack frame, 60 bytes spill stores, 52 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 56 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 176.583 ms
+ptxas info    : Compile time = 168.534 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi3ELi4ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi3ELi4ELi128ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 83.605 ms
+ptxas info    : Compile time = 81.219 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi3ELi4ELi256ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi3ELi4ELi256ELi0EEEvNS0_4ArgsE
     56 bytes stack frame, 60 bytes spill stores, 52 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 56 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 173.585 ms
+ptxas info    : Compile time = 167.834 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi0ELi2ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi0ELi2ELi128ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 78.179 ms
+ptxas info    : Compile time = 80.280 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi0ELi2ELi256ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi0ELi2ELi256ELi0EEEvNS0_4ArgsE
     48 bytes stack frame, 52 bytes spill stores, 48 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 48 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 168.329 ms
+ptxas info    : Compile time = 170.274 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi0ELi4ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi0ELi4ELi128ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 78.063 ms
+ptxas info    : Compile time = 79.852 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm8_kernelILi0ELi4ELi256ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm8_kernelILi0ELi4ELi256ELi0EEEvNS0_4ArgsE
     48 bytes stack frame, 52 bytes spill stores, 48 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 48 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 166.496 ms
+ptxas info    : Compile time = 170.492 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm15_kernelILi4ELi2EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm15_kernelILi4ELi2EEEvNS0_4ArgsE
     16 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 16 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 242.021 ms
+ptxas info    : Compile time = 241.170 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm15_kernelILi4ELi4EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm15_kernelILi4ELi4EEEvNS0_4ArgsE
     16 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 16 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 236.462 ms
+ptxas info    : Compile time = 229.645 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm15_kernelILi3ELi2EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm15_kernelILi3ELi2EEEvNS0_4ArgsE
     16 bytes stack frame, 16 bytes spill stores, 16 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 16 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 244.121 ms
+ptxas info    : Compile time = 228.463 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm15_kernelILi3ELi4EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm15_kernelILi3ELi4EEEvNS0_4ArgsE
     16 bytes stack frame, 16 bytes spill stores, 16 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 16 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 255.519 ms
+ptxas info    : Compile time = 236.536 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm15_kernelILi0ELi2EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm15_kernelILi0ELi2EEEvNS0_4ArgsE
     24 bytes stack frame, 20 bytes spill stores, 20 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 24 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 255.703 ms
+ptxas info    : Compile time = 251.619 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm15_kernelILi0ELi4EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm15_kernelILi0ELi4EEEvNS0_4ArgsE
     24 bytes stack frame, 20 bytes spill stores, 20 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 24 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 255.799 ms
+ptxas info    : Compile time = 251.069 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm14_kernelILi4ELi2EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm14_kernelILi4ELi2EEEvNS0_4ArgsE
     272 bytes stack frame, 780 bytes spill stores, 528 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 272 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 146.149 ms
+ptxas info    : Compile time = 145.160 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm14_kernelILi4ELi4EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm14_kernelILi4ELi4EEEvNS0_4ArgsE
     272 bytes stack frame, 780 bytes spill stores, 528 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 272 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 146.662 ms
+ptxas info    : Compile time = 146.559 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm14_kernelILi3ELi2EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm14_kernelILi3ELi2EEEvNS0_4ArgsE
     264 bytes stack frame, 740 bytes spill stores, 496 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 264 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 144.166 ms
+ptxas info    : Compile time = 139.829 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm14_kernelILi3ELi4EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm14_kernelILi3ELi4EEEvNS0_4ArgsE
     264 bytes stack frame, 740 bytes spill stores, 496 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 264 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 150.136 ms
+ptxas info    : Compile time = 140.479 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm14_kernelILi0ELi2EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm14_kernelILi0ELi2EEEvNS0_4ArgsE
     256 bytes stack frame, 720 bytes spill stores, 476 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 256 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 160.675 ms
+ptxas info    : Compile time = 139.865 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm14_kernelILi0ELi4EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm14_kernelILi0ELi4EEEvNS0_4ArgsE
     256 bytes stack frame, 720 bytes spill stores, 476 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 256 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 149.083 ms
+ptxas info    : Compile time = 140.238 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi4ELi2ELi2EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi4ELi2ELi2EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 126.973 ms
+ptxas info    : Compile time = 122.173 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi4ELi2ELi3EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi4ELi2ELi3EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 129.450 ms
+ptxas info    : Compile time = 124.846 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi4ELi4ELi2EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi4ELi4ELi2EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 122.424 ms
+ptxas info    : Compile time = 124.836 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi4ELi4ELi3EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi4ELi4ELi3EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 125.151 ms
+ptxas info    : Compile time = 128.849 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi3ELi2ELi2EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi3ELi2ELi2EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 118.052 ms
+ptxas info    : Compile time = 121.220 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi3ELi2ELi3EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi3ELi2ELi3EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 122.878 ms
+ptxas info    : Compile time = 122.544 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi3ELi4ELi2EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi3ELi4ELi2EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 122.010 ms
+ptxas info    : Compile time = 118.789 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi3ELi4ELi3EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi3ELi4ELi3EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 127.703 ms
+ptxas info    : Compile time = 126.444 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi0ELi2ELi2EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi0ELi2ELi2EEEvNS0_4ArgsE
     16 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 16 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 119.529 ms
+ptxas info    : Compile time = 118.086 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi0ELi2ELi3EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi0ELi2ELi3EEEvNS0_4ArgsE
     16 bytes stack frame, 12 bytes spill stores, 24 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 16 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 123.315 ms
+ptxas info    : Compile time = 122.123 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi0ELi4ELi2EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi0ELi4ELi2EEEvNS0_4ArgsE
     16 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 16 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 121.893 ms
+ptxas info    : Compile time = 116.926 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm12_kernelILi0ELi4ELi3EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm12_kernelILi0ELi4ELi3EEEvNS0_4ArgsE
     16 bytes stack frame, 12 bytes spill stores, 24 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 16 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 126.103 ms
+ptxas info    : Compile time = 119.576 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi4ELi2ELi128ELi256EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi4ELi2ELi128ELi256EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 154.916 ms
+ptxas info    : Compile time = 152.264 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi4ELi2ELi256ELi128EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi4ELi2ELi256ELi128EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 171.087 ms
+ptxas info    : Compile time = 167.600 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi4ELi4ELi128ELi256EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi4ELi4ELi128ELi256EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 159.000 ms
+ptxas info    : Compile time = 149.193 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi4ELi4ELi256ELi128EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi4ELi4ELi256ELi128EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 183.894 ms
+ptxas info    : Compile time = 167.266 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi3ELi2ELi128ELi256EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi3ELi2ELi128ELi256EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 254 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 150.806 ms
+ptxas info    : Compile time = 143.642 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi3ELi2ELi256ELi128EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi3ELi2ELi256ELi128EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 163.874 ms
+ptxas info    : Compile time = 156.204 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi3ELi4ELi128ELi256EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi3ELi4ELi128ELi256EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 254 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 148.081 ms
+ptxas info    : Compile time = 141.382 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi3ELi4ELi256ELi128EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi3ELi4ELi256ELi128EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 164.888 ms
+ptxas info    : Compile time = 158.281 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi0ELi2ELi128ELi256EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi0ELi2ELi128ELi256EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 144.773 ms
+ptxas info    : Compile time = 142.269 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi0ELi2ELi256ELi128EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi0ELi2ELi256ELi128EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 153.868 ms
+ptxas info    : Compile time = 152.554 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi0ELi4ELi128ELi256EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi0ELi4ELi128ELi256EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 142.619 ms
+ptxas info    : Compile time = 146.849 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm11_kernelILi0ELi4ELi256ELi128EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm11_kernelILi0ELi4ELi256ELi128EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 157.552 ms
+ptxas info    : Compile time = 153.280 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi4ELi2ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi4ELi2ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 254 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 75.705 ms
+ptxas info    : Compile time = 75.014 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi4ELi2ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi4ELi2ELi128ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 251 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 169.181 ms
+ptxas info    : Compile time = 172.192 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi4ELi4ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi4ELi4ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 254 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 75.855 ms
+ptxas info    : Compile time = 76.079 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi4ELi4ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi4ELi4ELi128ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 251 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 164.583 ms
+ptxas info    : Compile time = 172.990 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi3ELi2ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi3ELi2ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 246 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 72.679 ms
+ptxas info    : Compile time = 72.781 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi3ELi2ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi3ELi2ELi128ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 243 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 163.138 ms
+ptxas info    : Compile time = 167.276 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi3ELi4ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi3ELi4ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 246 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 71.830 ms
+ptxas info    : Compile time = 72.961 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi3ELi4ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi3ELi4ELi128ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 243 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 166.097 ms
+ptxas info    : Compile time = 177.783 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi0ELi2ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi0ELi2ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 241 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 67.222 ms
+ptxas info    : Compile time = 68.397 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi0ELi2ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi0ELi2ELi128ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 239 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 153.095 ms
+ptxas info    : Compile time = 155.336 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi0ELi4ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi0ELi4ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 241 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 65.656 ms
+ptxas info    : Compile time = 68.536 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813gemm10_kernelILi0ELi4ELi128ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813gemm10_kernelILi0ELi4ELi128ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 239 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 152.009 ms
+ptxas info    : Compile time = 152.514 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi2ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi2ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 215 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 153.364 ms
+ptxas info    : Compile time = 154.121 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi2ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi2ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 86.069 ms
+ptxas info    : Compile time = 83.689 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi2ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi2ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 119.717 ms
+ptxas info    : Compile time = 118.076 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi128ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi128ELi32ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 195.721 ms
+ptxas info    : Compile time = 184.908 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi256ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi256ELi32ELi0EEEvNS0_4ArgsE
     32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 32 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 526.468 ms
+ptxas info    : Compile time = 499.762 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi128ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi128ELi0ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 166 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 162.660 ms
+ptxas info    : Compile time = 159.166 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi256ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi256ELi0ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 242 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 440.602 ms
+ptxas info    : Compile time = 383.290 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 216 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 161.835 ms
+ptxas info    : Compile time = 153.147 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 140.597 ms
+ptxas info    : Compile time = 128.576 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 86.416 ms
+ptxas info    : Compile time = 84.890 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi256ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi2ELi256ELi64ELi0EEEvNS0_4ArgsE
     16 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 16 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 414.272 ms
+ptxas info    : Compile time = 438.720 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi128ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi128ELi32ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 185.532 ms
+ptxas info    : Compile time = 191.474 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi256ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi256ELi32ELi0EEEvNS0_4ArgsE
     32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 32 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 494.075 ms
+ptxas info    : Compile time = 443.531 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi128ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi128ELi0ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 166 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 155.774 ms
+ptxas info    : Compile time = 145.748 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi256ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi256ELi0ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 242 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 374.566 ms
+ptxas info    : Compile time = 408.862 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi128ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 216 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 157.857 ms
+ptxas info    : Compile time = 163.938 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi32ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 134.496 ms
+ptxas info    : Compile time = 135.439 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi64ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 84.540 ms
+ptxas info    : Compile time = 95.441 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi4ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE
     16 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 16 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 416.846 ms
+ptxas info    : Compile time = 429.772 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi128ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi128ELi32ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 182.850 ms
+ptxas info    : Compile time = 180.256 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi256ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi256ELi32ELi0EEEvNS0_4ArgsE
     32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 32 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 456.828 ms
+ptxas info    : Compile time = 487.548 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi128ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi128ELi0ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 144 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 143.912 ms
+ptxas info    : Compile time = 153.141 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi256ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi256ELi0ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 238 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 371.689 ms
+ptxas info    : Compile time = 385.418 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 218 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 161.412 ms
+ptxas info    : Compile time = 147.180 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 8 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 119.934 ms
+ptxas info    : Compile time = 113.736 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 90.344 ms
+ptxas info    : Compile time = 91.149 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi256ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi2ELi256ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 465.445 ms
+ptxas info    : Compile time = 425.491 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi128ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi128ELi32ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 172.983 ms
+ptxas info    : Compile time = 177.814 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi256ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi256ELi32ELi0EEEvNS0_4ArgsE
     32 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 32 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 502.945 ms
+ptxas info    : Compile time = 453.961 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi128ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi128ELi0ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 144 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 156.236 ms
+ptxas info    : Compile time = 157.754 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi256ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi256ELi0ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 238 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 392.825 ms
+ptxas info    : Compile time = 468.968 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi128ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 218 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 153.363 ms
+ptxas info    : Compile time = 154.783 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi32ELi64ELi0EEEvNS0_4ArgsE
     8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 8 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 116.844 ms
+ptxas info    : Compile time = 118.013 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi64ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 86.214 ms
+ptxas info    : Compile time = 88.571 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi3ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 434.557 ms
+ptxas info    : Compile time = 441.985 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi32ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 168.726 ms
+ptxas info    : Compile time = 174.518 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi32ELi0EEEvNS0_4ArgsE
     48 bytes stack frame, 48 bytes spill stores, 44 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 48 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 469.301 ms
+ptxas info    : Compile time = 450.648 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi0ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 142 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 148.002 ms
+ptxas info    : Compile time = 147.585 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi0ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 236 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 382.332 ms
+ptxas info    : Compile time = 370.644 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 214 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 157.936 ms
+ptxas info    : Compile time = 145.787 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi32ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 127 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 102.751 ms
+ptxas info    : Compile time = 97.657 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi64ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 85.757 ms
+ptxas info    : Compile time = 87.271 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 410.346 ms
+ptxas info    : Compile time = 429.464 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi32ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 171.419 ms
+ptxas info    : Compile time = 170.796 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi32ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi32ELi0EEEvNS0_4ArgsE
     48 bytes stack frame, 48 bytes spill stores, 44 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 48 bytes cumulative stack size, 512 bytes cmem[0]
-ptxas info    : Compile time = 463.334 ms
+ptxas info    : Compile time = 438.121 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi0ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 142 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 148.441 ms
+ptxas info    : Compile time = 144.688 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi0ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi0ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 236 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 404.993 ms
+ptxas info    : Compile time = 369.586 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 214 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 154.749 ms
+ptxas info    : Compile time = 152.557 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi32ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi32ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 127 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 103.038 ms
+ptxas info    : Compile time = 105.094 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi64ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi64ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 92.531 ms
+ptxas info    : Compile time = 87.548 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi64ELi0EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 444.602 ms
+ptxas info    : Compile time = 424.783 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi256ELi64ELi64EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 569.357 ms
+ptxas info    : Compile time = 598.545 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi256ELi64ELi64EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 255 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 629.005 ms
+ptxas info    : Compile time = 562.646 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi128ELi64ELi64EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 216 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 201.834 ms
+ptxas info    : Compile time = 188.390 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi128ELi64ELi64EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 216 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 193.428 ms
+ptxas info    : Compile time = 183.976 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi64ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi64ELi64ELi64EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 104.086 ms
+ptxas info    : Compile time = 113.648 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi64ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi64ELi64ELi64EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 128 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 104.067 ms
+ptxas info    : Compile time = 103.315 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi32ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi2ELi32ELi64ELi64EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 127 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 104.061 ms
+ptxas info    : Compile time = 109.314 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi32ELi64ELi64EEEvNS0_4ArgsE' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm812gemm9_kernelILi0ELi4ELi32ELi64ELi64EEEvNS0_4ArgsE
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 127 registers, used 1 barriers, 512 bytes cmem[0]
-ptxas info    : Compile time = 106.154 ms
+ptxas info    : Compile time = 104.518 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813quant8_kernelILi32EEEvPKfiiiiPaPf' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813quant8_kernelILi32EEEvPKfiiiiPaPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 52 registers, used 0 barriers, 392 bytes cmem[0]
-ptxas info    : Compile time = 22.886 ms
+ptxas info    : Compile time = 22.226 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm813quant8_kernelILi64EEEvPKfiiiiPaPf' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm813quant8_kernelILi64EEEvPKfiiiiPaPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 84 registers, used 0 barriers, 392 bytes cmem[0]
-ptxas info    : Compile time = 41.625 ms
+ptxas info    : Compile time = 41.924 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm818quant8_g128_kernelEPKfiiiiPaPf' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm818quant8_g128_kernelEPKfiiiiPaPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 62 registers, used 0 barriers, 392 bytes cmem[0]
-ptxas info    : Compile time = 18.547 ms
+ptxas info    : Compile time = 18.948 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi2ELi2EEEvNS0_4ArgsEPf' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi2ELi2EEEvNS0_4ArgsEPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 45 registers, used 0 barriers, 520 bytes cmem[0]
-ptxas info    : Compile time = 15.655 ms
+ptxas info    : Compile time = 15.512 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi4ELi2EEEvNS0_4ArgsEPf' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi4ELi2EEEvNS0_4ArgsEPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 48 registers, used 0 barriers, 520 bytes cmem[0]
-ptxas info    : Compile time = 16.002 ms
+ptxas info    : Compile time = 15.994 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi4ELi4EEEvNS0_4ArgsEPf' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi4ELi4EEEvNS0_4ArgsEPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 48 registers, used 0 barriers, 520 bytes cmem[0]
-ptxas info    : Compile time = 16.131 ms
+ptxas info    : Compile time = 15.858 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi3ELi2EEEvNS0_4ArgsEPf' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi3ELi2EEEvNS0_4ArgsEPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 520 bytes cmem[0]
-ptxas info    : Compile time = 24.062 ms
+ptxas info    : Compile time = 23.138 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi3ELi4EEEvNS0_4ArgsEPf' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi3ELi4EEEvNS0_4ArgsEPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 520 bytes cmem[0]
-ptxas info    : Compile time = 23.694 ms
+ptxas info    : Compile time = 23.261 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi0ELi2EEEvNS0_4ArgsEPf' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi0ELi2EEEvNS0_4ArgsEPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 45 registers, used 0 barriers, 520 bytes cmem[0]
-ptxas info    : Compile time = 16.849 ms
+ptxas info    : Compile time = 16.718 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm815row_invs_kernelILi0ELi4EEEvNS0_4ArgsEPf' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm815row_invs_kernelILi0ELi4EEEvNS0_4ArgsEPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 45 registers, used 0 barriers, 520 bytes cmem[0]
-ptxas info    : Compile time = 16.867 ms
+ptxas info    : Compile time = 16.851 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm817quant8_tok_kernelEPKfiiiPaPf' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm817quant8_tok_kernelEPKfiiiPaPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 61 registers, used 1 barriers, 32 bytes smem, 392 bytes cmem[0]
-ptxas info    : Compile time = 21.600 ms
+ptxas info    : Compile time = 22.481 ms
 ptxas info    : Compiling entry function '_ZN3t4q5gemm811ksum_kernelEPKfxiiPfP6__halfS5_' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q5gemm811ksum_kernelEPKfxiiPfP6__halfS5_
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 42 registers, used 0 barriers, 400 bytes cmem[0]
-ptxas info    : Compile time = 5.047 ms
+ptxas info    : Compile time = 4.931 ms
 ptxas info    : Compiling entry function '_ZN3t4q4gemv13repack_kernelEiiiiimmmPKhPhii' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q4gemv13repack_kernelEiiiiimmmPKhPhii
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 80 registers, used 0 barriers, 424 bytes cmem[0], 12 bytes cmem[2]
-ptxas info    : Compile time = 59.812 ms
+ptxas info    : Compile time = 53.880 ms
 ptxas info    : Compiling entry function '_ZN3t4q4gemv18quantize_q8_kernelEPKfiiPaP4int2' for 'sm_75'
 ptxas info    : Function properties for _ZN3t4q4gemv18quantize_q8_kernelEPKfiiPaP4int2
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 19 registers, used 0 barriers, 384 bytes cmem[0]
-ptxas info    : Compile time = 6.297 ms
+ptxas info    : Compile time = 6.025 ms
