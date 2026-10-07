@@ -123,29 +123,47 @@ dequant rates and the platform paths are measured, no more assumptions**:
   x2, gen 8 x2), then cf_run seq (rel < 1e-3 + top1 agree vs the oracle's own tbt), gen
   (byte-compare the greedy), time (the steady tok/s), census (the router top-10 dump +
   the local analysis). Gate: byte-identical greedy vs llama.cpp b10975 on both prompts.
-  Round state (r19b-l): five oracle-side platform bugs fixed v1-v5; v6 WEDGED 12 h past
+  Round state (r19b-m): five oracle-side platform bugs fixed v1-v5; v6 WEDGED 12 h past
   every timeout and burned the weekly 30 h GPU quota - DECODED (r19f): the downloader's own
   p.stat() on the fresh 82.85 GB file held the GIL through a D-state overlayfs stall and
   froze the whole process (thread watchdog included; the GPUs never ran); hardened with a
-  separate-process watchdog + a child-stat size probe. THREE payload-killing engine bugs
-  and one tooling race were then caught statically pre-quota (the r19l cluster): the Q4_K
+  separate-process watchdog + a child-stat size probe. THE v7 THEN WEDGED THE SAME 12 H
+  (r19m, Oct 6: 12 h burned, the GPUs never ran - 17,207 clock samples, zero util rows):
+  the r19f child-stat was NO defense (the stat syscall D-locks on the fresh inode regardless
+  of the process; subprocess.run(timeout)'s kill cannot reclaim a D-state child, and its
+  post-kill communicate() waits forever - dl_stat.txt never written), and the process
+  watchdog never fired (its mark() writes ride the same stalled disk - a frozen mark blocks
+  the kill). THE DRIVER HARDENING (r19m): NO size probe on the fresh model file in ANY
+  form (the hf/curl rc certifies the transfer), the static work-file writes moved before
+  the download thread starts (the /tmp-health window), the process watchdog KILL-FIRST (no
+  disk writes before os.kill), and stream()'s final p.wait() bounded + the abandoned-child
+  report (the last unbounded wait on the main path). FOUR payload-killing engine bugs and
+  one tooling race were caught statically pre-quota (the r19l cluster + r19m): the Q4_K
   source-block order (c980111: d/dmin read from the block tail, poisoning the Q4_K
   token_embd + lm_head), THE BLOCK INPUT (ec1faac: every block projection consumed the
   raw grouped-norm xn instead of the hc_mix OUTPUT s.mixed - cf-arch.md section 1 is
-  unambiguous that x = hc_mix(res_hc) feeds every block), and the q8_0 PLANE OVERFLOW
+  unambiguous that x = hc_mix(res_hc) feeds every block), the q8_0 PLANE OVERFLOW
   (7657d1c: the xq0/xd0/xs0 planes sized TOPK*EE = 6400 while every layer's hc_ffn_down
   is Q4_0 with K = 10240 - the generic gemv helper's FMT_P4 branch overran the planes
   into the neighboring scratch, NaN'ing the moe outputs; fixed to the largest gemv K,
   HCD), plus the dump-stream race (the NULL-stream copies read pre-write garbage; the
-  z~0 phantom). The regenerated payload (7657d1c, byte-verified, sha 6fc494688d118093)
-  now gates base + census + batching + q8 + the dp4a dots + all three fixes + the
+  z~0 phantom) and the q8_1 ACTIVATION-SUM (0c99eec: k_quantize_q8_1 stored the raw float
+  sum while ggml's quantize_row_q8_1_ref stores fp16(d * sum(q)) over the rounded ints -
+  the m-terms of the q4_1/q5_1 dots consume it, so every layer's hc_attn_down/up would have
+  diverged; the q4_0 dot's m-term is 0). The regenerated payload (the FIFTH, at the 0c99eec
+  tree + the hardened driver, byte-verified, sha f88057d6de2c8ef3)
+  now gates base + census + batching + q8 + the dp4a dots + all four fixes + the
   zero-change identity W-table + the dual-path tiering + the hot-set loader + the
-  census emission + the bisect tooling (T4Q_CF_DUMP / T4Q_CF_NOFAST), with the failure
+  census emission + the bisect tooling (T4Q_CF_DUMP / T4Q_CF_NOFAST) + the driver
+  hardening, with the failure
   ladder ordered by behavior-change size: the block-input fix (the biggest real change)
-  -> the Q4_K fix (c980111) -> the q8_0 plane fix (7657d1c) -> the dp4a (942e86d,
+  -> the Q4_K fix (c980111) -> the q8_1 sum fix (0c99eec) -> the q8_0 plane fix
+  (7657d1c) -> the dp4a (942e86d,
   sim-verified 120/120) -> the zero-change mechanisms (78d480e the identity table,
   e27b610/ec1faac the tiering's OFF path - both bit-exact by construction,
-  near-zero suspicion) -> c3fb34c -> 35d8c2d -> 2f33431. The r18 worklist is CLOSED:
+  near-zero suspicion) -> c3fb34c -> 35d8c2d -> 2f33431. ~18 h of the weekly quota
+  remains after the v7's 12-h burn: if the v8 wedges the same way, STOP - no more
+  pushes until a human-driven diagnosis. The r18 worklist is CLOSED:
   every K-quant/P4 gemv pairs the activation with the oracle's own activation
   quantization (Q2_K/Q4_K <-> Q8_K, Q5_1 <-> Q8_1, Q4_0 <-> Q8_0, the exact ggml
   arithmetic, sim-verified 120/120), and the integer partials run on the T4's IDP.4A

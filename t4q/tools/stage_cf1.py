@@ -90,7 +90,12 @@ def stream(cmd, logname, timeout, env=None, cwd=None):
                     lines.append(f"<<TIMEOUT after {timeout}s>>\n")
                     break
         finally:
-            rc = p.wait()
+            try:
+                rc = p.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                # r19m (the v7 lesson): a killed-but-D-state child never exits - never wait
+                # forever; abandon it (the session teardown reaps it) and report -9
+                rc = -9
     return rc, "".join(lines)
 
 
@@ -107,17 +112,11 @@ DL = {}
 
 
 def file_gb(p, logname):
-    """The ONLY size probe (v6 lesson): os.stat/getsize/exists hold the GIL, so a D-state
-    metadata stall on the fresh 82.85 GB file froze the whole v6 process for 12 h. The stat
-    runs in a child with a timeout - the GIL is never held; a D-locked stat costs at most
-    the timeout. Returns gb, or None if even the child-stat could not answer."""
-    rc, o = sh(["stat", "-c", "%s", str(p)], timeout=180, logname=logname)
-    if rc != 0:
-        return None
-    try:
-        return int(o.splitlines()[1].strip()) / 1e9
-    except (ValueError, IndexError):
-        return None
+    """REMOVED (r19m, the v7 lesson): the child-stat was no defense at all. The stat
+    syscall D-locks on the fresh 82.85 GB inode regardless of which process runs it;
+    subprocess.run(timeout)'s kill cannot reclaim a D-state child, and its post-kill
+    communicate() then waits forever - the v7 downloader froze exactly there (dl_stat.txt
+    never written). No caller remains; nothing may probe the fresh model file."""
 
 
 def downloader():
@@ -128,20 +127,21 @@ def downloader():
     if not shutil.which("hf"):
         sh("pip install -q -U 'huggingface_hub[hf_xet]' hf_transfer", timeout=600, logname="pip_hf.txt")
     p = MD / GGUF
-    gb = None
     rc, o = sh(["hf", "download", REPO, GGUF, "--local-dir", str(MD)], env=env, timeout=2400, logname="dl.txt")
-    if rc == 0:
-        gb = file_gb(p, "dl_stat.txt")
-    if gb is None or gb <= 80.0:  # the hf path failed or produced nothing: the curl fallback
+    if rc != 0:  # the hf path failed: the curl fallback
         rc, o = sh(f"curl -fL --retry 5 -o {p} https://huggingface.co/{REPO}/resolve/main/{GGUF}", timeout=2400,
                    logname="dl_curl.txt")
-        gb = file_gb(p, "dl_stat.txt")
-    ok = (gb is not None and gb > 80.0) or (gb is None and rc == 0)
-    # a stalled stat (None) with a clean downloader rc still counts as ok: the gate runs
-    # will open the file anyway, and the process watchdog owns the worst case
+    # r19m (the v7 lesson): NO size probe on the fresh 82.85 GB file, in ANY form. The v6
+    # froze the whole process on p.stat(); the v7 moved it to a child with a timeout and the
+    # downloader STILL froze exactly there (dl_stat.txt never written): the stat syscall
+    # D-locks on the fresh inode regardless of which process runs it, subprocess.run's
+    # timeout kill cannot reclaim a D-state child, and its post-kill communicate() then
+    # waits forever. The hf/curl rc already certifies the transfer; the gate runs open the
+    # file themselves.
+    ok = rc == 0
     DL["path"] = str(p) if ok else None
-    DL["gb"] = round(gb, 2) if gb is not None else "stat-stalled"
-    result("download", {"ok": ok, "secs": round(time.time() - t), "gb": DL["gb"]})
+    DL["gb"] = "unprobed" if ok else "download failed"
+    result("download", {"ok": ok, "secs": round(time.time() - t), "rc": rc})
 
 
 def clocks_monitor():
@@ -240,13 +240,14 @@ def spawn_watchdog_proc():
         "    except OSError:\n"
         "        pass\n"
         "time.sleep(max(120, deadline - 120))\n"
-        "mark('parent still alive at deadline-120')\n"
         "time.sleep(120)\n"
-        "mark('deadline hit - killing the parent (clean end, output becomes fetchable)')\n"
+        "# r19m (the v7 lesson): KILL FIRST, no disk writes before it - under the overlayfs\n"
+        "# stall the mark() write froze this watchdog and the kill below never fired\n"
         "try:\n"
         "    os.kill(ppid, signal.SIGKILL)\n"
         "except (ProcessLookupError, PermissionError):\n"
         "    pass  # the parent already ended cleanly\n"
+        "mark('deadline hit - killed the parent (kill-first; the mark is best-effort)')\n"
     )
     subprocess.Popen([sys.executable, "-c", src], start_new_session=True)
 
@@ -259,6 +260,17 @@ def main():
         spawn_watchdog_proc()
         threading.Thread(target=watchdog, daemon=True).start()
         t4q = unpack()
+        # r19m (the v7 lesson): every static work-file write happens HERE, before the download
+        # thread starts - the /tmp overlayfs is healthy in this window (the build's creates
+        # all succeeded at ~391 s), and the v7 froze with the writes deferred to ~398 s
+        for name, p in PROMPTS.items():
+            (WORK / f"{name}.txt").write_text(p)
+        jobs = []
+        for name in PROMPTS:
+            jobs.append(f"chatw {name} {WORK / (name + '.txt')} {WORK / (name + '.i32')}")
+            jobs.append(f"seq {name} {WORK / (name + '.i32')} {T_SEQ}")
+            jobs.append(f"gen gen_{name} {WORK / (name + '.i32')} {N_GEN}")
+        (WORK / "jobs.txt").write_text("\n".join(jobs) + "\n")
         th = threading.Thread(target=downloader, daemon=True)
         th.start()
         rc, o = sh(f"make -C {t4q} -j4", timeout=1200, logname="build.txt")
@@ -288,12 +300,7 @@ def main():
             return
         result("model", {"path": model, "gb": DL.get("gb")})  # no fresh getsize: the v6 lesson
         # oracle jobs: the chat template + tokenizer + the tbt tail + the greedy gens
-        jobs = []
-        for name in PROMPTS:
-            jobs.append(f"chatw {name} {WORK / (name + '.txt')} {WORK / (name + '.i32')}")
-            jobs.append(f"seq {name} {WORK / (name + '.i32')} {T_SEQ}")
-            jobs.append(f"gen gen_{name} {WORK / (name + '.i32')} {N_GEN}")
-        (WORK / "jobs.txt").write_text("\n".join(jobs) + "\n")
+        # (the work files were written pre-download: the r19m /tmp-health window)
         # the oracle runs CPU-only twice over: the 26.3 GiB PLE table prefetch OOMs a T4, and the
         # b10975 CUDA ssm-conv op asserts on the qwen4exp F16 conv weights (the CPU op handles them).
         # Hiding the GPU from the oracle leaves the cf_run gates on the GPU untouched.

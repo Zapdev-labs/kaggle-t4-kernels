@@ -1962,3 +1962,55 @@ the engine stream. The dump tooling also re-checked: the router fprintf is
 cfdump_active()-gated (dead in the round), and the cfdump copies ride the
 engine stream AND sync before the host reads - the parallel session's race fix
 is complete.
+
+r19m - the v7 WEDGED THE SAME 12 H (the platform stall class survived the r19f
+hardening) + the driver hardening + the FIFTH catch:
+
+The v7 (the 6fc49468 payload, pushed by the gatekeeper after the Saturday reset)
+ran Oct 6 08:03-20:03 UTC - the full 12-h session cap, cancelled, 12 h of the
+weekly quota burned, the GPUs NEVER ran (17,207 clock samples, zero rows with
+util > 0, memory 0 MiB throughout - no cf_run stage was ever reached). The fetched
+output: only the sh() logs (nvidia_smi, dl, build, build_cf_run, build_oracle -
+all rc=0, the build 391 s, the dl 379 s) + the orphaned monitor's clocks.csv.
+THE SMOKING GUN: dl_stat.txt never written - the r19f child-stat probe froze:
+subprocess.run(timeout)'s kill CANNOT reclaim a D-state child, and its post-kill
+communicate() then waits forever, so the downloader thread froze INSIDE the stat
+(the stat syscall D-locks on the fresh 82.85 GB inode regardless of which process
+runs it - the child form was no defense at all). The process watchdog never fired:
+its mark() writes ride the same stalled disk - a frozen mark blocks the kill. The
+snapshot quirk: ptxas.txt + results.json (written ~392-398 s, before the later
+build_cf_run/build_oracle logs that ARE present) are absent from the fetch -
+the cancel-time snapshot dropped them; the operative order stands from the log set.
+
+The driver hardening (stage_cf1.py, this session): (1) NO size probe on the fresh
+model file in ANY form - the file_gb probe REMOVED (the hf/curl rc certifies the
+transfer; the gate runs open the file themselves; DL["gb"] = "unprobed"); (2) every
+static work-file write (the prompt .txts + jobs.txt) moved BEFORE the download
+thread starts - the /tmp overlayfs is healthy in that window (the build's creates
+all succeeded at ~391 s; the v7 deferred them to ~398 s); (3) the process watchdog
+is KILL-FIRST - os.kill(ppid, SIGKILL) with no disk writes before it, the mark
+best-effort after (a frozen mark can no longer block the kill); (4) stream()'s
+final p.wait() is BOUNDED (timeout=30, then abandon the killed-but-D-state child
+and report -9 - the last unbounded wait on the main path); (5) the thread watchdog
+unchanged (its case - the child-hang on a healthy disk - still works).
+
+The FIFTH catch (0c99eec, the parallel session's find, verified here against the
+ggml primary before committing): k_quantize_q8_1 stored xs = fp16(sum of the RAW
+floats) - ggml's quantize_row_q8_1_ref stores s = fp16(d * sum(q)) over the ROUNDED
+ints (q = roundf(x*id), id = d ? 1/d : 0, the sum over the int8 qs) - the m-terms
+of the q4_1/q5_1 dots consume exactly this dequantized block sum, so every layer's
+hc_attn_down + hc_attn_up (Q5_1, K = HCD) would have diverged from the oracle (the
+q4_0 dot's m-term is 0 - the P4 gemvs unaffected). Plus the PLE bisect captures
+(ple_emb/ple_key_raw/ple_value_raw/ple_key_norm/ple_query_norm/ple_s/ple_gate/
+ple_gated/ple_normed/ple_conv_out, all dump-gated, the host-gather written directly).
+Build 0 errors.
+
+The payload REGENERATED a FIFTH time (f88057d6 at the 0c99eec tree + the hardened
+driver): byte-verified 90 members zero mismatches, the q8_1 fix + the PLE captures
++ all four prior catches + the tiering + the tooling + the driver hardening packed
+(no file_gb caller, kill-first watchdog, pre-download work writes, bounded stream
+wait). The failure ladder gains the q8_1 fix with the real-value changes (after the
+block-input fix, beside the Q4_K + plane fixes). ~18 h of the weekly quota remains
+after the v7's 12-h burn: ONE more wedge-class burn leaves ~6 h - if the v8 wedges
+the same way, STOP (no more pushes until a human-driven diagnosis; the gatekeeper
+prompt says so).
