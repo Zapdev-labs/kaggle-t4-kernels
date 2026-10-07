@@ -488,15 +488,36 @@ dequant rates and the platform paths are measured, no more assumptions**:
   the M=4 batch (the int4 mma path exists), the draft's lm_head truncation (0.34 GiB of the
   0.44 GiB draft step) if quality holds, CUDA-graph the whole step.
 
-## 5. The requant stretch (only if the census says the hot set does not fit)
+## 5. The requant stretch (the census UNLOCKED it: the router is flat)
 
-If cf-m2 shows a flat router, the only route to full residency is fewer expert bytes: a
-custom ~1.6-2.0 bit/elem expert format. Source = `Blackfrost-AI/CYBER-FROST-3.8-BF16`
+The cf-m2 census verdict (r19n) is in: 168,938 unique (layer,expert) slots of ~168,960
+touched in 353 steps, the top-64 carries only 10.7% - the tiering does NOT pay at this
+entropy, so fewer expert bytes is the only route to full residency. THE FRAME (r19ab/r19ac,
+the corrected arithmetic): the expert pool is 120.7 G-elems (gu 80.5 = [1280 x 2560]/expert
+x 24,576 + dn 40.2 = [2560 x 640] x 24,576); the 2x T4 full-residency room is ~24-25 GB
+(after the ~2.6 GB core, the KV, the draft, the scratch); the stock format candidates
+(fetched from ggml-common.h): iq1_s 1.5625 bpw -> 23.6 GB, the ONLY stock fit; iq1_m 1.75
+-> 26.4 GB (over); iq2_xxs 2.0625 -> 31.1 GB (well over); no hybrid gu/dn split fits
+either (28.6 / 26.1 GB) - so the pick is BOTH expert tensors at iq1_s, or a custom leaner
+~1.6-1.65 form (the iq1_s structure with a leaner scale, or the iq1_m scales without the
+f16 d). Source = `Blackfrost-AI/CYBER-FROST-3.8-BF16`
 (355 GB), streamed tensor-by-tensor over HTTP range reads (never holding more than one
-tensor), packed once into a Kaggle Dataset (~25 GiB) and attached to every later kernel -
-the same one-time-cost pattern as the baseline kernel's llama.cpp binaries. Gate: the smoke
-test (the add function) + greedy agreement vs the Q2_K_S trunk at a temperature of 0 on a
-256-token coding prompt; the quality bar is the Q2_K trunk's own, not a bit-identity gate.
+tensor), packed once into a Kaggle Dataset (~24 GiB at the iq1_s class) and attached to
+every later kernel - the same one-time-cost pattern as the baseline kernel's llama.cpp
+binaries. Gate: the smoke test (the add function) + the perplexity-class A/B (the Q2_K_S
+trunk vs the requant-experts trunk) + greedy agreement vs the Q2_K_S trunk at a
+temperature of 0 on a 256-token coding prompt; the quality bar is the Q2_K trunk's own,
+not a bit-identity gate. THE HONEST RISK CLASSES (r19ac): the iq1_s lattice vs the trunk's
+own Q2_K class is a substantial per-expert noise step (the 1-bit family) - the gate
+MEASURES it, nothing is assumed; the grid decode (the shared-memory codebook gather + the
+sign unpack + the float dot, not the dp4a nibble path) sits below the r18-measured K-quant
+family - the kernel-rate estimate needs the exact ggml CUDA iq1_s vec_dot instruction
+count, the freeze's first study; the payoff rides the TP split (section 6's design). THE
+ORDER: (1) the freeze (research/CF_REQUANT.md - the format pick, the exact arithmetic,
+the kernel design at the CF shapes, the packer pipeline, the TP-split residency design,
+the gates), after the ggml-quants.c + iq1_s vec_dot study; (2) the packer (the BF16
+streaming + the grid search) + the kernel; (3) the L4 quality/rate gates; (4) the TP
+split. The PROGRESS r19ab/r19ac records carry the arithmetic + the source facts.
 
 ## 6. Risk register
 
