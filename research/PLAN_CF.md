@@ -449,11 +449,38 @@ dequant rates and the platform paths are measured, no more assumptions**:
   snapshots). THE SWEEP caught one real r19x bug: v->eid (the per-row picks plane
   host_top10_row writes) was never allocated - any cf_verify call would have
   segfaulted (build-verified only); now pinned-allocated in the verify block +
-  freed in cf_free. Runtime verification (the L4): T4Q_CF_MTP=1 + T4Q_CF_GRAPH=1 +
-  the `verify` gate (both drivers exercised: the full-nr chunks replay, the partial
-  tails run direct) + the `spec` gate (always full-nr -> the graph path always) ->
-  the byte-match/pass gates + the accept histogram + the verify ms/token vs the
-  gmode-off direct form. STILL AHEAD: k tuned on the measured acceptance, the
+  freed in cf_free. THE PLE PREFETCH LANDED (r19aa, build-clean 0 errors/0 warnings,
+  NO new kernels - host code only, the cf kernel register counts identical vs HEAD;
+  OFF absent T4Q_CF_PLE_PRE=1, value-invisible either way - a pure page warm):
+  CF_MTP.md section 8's frozen design - the verify's row gathers fault the mmap'd
+  26.85 GiB table (~98 us/row first-fault class on the Kaggle disk; the r19e verdict
+  held: the 1-step-ahead prefetch is impossible in the greedy loop, the MTP's verify
+  is the only window). THE FORM: per-row prefetch THREADS spawned as each row's
+  token becomes known (rows 0/1 before the draft chain - the pending + its draft
+  prediction in hand; row i the moment its producing draft call lands its pick),
+  each touching the row's 16 table-row spans (a volatile byte per 4 KiB step + the
+  last byte - a dead load can be elided, a volatile one cannot; the page fault is
+  the point) so the gather's read lands warm. ONE source for the row enumeration
+  (the r19t bar): the walk template extracted from ple_host_core (byte-identical by
+  construction - the same (n, g, h, row) sequence, the same dequants); the touch and
+  the gather both ride it, so the touch can never warm the wrong pages. THE CONCURRENCY
+  RULES (the sweep's list): the ctx construction runs on the ENGINE thread at the
+  spawn point - the verify's to-be-written records substituted for c->toks (the
+  gather's c->toks[pos+r-k] IS vt[r-k] for r>=k, the trunk's valid rolling entries
+  below that, the EOS/-1 cut verbatim), so the thread body reads NO shared mutable
+  state (the ctx by value, the table/consts immutable); the draft calls write no
+  c->toks (their own KV pos/buffers); the threads call NO CUDA API (the
+  single-threaded-engine capture discipline holds - a non-CUDA thread is invisible
+  to the stream capture, even one still running through the verify's first-call
+  segment captures); no exception path (the touch cannot fail, the thread body
+  cannot throw); the RAII holder joins on EVERY exit path (an unjoined std::thread
+  terminates at destruction - the mid-chain `return 0`s included), and the threads
+  run through the verify so the gather coalesces with any in-flight page fault
+  (concurrent faults on the same page wait for the first - a lagging thread never
+  ADDS wall, it only warms). Runtime verification (the L4): T4Q_CF_MTP=1 + the spec
+  gate with/without T4Q_CF_PLE_PRE=1 -> the A/B (the ms/token + the draft/verify
+  splits; the warm-cache class pays the ~nr spawn overhead for nothing - the A/B
+  decides the default). STILL AHEAD: k tuned on the measured acceptance, the
   lm_head truncation stretch, the G2 (the full-step graph + the order-exact device
   router), the multi-token GDN ring kernel (removes the snapshot copy cost).
 - **cf-m5 - the closure rounds**: the r4-r16 method (every lever A/B'd, every bucket measured

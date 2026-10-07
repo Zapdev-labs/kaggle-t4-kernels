@@ -745,6 +745,11 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
             fprintf(stderr, "[cf] graph OFF: the T4Q_CF_DUMP mid-step probes are not capture-legal\n");
         }
         if (c->gmode) fprintf(stderr, "[cf] graph ON: %d segment graphs, captured at the first step\n", NL + 1);
+        // cf-m4 (r19aa): the PLE prefetch (CF_MTP.md section 8) - the spec rounds' verify
+        // gathers warm their table pages under the draft calls; OFF absent the env (the
+        // L4 A/B decides: the warm-cache class pays the spawn overhead for nothing)
+        if (const char* pp = getenv("T4Q_CF_PLE_PRE")) c->ple_pre = atoi(pp) ? 1 : 0;
+        if (c->ple_pre) fprintf(stderr, "[cf] PLE prefetch ON: the verify's rows warm under the draft steps\n");
 
         CK(cudaFree(dev));
         CK(cudaFreeHost(pin));

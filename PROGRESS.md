@@ -2626,3 +2626,47 @@ gmode-off direct form (the honest note: the launch wall collapses from ~10,400 x
 r19y snapshot D2Ds and the union staging stay - the G2/UVA/k-tuning rounds' levers);
 the `spec` gate -> the pass gate + the accept histogram (the spec rounds always
 verify at full nr - the graph path always).
+
+## r19aa - the PLE PREFETCH landed (CF_MTP.md section 8's frozen design; the only
+## window this engine has)
+
+The verify's row gathers fault the mmap'd 26.85 GiB PLE table - the ~98 us/row
+first-fault class measured on the Kaggle disk (the r19e verdict held: the 1-step
+prefetch is impossible in the greedy loop, the MTP's verify is the only window);
+the frozen section 8 math: ~1.4-1.6 ms/token of gather fault cost, most of it
+hideable under the draft calls' GPU stretches. LANDED as the per-row prefetch
+threads (T4Q_CF_PLE_PRE=1, OFF absent the env - the verbatim round; value-invisible
+either way, a pure page warm):
+- ONE source for the row enumeration (the r19t bar): the walk template extracted
+  from ple_host_core (the hash math verbatim - the same (n, g, h, row) sequence,
+  the same dequants in the same order; byte-identical by construction), the gather
+  and the touch both ride it - the touch can never warm the wrong pages.
+- ple_touch_rows: a VOLATILE byte per 4 KiB step of the row's span + the last byte
+  (a dead load can be elided by the compiler; a volatile one cannot - the page
+  fault is the whole point). No CUDA API, no exception path (the touch cannot
+  fail), pure reads of the immutable table.
+- ple_pre_ctx: the ctx construction on the ENGINE thread at the spawn point - the
+  verify's to-be-written records substituted for c->toks (the verify's driver head
+  writes c->toks[pos+r] = vt[r] for EVERY r before the gather reads them, so the
+  gather's c->toks[pos+r-k] IS vt[r-k] for r>=k; the trunk's valid rolling entries
+  below that; the EOS/-1 cut logic verbatim) - so the thread body reads NO shared
+  mutable state (the ctx goes into the lambda by value).
+- The spawn schedule: rows 0/1 before the draft chain (the pending + its draft
+  prediction in hand), row i the moment its producing draft call lands its pick -
+  the threads run under the draft calls' GPU stretches (the host blocked at each
+  call's drains) and through the verify's seg-0 drain, and the gather coalesces
+  with any in-flight page fault (concurrent faults on the same page wait for the
+  first - a lagging thread never ADDS wall, it only warms; the tail pays).
+- The RAII holder joins on EVERY exit path (an unjoined std::thread terminates at
+  destruction - the mid-chain `return 0`s included).
+The concurrency sweep: cf_draft_step writes no c->toks (its own KV pos/buffers);
+the spawn's c->toks reads (pos-1, pos-2 - below the verify's head-write range
+[pos, pos+nr-1]) happen before cf_verify runs at all; the threads are invisible
+to the verify's first-call stream captures (NO CUDA API in the thread body - the
+single-threaded-engine capture discipline holds); the <thread>/<array> includes
+added. Build: 0 errors, 0 warnings, the cf kernel register counts identical vs
+HEAD (host code only). Runtime verification (the L4): T4Q_CF_MTP=1 + the spec gate
+with/without T4Q_CF_PLE_PRE=1 -> the A/B (the ms/token + the draft/verify splits;
+the honest cost: ~nr thread spawns/round ~0.1-0.2 ms, and the warm-cache class -
+natural-text n-grams recur - pays the spawns for nothing; the A/B decides the
+default).

@@ -285,6 +285,12 @@ struct CfCtx {
     std::vector<cudaGraphExec_t> gexec;   // [NL+1] the per-segment instantiated execs
     std::vector<cudaGraph_t> ggraph;      // the captured sources (destroyed at free)
     int gmode = 0;                       // 0 = the direct emission, 1 = the graph driver
+    // cf-m4 (r19aa) the PLE prefetch (CF_MTP.md section 8, the frozen design): the verify's
+    // row gathers fault the mmap'd table (~98 us/row first-fault class on the Kaggle disk);
+    // the draft calls' GPU stretches are the only window - the touches warm the row's pages
+    // under the drafts, the gather coalesces with any in-flight fault. OFF (absent
+    // T4Q_CF_PLE_PRE) = the verbatim round; value-invisible either way (a pure page warm).
+    int ple_pre = 0;
     float* ye = nullptr;              // [TOPK*D] per-expert down outputs
     float* we = nullptr;              // [TOPK] renormalized router weights (device)
     float* ysh = nullptr;             // [D] shared expert out

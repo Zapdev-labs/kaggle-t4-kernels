@@ -1,11 +1,13 @@
 // cf-m1: the CYBER-FROST decode step. Exact decode math, one host sync per token
 // (the router top-k comes back host-side, as do the logits). Single GPU for M1.
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <thread>
 
 #include "cf_model.h"
 #include "quant_cpu.h"
@@ -136,6 +138,24 @@ void attention(CfCtx* c, CfLayer& L, CfScratch& s) {
 // r19x: the core takes (token, pos, dst) - the verify's per-row gather runs it at the
 // ROW's position into the row's pinned slice (no cross-row H2D race); ple_host is the
 // trunk's single-row instance.
+// cf-m4 (r19aa): ONE source for the PLE row enumeration (the r19t bar) - the gather
+// (ple_host_core) and the prefetch's page touch (ple_touch_rows) must walk the
+// IDENTICAL (n, g, h, row) sequence or the prefetch warms the wrong pages (a silent
+// perf loss, no correctness hit - still a bug class). The walk is the verbatim hash
+// loop extracted; the caller supplies the per-row action.
+template <class F>
+void ple_walk_rows(CfCtx* c, const int64_t* ctx, F&& f) {
+    for (int n = 2; n <= PLE_NGRAM; n++) {
+        uint64_t mixed = (uint64_t)ctx[0] * c->ple.mult[0];
+        for (int j = 1; j < n; j++) mixed ^= (uint64_t)ctx[j] * c->ple.mult[j];
+        for (int g = 0; g < PLE_NHEADS / 2; g++) {
+            const int h = (n - 2) * (PLE_NHEADS / 2) + g;
+            const uint64_t row = mixed % c->ple.head_vocab[h] + c->ple.head_off[h];
+            f(h, row);
+        }
+    }
+}
+
 void ple_host_core(CfCtx* c, int token, int pos, float* dst) {
     // host: the u64 hash. ctx[0] = the token; predecessors cut at EOS/missing (missing reads EOS).
     int64_t ctx[PLE_NGRAM];
@@ -146,17 +166,67 @@ void ple_host_core(CfCtx* c, int token, int pos, float* dst) {
         cut = cut || t < 0 || t == EOS1;
         ctx[k] = cut ? EOS1 : t;
     }
-    for (int n = 2; n <= PLE_NGRAM; n++) {
-        uint64_t mixed = (uint64_t)ctx[0] * c->ple.mult[0];
-        for (int j = 1; j < n; j++) mixed ^= (uint64_t)ctx[j] * c->ple.mult[j];
-        for (int g = 0; g < PLE_NHEADS / 2; g++) {
-            const int h = (n - 2) * (PLE_NHEADS / 2) + g;
-            const uint64_t row = mixed % c->ple.head_vocab[h] + c->ple.head_off[h];
-            if (!dequant_row_cpu(GT_Q4_0, c->ple.table->data + (size_t)row * c->ple.table->row_bytes,
-                                 dst + (size_t)h * PLE_DIM, PLE_DIM))
-                throw std::runtime_error("ple row dequant failed");
-        }
+    ple_walk_rows(c, ctx, [&](int h, uint64_t row) {
+        if (!dequant_row_cpu(GT_Q4_0, c->ple.table->data + (size_t)row * c->ple.table->row_bytes,
+                             dst + (size_t)h * PLE_DIM, PLE_DIM))
+            throw std::runtime_error("ple row dequant failed");
+    });
+}
+
+// cf-m4 (r19aa): the PLE prefetch (CF_MTP.md section 8, the frozen design). The
+// verify's row gathers fault the mmap'd 26.85 GiB table (~98 us/row first-fault class
+// on the Kaggle disk); the draft calls' GPU stretches (the host blocked at each call's
+// drains) are the only window this engine has. The touch reads the row's span (one
+// byte per 4 KiB step + the last byte - the span's pages) so the gather's read lands
+// warm. VOLATILE: a dead load can be elided - the volatile read cannot, and the page
+// fault is the whole point. Pure host reads of the immutable table: NO CUDA API (the
+// single-threaded-engine capture discipline holds - a non-CUDA thread is invisible to
+// the stream capture), no value risk (the gather re-reads the same bytes), no
+// exception path (the touch cannot fail).
+void ple_touch_rows(CfCtx* c, const int64_t* ctx) {
+    const size_t rb = c->ple.table->row_bytes;
+    ple_walk_rows(c, ctx, [&](int, uint64_t row) {
+        const volatile uint8_t* p = c->ple.table->data + (size_t)row * rb;
+        for (size_t o = 0; o < rb; o += 4096) (void)p[o];
+        (void)p[rb - 1];
+    });
+}
+
+// the prefetch's ctx: ple_host_core's exact construction with the verify's
+// to-be-written records substituted - the verify's driver head writes
+// c->toks[pos + r] = vt[r] for EVERY r before the gather reads them, so the gather's
+// c->toks[pos + r - k] IS vt[r - k] whenever r >= k; below that it is the trunk's own
+// rolling entry (the accepted stream, valid at the spawn) or the pre-context -1 (the
+// cut). The EOS/missing cut logic verbatim. Runs on the ENGINE thread at the spawn
+// point (during the draft chain, before cf_verify writes the records - race-free by
+// ordering, the thread body itself reads no c->toks).
+void ple_pre_ctx(CfCtx* c, const int* vt, int r, int pos, int64_t* ctx) {
+    ctx[0] = vt[r];
+    bool cut = false;
+    for (int k = 1; k < PLE_NGRAM; k++) {
+        const int t = r - k >= 0 ? vt[r - k] : (pos + r - k >= 0 ? c->toks[pos + r - k] : -1);
+        cut = cut || t < 0 || t == EOS1;
+        ctx[k] = cut ? EOS1 : t;
     }
+}
+
+// the per-round prefetch threads: joined on EVERY exit path (an unjoined std::thread
+// terminates the process at destruction - the returns inside the draft chain
+// included); the threads run through the verify (the gather coalesces with any
+// in-flight page fault - concurrent faults on the same page wait for the first, so a
+// lagging thread never ADDS wall, it only warms).
+struct PlePreThreads {
+    std::vector<std::thread> ts;
+    ~PlePreThreads() {
+        for (auto& t : ts)
+            if (t.joinable()) t.join();
+    }
+};
+
+void ple_pre_spawn(PlePreThreads& pt, CfCtx* c, const int* vt, int r, int pos) {
+    std::array<int64_t, PLE_NGRAM> ctx;
+    ple_pre_ctx(c, vt, r, pos, ctx.data());
+    pt.ts.emplace_back([c, ctx]() { ple_touch_rows(c, ctx.data()); });  // no CUDA, no throw
 }
 
 void ple_host(CfCtx* c, int token) { ple_host_core(c, token, c->pos, c->h_ple); }
@@ -1077,11 +1147,22 @@ int cf_spec_step(CfCtx* c, int* out) {
         vt[0] = v->pending;
         if (vt[0] < 0 || vt[0] >= V) throw std::runtime_error("cf_spec_step: no pending token (cf_spec_prime first)");
         // ---- (1) the drafts: vt[1] from the pending's prediction in hand, vt[2..k] chained
+        // r19aa: the PLE prefetch threads (T4Q_CF_PLE_PRE=1, absent = the verbatim round)
+        // - rows 0/1 are known before the chain (the pending + its draft prediction), each
+        // later row the moment its producing draft call lands; the touches run under the
+        // draft calls' GPU stretches + the verify's seg-0 drain, the gather coalesces with
+        // any in-flight fault, the holder joins on every exit path
         auto t0 = std::chrono::steady_clock::now();
         vt[1] = pick(d->h_logits, V);
+        PlePreThreads pre;
+        if (c->ple_pre) {
+            ple_pre_spawn(pre, c, vt, 0, p);
+            ple_pre_spawn(pre, c, vt, 1, p);
+        }
         for (int i = 2; i <= k; i++) {
             if (!cf_draft_step(c, vt[i - 1], d->hres)) return 0;
             vt[i] = pick(d->h_logits, V);
+            if (c->ple_pre) ple_pre_spawn(pre, c, vt, i, p);
         }
         v->draft_s += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         // ---- (2) the verify over the k+1 rows (its own captures ride the per-(layer,row)
