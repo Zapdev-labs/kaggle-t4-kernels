@@ -2670,3 +2670,26 @@ with/without T4Q_CF_PLE_PRE=1 -> the A/B (the ms/token + the draft/verify splits
 the honest cost: ~nr thread spawns/round ~0.1-0.2 ms, and the warm-cache class -
 natural-text n-grams recur - pays the spawns for nothing; the A/B decides the
 default).
+
+THE GDN RING SCOPE (r19ab, the closure verdict - scoped, NOT landed): the
+multi-token GDN ring kernel (the 27B's k_gdn_m form, the in-repo template) was
+scoped against the r19y snapshot-capture design it would replace. THE ARITHMETIC:
+the copies it removes are the r19y captures - 3 rows x 36 GDN layers x (3.15 MB S +
+tiny conv) ~ 340 MB of D2D ~ 2.5-3 ms/verify + the restore ~0.5-1 ms/round ~ 3-4
+ms out of the ~165 ms round class ~ 2%; the per-row kernel launches it also
+consolidates are already graph-free post-r19z; and it COSTS more VRAM (ns = k+2
+ring slots ~ 454 MB vs the captures' ~340 MB) plus a large kernel port (the
+projections batched M-form, the gates/conv/l2/recur/gnorm folded per layer, the
+ring semantics, the 27B shapes vs the CF shapes differ throughout). The r19y
+decision's own math (zero kernel surface, ~0.34 GiB) stands; the L4 measures the
+MTP path first (the acceptance histogram + the verify's ms/token decide whether
+2% is worth a kernel round). THE HONTEST NEXT LEVER by the same arithmetic: the
+requant stretch (PLAN_CF section 5, census-unlocked - the router is flat, the
+tiering does not pay), whose round 1 is the FORMAT DESIGN (the frozen-spec form:
+the ~1.6-2.0 bit layout + the exact decode arithmetic, the error budget vs the
+Q2_K trunk's own quality, the T4 kernel-rate roof at the LUT-decode class, the
+~12.75 GB pool at 2.06 bpw vs the 2x T4 residency + the TP split it rides) - a
+fresh research round, not started this turn. The G2 device router stays the same
+verdict as before (the order-exact trap for a ~1-2% win, and the full-step graph
+form cannot run on the RAM-capped Kaggle host - the UVA covers only ~60% of the
+layers).
