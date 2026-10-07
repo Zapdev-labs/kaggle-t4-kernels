@@ -1,0 +1,25 @@
+PROGRESS.md
+  s_ac85989787ca8c::t_9f5e0ebe6c7e92 2098-2120
+research/PLAN_CF.md
+  s_ac85989787ca8c::t_b4a94c117a7294 209-218
+t4q/tools/uva_probe.cu
+  s_ac85989787ca8c::t_862b136aaf01ff 1-198
+t4q/Makefile
+  s_ac85989787ca8c::t_6f4571151baf45 35-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6801d25a30b29709e9d29df312e9681d0b273239",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
