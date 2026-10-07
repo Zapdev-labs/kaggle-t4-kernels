@@ -66,6 +66,41 @@ __global__ void k_repack_q51(PackedW W, const uint8_t* raw, int64_t r0, int64_t 
     repack_q51_block(W, raw + r * nbr * 24 + b * 24, (r0 + r) * nbr + b);
 }
 
+// cf-m3 (r19u) the UVA pointer-swap scatter repack: the per-pick sources are the picks'
+// OWN slabs inside the REGISTERED mmap'd expert tensors, read through the device aliases
+// (the coalesced page-span registration at load); the sources are exactly the bytes the
+// OFF path's host memcpys stage (cf_engine's staging loop), the same repack_*_block
+// decode, so the packed slabs are byte-identical by construction - only the read path
+// changes (the mapped pages over PCIe instead of the pinned staging in VRAM).
+// gu layout: pick-major, [gate rows EE | up rows EE] per pick; the eid[] maps pick->expert.
+__global__ void k_repack_eid_q2k(PackedW W, const uint8_t* gate_alias, const uint8_t* up_alias,
+                                 const int* eid, int64_t r0, int64_t nr, int64_t rows_per_pick,
+                                 int64_t gate_rows) {
+    const int64_t nbr = W.cols / 256;
+    const int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= nr * nbr) return;
+    const int64_t r = i / nbr, b = i % nbr;
+    const int k = (int)(r / rows_per_pick);
+    const int64_t pr = r % rows_per_pick;
+    const uint8_t* src =
+        (pr < gate_rows)
+            ? gate_alias + ((size_t)eid[k] * gate_rows + pr) * (nbr * 84) + b * 84
+            : up_alias + ((size_t)eid[k] * gate_rows + (pr - gate_rows)) * (nbr * 84) + b * 84;
+    repack_q2k_block(W, src, (r0 + r) * nbr + b);
+}
+// dn layout: pick-major, D rows of EE per pick (Q4_0: 18 B per 32-elem block)
+__global__ void k_repack_eid_q4(PackedW W, const uint8_t* dn_alias, const int* eid,
+                                int64_t r0, int64_t nr, int64_t rows_per_pick) {
+    const int64_t nbr = W.cols / 32;
+    const int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= nr * nbr) return;
+    const int64_t r = i / nbr, b = i % nbr;
+    const int k = (int)(r / rows_per_pick);
+    const int64_t pr = r % rows_per_pick;
+    const uint8_t* src = dn_alias + ((size_t)eid[k] * rows_per_pick + pr) * (nbr * 18) + b * 18;
+    repack_q4_block(W, src, (r0 + r) * nbr + b, 0);
+}
+
 void launch_repack(const PackedW& W, uint32_t type, const uint8_t* raw, int64_t r0, int64_t nr, cudaStream_t s) {
     const int T = 256;
     switch (type) {
@@ -82,6 +117,25 @@ void launch_repack(const PackedW& W, uint32_t type, const uint8_t* raw, int64_t 
         case GT_Q5_1: { int64_t n = nr * (W.cols / 32); k_repack_q51<<<(unsigned)((n + T - 1) / T), T, 0, s>>>(W, raw, r0, nr); break; }
         default: break;
     }
+}
+
+// cf-m3 (r19u): the UVA pointer-swap scatter repacks - the picks' slabs read through the
+// registered aliases + the per-step eid table; the packed targets + W-table views are
+// the OFF path's identity ones, byte-identical by construction
+void launch_repack_eid_q2k(const PackedW& W, const uint8_t* gate_alias, const uint8_t* up_alias,
+                           const int* eid, int64_t r0, int64_t nr, int64_t rows_per_pick, int64_t gate_rows,
+                           cudaStream_t s) {
+    const int T = 256;
+    const int64_t n = nr * (W.cols / 256);
+    k_repack_eid_q2k<<<(unsigned)((n + T - 1) / T), T, 0, s>>>(W, gate_alias, up_alias, eid, r0, nr,
+                                                              rows_per_pick, gate_rows);
+}
+
+void launch_repack_eid_q4(const PackedW& W, const uint8_t* dn_alias, const int* eid, int64_t r0, int64_t nr,
+                          int64_t rows_per_pick, cudaStream_t s) {
+    const int T = 256;
+    const int64_t n = nr * (W.cols / 32);
+    k_repack_eid_q4<<<(unsigned)((n + T - 1) / T), T, 0, s>>>(W, dn_alias, eid, r0, nr, rows_per_pick);
 }
 
 template <int FMT>

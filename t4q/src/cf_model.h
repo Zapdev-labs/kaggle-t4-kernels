@@ -73,6 +73,11 @@ struct CfLayer {
     int hn = 0;
     int* hot_ids = nullptr;   // [hn] the resident expert ids, the load-time packing order
     int* hot_idx = nullptr;  // [NE] the expert id -> the resident index h, or -1 (a miss)
+    // cf-m3 (r19u) the UVA third path: the device aliases of this layer's registered expert
+    // tensors (the coalesced page-span registration at load; null when the layer is staged)
+    const uint8_t* uva_gate = nullptr;
+    const uint8_t* uva_up = nullptr;
+    const uint8_t* uva_dn = nullptr;
 };
 
 // The PLE module (layer 1 only). The 26.85 GiB hash table stays mmap'd.
@@ -136,6 +141,11 @@ struct CfCtx {
     PackedW h_step_gu[cf::TOPK] = {};  // the per-step composed gate|up table (host)
     PackedW h_step_dn[cf::TOPK] = {};  // the per-step composed down table (host)
     bool tiered = false;              // a hot-set file was loaded (the resident tier is ON)
+    bool uva = false;                 // cf-m3 (r19u): T4Q_CF_UVA_LAYERS registered (the alias path is ON for il < uva_n)
+    int uva_n = 0;                    // the first uva_n layers read their experts through the aliases
+    void* uva_reg = nullptr;          // the coalesced page-span host base (one registration, unregistered at free)
+    size_t uva_reg_len = 0;
+    int* eid_dev = nullptr;          // device: [TOPK] the per-step expert ids for the scatter repack
     float* ye = nullptr;              // [TOPK*D] per-expert down outputs
     float* we = nullptr;              // [TOPK] renormalized router weights (device)
     float* ysh = nullptr;             // [D] shared expert out

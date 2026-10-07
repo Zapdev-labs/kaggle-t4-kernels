@@ -432,6 +432,50 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
             CK(cudaStreamSynchronize(st));
             c->tiered = true;
         }
+        // cf-m3 (r19u) the UVA third path: T4Q_CF_UVA_LAYERS=<n> registers the first n
+        // layers' expert tensors as cudaHostRegisterMapped (ONE coalesced page-aligned
+        // span - the per-tensor page-spans of the file-adjacent tensors overlap on the
+        // shared boundary pages and would double-register). ABSENT/0 = OFF = the
+        // verbatim full-staging path. The full 47.9 GiB region fits only a big-RAM host;
+        // the Kaggle host's ~29 GB caps n at ~28-29 (the r19r RAM cap): the registered
+        // layers' picks read their raw slabs through the aliases over PCIe, the rest stay
+        // staged. Byte-identity by construction: the aliases read the SAME mmap pages the
+        // OFF path's memcpys stage, through the same repack block decode (the scatter
+        // kernels' address math is exactly the OFF path's memcpy sources).
+        if (const char* un = getenv("T4Q_CF_UVA_LAYERS")) {
+            c->uva_n = atoi(un);
+            if (c->uva_n <= 0 || c->uva_n > NL)
+                throw std::runtime_error("T4Q_CF_UVA_LAYERS must be in 1..48");
+            const uintptr_t PG = 4095;
+            uintptr_t lo = ~(uintptr_t)0, hi = 0;
+            for (int il = 0; il < c->uva_n; il++) {
+                CfLayer& L = c->layers[il];
+                for (const GgufTensor* t : {L.t_gate_exps, L.t_up_exps, L.t_down_exps}) {
+                    const uintptr_t b = (uintptr_t)t->data;
+                    const uintptr_t e = b + (uintptr_t)t->nrows() * t->row_bytes;
+                    lo = std::min(lo, b & ~PG);
+                    hi = std::max(hi, (e + PG) & ~PG);
+                }
+            }
+            auto tr0 = std::chrono::steady_clock::now();
+            CK(cudaHostRegister((void*)lo, (size_t)(hi - lo), cudaHostRegisterMapped));
+            void* alias = nullptr;
+            CK(cudaHostGetDevicePointer(&alias, (void*)lo, 0));
+            auto tr1 = std::chrono::steady_clock::now();
+            for (int il = 0; il < c->uva_n; il++) {
+                CfLayer& L = c->layers[il];
+                L.uva_gate = (const uint8_t*)alias + ((uintptr_t)L.t_gate_exps->data - lo);
+                L.uva_up = (const uint8_t*)alias + ((uintptr_t)L.t_up_exps->data - lo);
+                L.uva_dn = (const uint8_t*)alias + ((uintptr_t)L.t_down_exps->data - lo);
+            }
+            c->uva_reg = (void*)lo;
+            c->uva_reg_len = (size_t)(hi - lo);
+            c->uva = true;
+            CK(cudaMalloc(&c->eid_dev, (size_t)TOPK * 4));
+            fprintf(stderr, "[cf] UVA: %d/%d layers, %.2f GiB registered in %.2f s (the alias path ON)\n",
+                    c->uva_n, NL, (double)(hi - lo) / (1ull << 30),
+                    std::chrono::duration<double>(tr1 - tr0).count());
+        }
         CK(cudaMallocHost(&c->h_router, (size_t)NE * 4));
         CK(cudaMallocHost(&c->we_h, (size_t)TOPK * 4));
         c->eid = new int[TOPK];

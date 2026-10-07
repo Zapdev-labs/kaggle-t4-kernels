@@ -8,6 +8,13 @@
 // repack.cu
 // raw: device staging holding GGUF rows [r0, r0+nr) of `ggml_type`; writes them into W at the same rows
 void launch_repack(const PackedW& W, uint32_t ggml_type, const uint8_t* raw, int64_t r0, int64_t nr, cudaStream_t s);
+// cf-m3 (r19u): the UVA pointer-swap scatter repacks (the picks' slabs via the registered
+// aliases + the per-step eid table; the packed targets byte-identical by construction)
+void launch_repack_eid_q2k(const PackedW& W, const uint8_t* gate_alias, const uint8_t* up_alias,
+                           const int* eid, int64_t r0, int64_t nr, int64_t rows_per_pick, int64_t gate_rows,
+                           cudaStream_t s);
+void launch_repack_eid_q4(const PackedW& W, const uint8_t* dn_alias, const int* eid, int64_t r0, int64_t nr,
+                          int64_t rows_per_pick, cudaStream_t s);
 // dequant rows (list of row ids on device) into out [n][cols] fp32, bit-exact with the CPU port
 void launch_dequant_rows(const PackedW& W, const int32_t* rows, int n, float* out, cudaStream_t s);
 

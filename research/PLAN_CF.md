@@ -272,6 +272,18 @@ dequant rates and the platform paths are measured, no more assumptions**:
   (the staged layers keep their router syncs, so the full-step G2 graph is the
   full-UVA host's; the Kaggle stays G1-class) ~1 -> ~110 ms/token ~ 9 t/s, vs the
   full-UVA host's ~83 ms (~12 t/s, the G2). The probe's RSS output feeds N per host.
+  LANDED AS THE THIRD PATH (r19u, build-clean 0 errors, OFF by default - absent
+  T4Q_CF_UVA_LAYERS = the verbatim staging path): the loader registers the first n
+  layers' expert tensors as ONE coalesced page-aligned cudaHostRegisterMapped span (the
+  per-tensor page-spans of the file-adjacent tensors would double-register on the shared
+  boundary pages), and the moe's UVA branch reads the picks' raw slabs through the device
+  aliases by the per-pick-id scatter repack (k_repack_eid_q2k/q4 in repack.cu: the
+  address math is exactly the OFF path's memcpy sources, the same repack block decode,
+  the same identity W table + the same gemvs - byte-identical by construction; only the
+  read path changes: no host memcpys, no H2D, no raw staging, +2 launches/layer for the
+  eid upload + the two scatter repacks). Runtime verification: the gates + the A/B on
+  the L4 (T4Q_CF_UVA_LAYERS=n, n=48 on a big-RAM host / n~28-29 on the Kaggle), then the
+  T4 at the next quota window; the v9 payload regen carries it after the L4 passes.
 - **cf-m4 - MTP spec**: the DESIGN IS FROZEN (r19q, `research/CF_MTP.md` - the
   pre-implementation spec: the draft block's exact forward (cf-arch section 6), the Q8_0
   gemv path ALREADY IN-REPO and gate-proven (the repack's GT_Q8_0 case + the FAST_Q8

@@ -2261,3 +2261,30 @@ by construction (no risk); the G1 form keeps the host router as-is (no new arith
 no risk). The PLAN_CF lever-2 G2 block carries the spec. The MTP note's verify gate
 (the batched rows must reproduce the sequential decode bit-exactly) is the same rule
 applied to the batched trunk - the two gates are consistent.
+
+## r19u - the UVA pointer-swap LANDED as the third path (build-clean, OFF by default)
+
+The engine lane's owner (the parallel L4 session) has been quiet for two days with its
+milestone complete, so the implementation landed here under the repo's own precedent
+(the r19l cluster: engine mechanisms land statically-verified + build-clean, the GPU
+battery gates them later). THE IMPLEMENTATION (byte-identical by construction, only
+the read path changes): (1) cf_loader.cu registers the first T4Q_CF_UVA_LAYERS=n layers'
+expert tensors as ONE coalesced page-aligned cudaHostRegisterMapped span - the
+per-tensor page-spans of the file-adjacent tensors overlap on the shared boundary pages
+and would double-register - timing the registration + printing the span; the per-layer
+device aliases are the span's alias + the tensor offsets. (2) The new scatter repacks
+(repack.cu): k_repack_eid_q2k (the pick-major [gate EE | up EE] layout, the address
+(eid[k]*EE + pr)*840 = exactly the OFF path's memcpy source) and k_repack_eid_q4 (the
+(eid[k]*D + pr)*360 form), the SAME repack block decodes, packing into the SAME
+identity W-table views. (3) The moe's UVA branch (cf_engine.cu): the eid upload +
+the two scatter repacks - NO host memcpys, NO H2D, NO raw staging. (4) cf_free unregisters
+the span after the stream drain. ABSENT/0 = OFF = the verbatim staging path
+(attribution-clean, the current payload f88057d6 still gates the staged engine verbatim).
+Self-review catches before landing: the repack_q4_block signature (4 args, the bb lives
+in the caller's address math only), the registration's page-span overlap (the coalesced
+one-span form). Build: libt4q + cf_run 0 errors, 0 warnings in the 12.8 podman. RUNTIME
+VERIFICATION (the L4 host): the correctness gates with T4Q_CF_UVA_LAYERS=48 (a big-RAM
+host) or ~28-29 (the Kaggle class), then the staged-vs-UVA A/B tok/s (the uva_probe's
+ratio decides the adoption; n is tuned per host from the probe's RSS report); the v9
+payload regen carries it after the L4 passes. The PLAN_CF cf-m3 section carries the
+landed note.

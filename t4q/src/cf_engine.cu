@@ -221,7 +221,18 @@ void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
     const size_t gu_row = L.t_gate_exps->row_bytes;   // 840
     const size_t dn_row = L.t_down_exps->row_bytes;   // 360
     const size_t up_bytes = (size_t)TOPK * 2 * EE * gu_row;
-    if (c->tiered) {
+    if (c->uva && L.il < c->uva_n) {
+        // cf-m3 (r19u) the UVA pointer-swap path: the picks' raw slabs are read from the
+        // REGISTERED mmap'd expert pages through the device aliases - NO host memcpys,
+        // NO H2D, NO raw staging; the scatter repack's address math is exactly the OFF
+        // path's memcpy sources, the same block decode, the same identity W table + the
+        // same gemvs, so the packed slabs are byte-identical by construction (only the
+        // read path changes: the mapped pages over PCIe instead of the pinned VRAM copy)
+        CK(cudaMemcpyAsync(c->eid_dev, c->eid, (size_t)TOPK * 4, cudaMemcpyHostToDevice, st));
+        launch_repack_eid_q2k(c->up_stage, L.uva_gate, L.uva_up, c->eid_dev, 0,
+                              (int64_t)TOPK * 2 * EE, (int64_t)2 * EE, (int64_t)EE, st);
+        launch_repack_eid_q4(c->dn_stage, L.uva_dn, c->eid_dev, 0, (int64_t)TOPK * D, (int64_t)D, st);
+    } else if (c->tiered) {
         // the dual-path moe (cf-m3, r19l part 2): a HIT pick reads its resident slab with ZERO
         // staging (the load-time repack already made it byte-identical to what the staging would
         // produce); only the MISS picks pay the MMAP->pinned->H2D path, each for its OWN rows,
@@ -422,8 +433,10 @@ void cf_reset(CfCtx* c) {
 void cf_free(CfCtx* c) {
     if (!c) return;
     if (c->st) { cudaStreamSynchronize(c->st); cudaStreamDestroy(c->st); }
+    if (c->uva_reg) cudaHostUnregister(c->uva_reg);  // cf-m3 (r19u): the stream is drained
     if (c->raw_stage) cudaFreeHost(c->raw_stage);
     if (c->raw_dev) cudaFree(c->raw_dev);
+    if (c->eid_dev) cudaFree(c->eid_dev);
     if (c->wt_gu) cudaFree(c->wt_gu);
     if (c->wt_dn) cudaFree(c->wt_dn);
     if (c->h_router) cudaFreeHost(c->h_router);
