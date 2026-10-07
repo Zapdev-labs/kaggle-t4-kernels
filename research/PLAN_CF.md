@@ -207,6 +207,18 @@ dequant rates and the platform paths are measured, no more assumptions**:
   the softmax/top-10/the W-table view build/the we renorm as kernels - kills the 48
   mid-step syncs so the segments merge, and the staging memcpys are already dead) = ~1
   replay/token (the T4: ~75 ms UVA reads + ~7 ms GPU + ~1 replay ~ ~83 ms/token class).
+  G2 ORDER-EXACTNESS SPEC (r19t): the device-side router MUST reproduce the host loops'
+  exact fp accumulation ORDER - the softmax sum and the we renorm accumulated
+  sequentially over i=0..NE-1 (a single warp's serial loop, ~2-5 us - the free
+  correctness), and the top-10 scan keeping the host's strict-> first-max tie rule -
+  because a warp-parallel/tree reduction reorders the sum and perturbs the renormalized
+  we by ~1 ulp, which feeds moe_out -> a ~1e-6-class logit perturbation -> the near-tie
+  argmax flips at a ~1-per-1e3-1e4-token rate: the SHORT gen gates (8 tokens) PASS while
+  the long generations silently diverge from the byte-identical-greedy bar (the r19n
+  battery's own flips sat at gaps 2.68/0.49 under the +-2..5 q8 noise; the G2
+  perturbation is ~6 orders smaller but the bar is byte-identity, not statistics). The
+  W-table view build is integer-offset arithmetic - exact by construction, no risk. The
+  G1 form keeps the host router as-is (no new arithmetic, no risk).
   The UVA stays first (the bigger cut, and it unlocks G2); G1 is the hedge that does not
   need it, (3) MTP (cf-m4).
   PROBE (r19s, landed: t4q/tools/graph_probe.cu + the build/graph_probe target, compiles

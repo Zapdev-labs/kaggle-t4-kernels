@@ -2241,3 +2241,23 @@ gemv-ish ping-pong read the [1280]-float output as the [2560]-float input (an OO
 fixed pair suffices, the single stream serializes the chain), the uninitialized gx input
 (memset added), and the host loop's device-only __expf (expf). Run on each host:
 ./build/graph_probe [2578] [50] - the L4 now, the T4 at the next quota window.
+
+## r19t - the G2 device-router ORDER-EXACTNESS spec (the seventh-catch-class find)
+
+The G2 form's device-side router (the softmax/top-10/the we renorm/the W-table view build
+as kernels, the sync-killer that merges the segments into the full-step graph) carries a
+correctness trap the census did not name: a warp-parallel/tree reduction REORDERS the fp
+sum, perturbing the renormalized we by ~1 ulp; the perturbed we feeds moe_out -> a
+~1e-6-class logit perturbation -> the near-tie argmax flips at a ~1-per-1e3-1e4-token
+rate - the SHORT gen gates (8 tokens) PASS while the long generations silently diverge
+from the byte-identical-greedy bar (the trap class: the gates pass, the long runs
+diverge). The r19n battery's own flips sat at gaps 2.68/0.49 under the +-2..5 q8 noise;
+the G2 perturbation is ~6 orders smaller, but the bar is byte-identity, not statistics.
+THE SPEC: the device router must reproduce the host loops' exact fp accumulation ORDER -
+the softmax sum and the we renorm accumulated sequentially over i=0..NE-1 (a single
+warp's serial loop, ~2-5 us - the free correctness), the top-10 scan keeping the host's
+strict-> first-max tie rule; the W-table view build is integer-offset arithmetic, exact
+by construction (no risk); the G1 form keeps the host router as-is (no new arithmetic,
+no risk). The PLAN_CF lever-2 G2 block carries the spec. The MTP note's verify gate
+(the batched rows must reproduce the sequential decode bit-exactly) is the same rule
+applied to the batched trunk - the two gates are consistent.
