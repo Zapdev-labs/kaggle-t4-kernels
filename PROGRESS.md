@@ -2220,3 +2220,24 @@ way (~0.86 GB alias + ~0.58 GB staged ~ 155 ms + ~8 ms of drafts) ~ 75 ms/token 
 - still a ~1.4x over that host's non-MTP class, so the lever pays on both hosts. The
 probe's RSS output feeds N per host; the quota is still 30/30 (the direct push rejected
 again this morning, the gatekeepers own the retries).
+
+## r19s - the CUDA-graph launch-wall PROBE landed (the G1/G2 win measured pre-engine)
+
+The r19p census counted the step's launches statically; the ~22 us/launch class (and so
+the ~57 ms wall and the G1/G2 reclamation claims) was inherited from the 27B-era
+measurements, never measured on this kernel mix. The probe (t4q/tools/graph_probe.cu +
+the build/graph_probe target, compiles clean in the 12.8 podman): the census-shaped
+chain itself - every 4th launch a gemv-ish kernel streaming a ~13 MB weight slab (the
+packed-slab read class of one moe gemv, 160 CTAs, a warp per row over K=2560), the rest
+the tiny norm/add-class kernel (41 CTAs over 10240 floats, ping-ponged), all on ONE
+stream so the chain is strictly serial - measured three ways with the kernel work
+identical in all three: (A) launch-by-launch (the current engine's form), (B) ONE
+captured full-step graph (the G2 form, ~1 replay), (C) ~50 per-segment graphs with a
+cudaStreamSynchronize + the ~30 us router host loop (the softmax/top-10 over 512, run 4x
+for an honest ~30 us) between replays (the G1 form). The differentials (A)-(B)/(A)-(C)
+are the pure graph reclamation on this hardware; the instantiate times are reported as
+the one-time load cost of the graph set. The self-review catches before landing: the
+gemv-ish ping-pong read the [1280]-float output as the [2560]-float input (an OOB - the
+fixed pair suffices, the single stream serializes the chain), the uninitialized gx input
+(memset added), and the host loop's device-only __expf (expf). Run on each host:
+./build/graph_probe [2578] [50] - the L4 now, the T4 at the next quota window.

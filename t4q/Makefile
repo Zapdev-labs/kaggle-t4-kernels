@@ -37,6 +37,11 @@ $(BUILD)/uva_probe: tools/uva_probe.cu
 	@mkdir -p $(BUILD)
 	$(NVCC) $(NVFLAGS) -Isrc -o $@ $<
 
+# cf-m3 (r19s): the CUDA-graph launch-wall probe - the G1/G2 win measured pre-engine
+$(BUILD)/graph_probe: tools/graph_probe.cu
+	@mkdir -p $(BUILD)
+	$(NVCC) $(NVFLAGS) -Isrc -o $@ $<
+
 clean:
 	rm -rf $(BUILD)
 

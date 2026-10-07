@@ -209,6 +209,17 @@ dequant rates and the platform paths are measured, no more assumptions**:
   replay/token (the T4: ~75 ms UVA reads + ~7 ms GPU + ~1 replay ~ ~83 ms/token class).
   The UVA stays first (the bigger cut, and it unlocks G2); G1 is the hedge that does not
   need it, (3) MTP (cf-m4).
+  PROBE (r19s, landed: t4q/tools/graph_probe.cu + the build/graph_probe target, compiles
+  clean in the 12.8 podman): the census-shaped chain itself (every 4th launch a gemv-ish
+  kernel streaming a ~13 MB slab - the packed-slab read class of one moe gemv, the rest
+  the tiny norm class, one stream so the chain is strictly serial) measured three ways,
+  the kernel work identical in all three: (A) launch-by-launch (the current engine's
+  form), (B) ONE captured full-step graph (the G2 form), (C) ~50 per-segment graphs with
+  a cudaStreamSynchronize + the ~30 us router host loop between replays (the G1 form) -
+  the differentials (A)-(B)/(A)-(C) are the pure graph reclamation on this hardware (the
+  ~22 us/launch class was inherited from the 27B-era measurements), the instantiate
+  times reported as the one-time load cost. Run: `./build/graph_probe [2578] [50]` on
+  each host (the L4 now, the T4 at the next quota window).
 - **cf-m2 - the census**: VERDICT LANDED (r19n): near-uniform routing (168,938/168,960
   slots touched in 353 steps; the top-64 = 10.7% of the draws) - no tier split pays; the
   UVA zero-copy is the lever. The census tooling stays (any future model/file re-checks
