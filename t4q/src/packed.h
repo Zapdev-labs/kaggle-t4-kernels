@@ -17,6 +17,11 @@ enum PackFmt : int {
     // cf-m6 requant (CF_REQUANT.md): the iq1_s class, 50 B / 256 = 1.5625 bpw
     FMT_IQ1S = 9,  // codes = qs (32 B / 256: one u8 grid index per 8 elems), hi = qh (16 B / 256: 8 u16
                    // per-32 scale/shift/index-halves), d fp16 [rows][cols/256]; the t4q_kgrid_1bit_2048 lattice
+    // cf-m6 r3 (the dn tiling: the dn rows are 640 wide, 640 % 256 != 0): the 128-elem half
+    // block - the SAME per-32-group lattice/scale/dp4a arithmetic, the d/max_scale over 4
+    // groups; 26 B / 128 = 1.625 bpw; 640 = 5 x 128 tiles exactly. Pairs with the q8_0
+    // activation (its 32-blocks tile 640; the q8_K 256-super-blocks do NOT).
+    FMT_IQ1SH = 10,  // codes = qs (16 B / 128), hi = qh (8 B / 128: 4 u16), d fp16 [rows][cols/128]
 };
 
 struct PackedW {

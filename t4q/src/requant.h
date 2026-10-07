@@ -73,13 +73,21 @@ static const int BS = 32;                         // IQ1S_BLOCK_SIZE
 static const float GROUP_MAX_EPS = 1e-12f;         // GROUP_MAX_EPS_IQ1_S
 static const float DELTA = T4Q_IQ1S_DELTA;         // 0.125
 
-// The 50 B / 256 block (the PackedW planes: codes = qs, hi = qh, d = d).
-struct Block {
+// The block (the PackedW planes: codes = qs, hi = qh, d = d). NG = the 32-elem groups per
+// block: 8 = the stock iq1_s 256-elem block (50 B, 1.5625 bpw); 4 = the 128-elem half
+// block (26 B, 1.625 bpw) the dn tensor needs - its rows are 640 wide and 640 % 256 != 0
+// (the r3 pack gate's find: the 256-block form cannot tile the dn; the half block tiles
+// it exactly, 5 x 128, with the SAME per-group search/scale/lattice arithmetic and only
+// the d/max_scale scope halved - a finer scale grid, never coarser).
+template <int NG>
+struct BlockT {
     uint16_t d;
-    uint8_t qs[32];
-    uint16_t qh[8];
+    uint8_t qs[4 * NG];
+    uint16_t qh[NG];
 };
-static_assert(sizeof(Block) == 50, "iq1_s block size");
+using Block = BlockT<8>;
+static_assert(sizeof(BlockT<8>) == 50, "iq1_s block size");
+static_assert(sizeof(BlockT<4>) == 26, "iq1_s half-block size");
 
 // ---- the tables (the exact iq2xs_init_impl(IQ1_S) form) ----
 struct Tables {
@@ -232,28 +240,31 @@ static int find_best_neighbour2(const uint16_t* neigh, const Tables& T, const fl
     return k;
 }
 
-// quantize_row_iq1_s_impl (the exact form; qw = nullptr -> the self-scaled weights).
-// One row: n a multiple of 256; y = the row's n/256 blocks.
-static void quant_row(const Tables& T, const float* x, int n, Block* y, const float* qw = nullptr) {
+// quantize_row_iq1_s_impl (the exact form; qw = nullptr -> the self-scaled weights),
+// templated on the groups-per-block: NG=8 the stock 256-elem block, NG=4 the 128-elem
+// half block (the dn tiling). One row: n a multiple of 32*NG; y = the row's n/(32*NG)
+// blocks.
+template <int NG>
+static void quant_row_t(const Tables& T, const float* x, int n, BlockT<NG>* y, const float* qw = nullptr) {
     const float x_p[3] = {-1.f + DELTA, DELTA, 1.f + DELTA};
     const float x_m[3] = {-1.f - DELTA, -DELTA, 1.f - DELTA};
-    float weight[BS], pairs[2 * BS], scales[8], sumx[BS + 1], sumw[BS + 1];
+    float weight[BS], pairs[2 * BS], scales[NG], sumx[BS + 1], sumw[BS + 1];
     int* idx = (int*)(pairs + 1);
-    int8_t L[BS], shifts[8];
+    int8_t L[BS], shifts[NG];
     uint16_t index[4];
-    for (int ibl = 0; ibl < n / 256; ++ibl) {
-        const float* xb = x + 256 * ibl;
-        Block& B = y[ibl];
+    for (int ibl = 0; ibl < n / (32 * NG); ++ibl) {
+        const float* xb = x + 32 * NG * ibl;
+        BlockT<NG>& B = y[ibl];
         B.d = 0;
-        memset(B.qs, 0, 32);
-        memset(B.qh, 0, 16);
+        memset(B.qs, 0, 4 * NG);
+        memset(B.qh, 0, 2 * NG);
         float max_scale = 0, sumx2 = 0;
-        for (int i = 0; i < 256; ++i) sumx2 += xb[i] * xb[i];
-        float sigma2 = 2 * sumx2 / 256;
-        for (int ib = 0; ib < 8; ++ib) {
+        for (int i = 0; i < 32 * NG; ++i) sumx2 += xb[i] * xb[i];
+        float sigma2 = 2 * sumx2 / (32 * NG);
+        for (int ib = 0; ib < NG; ++ib) {
             const float* xg = xb + BS * ib;
             for (int i = 0; i < BS; ++i) {
-                float w = qw ? qw[256 * ibl + BS * ib + i] : 1.f;
+                float w = qw ? qw[32 * NG * ibl + BS * ib + i] : 1.f;
                 weight[i] = w * sqrtf(sigma2 + xg[i] * xg[i]);
             }
             float max = fabsf(xg[0]);
@@ -350,7 +361,7 @@ static void quant_row(const Tables& T, const float* x, int n, Block* y, const fl
         float d = max_scale / 15;
         B.d = t4q_fp32_to_fp16(d * 1.125f);  // the ggml fudge, part of the tuned format
         float id = 1 / d;
-        for (int ib = 0; ib < 8; ++ib) {
+        for (int ib = 0; ib < NG; ++ib) {
             int l = nearest_int(0.5f * (id * scales[ib] - 1));
             l = l < 0 ? 0 : l > 7 ? 7 : l;
             if (shifts[ib] == -1) l |= 8;
@@ -359,14 +370,16 @@ static void quant_row(const Tables& T, const float* x, int n, Block* y, const fl
     }
 }
 
-// dequantize_row_iq1_s (the exact reference form) - the round-trip gate's second decode
-// path (independent of deq32: this one walks the {1,3,5} byte grid, deq32 walks the u16).
-static void dequant_row_ref(const Tables& T, const Block* y, float* dst, int n) {
-    for (int ibl = 0; ibl < n / 256; ++ibl) {
-        const Block& B = y[ibl];
+// dequantize_row_iq1_s (the exact reference form), templated on the block granularity -
+// the round-trip gate's second decode path (independent of deq32: this one walks the
+// {1,3,5} byte grid, deq32 walks the u16). The per-group decode is granularity-free.
+template <int NG>
+static void dequant_row_ref_t(const Tables& T, const BlockT<NG>* y, float* dst, int n) {
+    for (int ibl = 0; ibl < n / (32 * NG); ++ibl) {
+        const BlockT<NG>& B = y[ibl];
         const float d = t4q_fp16_to_fp32(B.d);
-        float* o = dst + 256 * ibl;
-        for (int ib = 0; ib < 8; ++ib) {
+        float* o = dst + 32 * NG * ibl;
+        for (int ib = 0; ib < NG; ++ib) {
             const float dl = d * (2 * ((B.qh[ib] >> 12) & 7) + 1);
             const float delta = (B.qh[ib] & 0x8000u) ? -DELTA : DELTA;
             for (int l = 0; l < 4; ++l) {
@@ -375,6 +388,14 @@ static void dequant_row_ref(const Tables& T, const Block* y, float* dst, int n) 
             }
         }
     }
+}
+
+// the stock-256 callers (the r1 gate's names, unchanged)
+static void quant_row(const Tables& T, const float* x, int n, Block* y, const float* qw = nullptr) {
+    quant_row_t<8>(T, x, n, y, qw);
+}
+static void dequant_row_ref(const Tables& T, const Block* y, float* dst, int n) {
+    dequant_row_ref_t<8>(T, y, dst, n);
 }
 
 }  // namespace t4q_iq1s

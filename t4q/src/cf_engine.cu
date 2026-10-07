@@ -37,11 +37,14 @@ void gemv(CfScratch& sc, const PackedW& W, const float* x, float* y, cudaStream_
     } else if (W.fmt == FMT_Q51) {
         launch_quantize_q8_1(x, (int)W.cols, sc.xq1, sc.xq1_d, sc.xq1_s, st);
         launch_gemv_q8(W, sc.xq1, sc.xq1_d, sc.xq1_s, y, st);
-    } else if (W.fmt == FMT_P4 || W.fmt == FMT_Q8) {
+    } else if (W.fmt == FMT_P4 || W.fmt == FMT_Q8 || W.fmt == FMT_IQ1SH) {
         // FMT_Q8 (cf-m4, r19w): the Q8_0 weights pair with the SAME q8_0-form activation
         // (amax/127, no s-term) - launch_quantize_q8_0 already produces it; the dot is the
         // gate-proven FAST_Q8 int8-dp4a family (the 27B's own MTP graft passed the
         // byte-identical spec gates on this exact arithmetic)
+        // FMT_IQ1SH (cf-m6 r3): the dn's iq1_s half-block rides the same q8_0 pairing - its
+        // 32-elem activation blocks tile the dn's 640-wide rows (the q8_K 256-blocks do
+        // not); the launch_gemv_q8_0 FMT_IQ1SH dot carries the per-32 signed-sum correction.
         launch_quantize_q8_0(x, (int)W.cols, sc.xq0, sc.xd0, sc.xs0, st);
         launch_gemv_q8_0(W, sc.xq0, sc.xd0, sc.xs0, y, st);
     } else {

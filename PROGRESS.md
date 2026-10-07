@@ -2899,3 +2899,56 @@ rate-tuning option the L4 measure decides, not a correctness difference. STILL A
 r3 (the packer pipeline - the BF16 HTTP-range streaming + the own-layout output), r4
 (the stage-1 tiered residency + the L4 battery), r5 (the amortized M=8), r6 (the TP
 split); the L4-blocked r19w-r19aa battery rides the same Saturday sessions.
+
+## cf-m6 r3: the packer landed + THE TILING FINDING (the dn 640 half-block amendment, ALL GATES GREEN)
+
+THE ROUND'S CATCH, found by the pack_gate the round was built around: the dn rows are
+640 wide and 640 % 256 = 128 - the 256-elem iq1_s block CANNOT tile the dn (this is
+why the GGUF's dn experts are Q4_0, a 32-block format). The naive 768-pad puts the
+pool at 25.17 GB, OVER the ~24-25 GB 2xT4 room. THE AMENDMENT, landed this round:
+FMT_IQ1SH = 10, the 128-elem half block (16 B codes + 8 B hi + 2 B d = 26 B/128 =
+1.625 bpw; 640 = 5x128 EXACTLY) - the SAME per-32-group search/scale/lattice/dp4a
+arithmetic, only the block scope halves (max_scale and d span 4 groups not 8 - a
+finer scale grid on the dn, marginally BETTER quality if anything). The corrected
+pool: gu 15.73 GB (80.5 G elems at 1.5625 bpw) + dn 8.18 GB (40.2 G elems at 1.625
+bpw) = 23.90 GB, inside the room. THE PAIRING, settled with it: the SH dot pairs with
+q8_0, not q8_K (the q8_K 256-super-blocks also cannot tile 640; the q8_0 32-blocks
+tile anything, and its per-32 signed int sum xs[g] is exactly the correction the dot
+needs: weight value = L + delta - 1, so the group dot = d1q*dy*(sumi + delta*s32)).
+
+LANDED: (1) requant.h TEMPLATED - BlockT<NG> (static_asserts 50 B at NG=8, 26 B at
+NG=4), quant_row_t<NG>, dequant_row_ref_t<NG>, the stock-256 wrappers kept unchanged
+(the r1 gate passes unmodified through the refactor - the round-trip rmse rel is the
+same 0.4022, the refactor is byte-identical). (2) FMT_IQ1SH = 10 in packed.h + the
+deq32 FMT_IQ1SH branch in deq.cuh (nb = cols/128, the 16/8/2-B plane strides, the
+group decode IDENTICAL to FMT_IQ1S) + the pack_fmt_name case. (3) The
+dot_q8_0_iq1sh branch + k_gemv_iq1sh in gemv_ref.cu (the k_gemv_q80 warp-per-row
+twin: per 32-group the index build qs[k] | ((qh >> 3k) & 7) << 8, ONE u32 grid load,
+the 3-op nibble unpack, 2 dp4a, then the d1q = h2f(d)*(((qh >> 11) & 0xE) + 1) tail
+and the s32 correction) + the launch_gemv_q8_0 FMT_IQ1SH case + the gemv() dispatch
+branch in cf_engine.cu (FMT_IQ1SH joins the P4/Q8 q8_0 pairing). (4)
+tools/cf_requant_pack.cpp v2 - the packer: the 96-B SlabHdr (magic/version/fmt +
+dn_fmt, the plane offsets, static_asserted), the mmap'd bf16 sources, OpenMP
+quantize_tensor<NG> (8 for gu, 4 for dn), the plane split, the synthetic source
+generator, and the verify that reads BOTH plane sets back and decodes the dn via
+deq32<FMT_IQ1SH> + dequant_row_ref_t<4>, with the src-RMSE diagnostic.
+
+THE GATES (all local): test_iq1s EXTENDED with the SH section - the 640-wide
+round-trip (2048 rows x 5 blocks/row, the same input classes incl. the eps and
+constant paths) BIT-IDENTICAL deq32-vs-ref, rmse rel 0.4021 (the honest lattice
+class, matching the 256-block's 0.4022); the SH M=1 dot twin - the host q8_0
+quantizer twin (amax/127, the fp16-rounded d, roundf(x*id), the per-32 signed sum)
++ the full kernel-arithmetic dot vs the deq32-decode dot: sumi INTEGER-EXACT (0
+mismatches vs the independent u16 per-elem walk) and rel 1.23e-04 L1-normalized
+(the honest q8_0 activation class, bound 2e-2). pack_gate GREEN: ne=4 synthetic,
+the slab 3,891,296 B EXACTLY (96-B header + 2,560,000 gu + 1,331,200 dn - the plane
+arithmetic checks to the byte), all 15,360 rows verified BIT-IDENTICAL, src rmse rel
+0.4024. THE BUILD GATE: nvcc clean, k_gemv_iq1sh = 64 registers / 0 spills / 0 smem
+(the k_gemv_q80 P4 twin's own 64 - the family budget), ZERO ptxas warnings in the
+rebuilt TUs (HEAD's 77 are all tp_prefill 41 + tp_spec 36, their objects unchanged;
+the counts re-confirmed from the tracked ptxas logs). STILL OPEN in r3's frame: the
+Kaggle streaming driver notebook (the 131-shard HTTP-range read of the expert
+tensors - the index map is saved, the gu shards are single-tensor 3.36 GB files) +
+the dataset push; both ride the Saturday L4 window with the r19w-r19aa battery.
+NEXT: r4 (the stage-1 tiered residency - the loader reads the slabs, the HIT branch
+dispatches FMT_IQ1S/FMT_IQ1SH) + the L4 battery.

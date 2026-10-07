@@ -93,6 +93,53 @@ static float dot_iq1s_sim(const PackedW& W, int64_t row, int64_t g, const int8_t
     return d1q * yd * ((float)sumi + delta * (float)((int)bs0 + (int)bs1));
 }
 
+// the host twin of k_quantize_q8_0 (the sequential quantize_row_q8_0_ref form: amax/127,
+// the fp16-rounded d, q = roundf(x*id), the per-32 signed int sum)
+static void quant_q8_0_row(const float* x, int K, int8_t* qs, float* xd, int* xs) {
+    for (int b = 0; b < K / 32; b++) {
+        const float* xb = x + b * 32;
+        float amax = 0.f;
+        for (int i = 0; i < 32; i++) { const float a = fabsf(xb[i]); if (a > amax) amax = a; }
+        const float d = amax / 127.f;
+        const float id = d ? 1.f / d : 0.f;
+        int sum = 0;
+        for (int i = 0; i < 32; i++) {
+            int q = (int)roundf(xb[i] * id);
+            qs[b * 32 + i] = (int8_t)q;
+            sum += q;
+        }
+        xd[b] = t4q_fp16_to_fp32(t4q_fp32_to_fp16(d));  // the __float2half_rn round-trip twin
+        xs[b] = sum;
+    }
+}
+
+// the host twin of dot_q8_0_iq1sh (the FMT_IQ1SH M=1 dot at the q8_0 pairing), with the
+// independent u16 per-elem sumi cross-check (integer-exact)
+static float dot_iq1sh_sim(const PackedW& W, int64_t row, int64_t g, const int8_t* xv, float dy, int s32,
+                           int& sumi_mismatch) {
+    const int64_t nb = W.cols / 128;
+    const int64_t blk = row * nb + (g >> 2);
+    const int ib = (int)(g & 3);
+    const uint8_t* qs = W.codes + blk * 16 + 4 * ib;
+    const int qh = ((const uint16_t*)W.hi + blk * 4)[ib];
+    int sumi = 0, ref = 0;
+    for (int k = 0; k < 4; ++k) {
+        const int idx = qs[k] | (((qh >> (3 * k)) & 0x07) << 8);
+        const int grid = t4q_iq1s_grid_gpu[idx];
+        const int grid0 = (grid >> 0) & 0x0F0F0F0F;
+        const int grid1 = (grid >> 4) & 0x0F0F0F0F;
+        const int* xw = (const int*)xv;
+        sumi = dp4a(grid0, xw[2 * k], sumi);
+        sumi = dp4a(grid1, xw[2 * k + 1], sumi);
+        const uint16_t u16e = t4q_kgrid_1bit_2048[idx];  // the independent walk
+        for (int j = 0; j < 8; j++) ref += ((u16e >> (2 * j)) & 3) * (int)xv[8 * k + j];
+    }
+    if (sumi != ref) sumi_mismatch++;
+    const float d1q = t4q_fp16_to_fp32(W.d[blk]) * (float)(((qh >> 11) & 0x0E) + 1);
+    const float delta = -1.f + T4Q_IQ1S_DELTA - (float)(qh & 0x8000) * (2.f * T4Q_IQ1S_DELTA / 0x8000);
+    return d1q * dy * ((float)sumi + delta * (float)s32);
+}
+
 int main() {
     // ---- gate 1: the fp16 conversions ----
     int bad16 = 0;
@@ -222,10 +269,71 @@ int main() {
         dot_l1 += l1;
         if (l1 > 0 && fabs(dkin - dref) > 0.02 * l1) dot_bad++;
     }
+    // ---- r3 gates: the FMT_IQ1SH half-block (the dn tiling) at the real 640-wide rows ----
+    const int K2 = 640, rows2 = 2048;  // 5 blocks/row; the 256-block form cannot tile this
+    std::vector<float> x2(K2), a2(K2), b2(K2);
+    std::vector<t4q_iq1s::BlockT<4>> blocks2(K2 / 128);
+    PackedW W2;
+    W2.fmt = FMT_IQ1SH;
+    W2.rows = 1;
+    W2.cols = K2;
+    std::vector<uint8_t> codes2(K2 / 8), hi2(K2 / 16);
+    std::vector<uint16_t> dd2(K2 / 128);
+    W2.codes = codes2.data();
+    W2.hi = hi2.data();
+    W2.d = dd2.data();
+    std::vector<int8_t> xq2(K2);
+    std::vector<float> xd2(K2 / 32);
+    std::vector<int> xs2(K2 / 32);
+    int bad2 = 0, sumi_bad2 = 0, dot_bad2 = 0;
+    double sq2 = 0, sq02 = 0, dot_err2 = 0, dot_l12 = 0;
+    for (int r = 0; r < rows2; r++) {
+        const int cls = r & 7;
+        for (int i = 0; i < K2; i++) {
+            float u = (float)((int)(lcg() >> 8) - 32768) / 32768.f;
+            if (cls < 5) x2[i] = u * (0.02f + 0.15f * (r % 97) / 97.f);
+            else if (cls == 5) x2[i] = 0.f;
+            else if (cls == 6) x2[i] = -fabsf(u) * 0.08f;
+            else x2[i] = 0.037f;
+        }
+        t4q_iq1s::quant_row_t<4>(T, x2.data(), K2, blocks2.data());
+        for (int bl = 0; bl < K2 / 128; bl++) {
+            memcpy(W2.codes + bl * 16, blocks2[bl].qs, 16);
+            memcpy(W2.hi + bl * 8, blocks2[bl].qh, 8);
+            W2.d[bl] = blocks2[bl].d;
+        }
+        for (int g = 0; g < K2 / 32; g++) deq32<FMT_IQ1SH>(W2, 0, g, a2.data() + g * 32);
+        t4q_iq1s::dequant_row_ref_t<4>(T, blocks2.data(), b2.data(), K2);
+        if (memcmp(a2.data(), b2.data(), K2 * 4)) {
+            bad2++;
+            if (bad2 < 4) printf("sh row %d MISMATCH\n", r);
+        }
+        for (int i = 0; i < K2; i++) {
+            sq2 += (double)(a2[i] - x2[i]) * (a2[i] - x2[i]);
+            sq02 += (double)x2[i] * x2[i];
+        }
+        // the M=1 dot twin at the q8_0 pairing (s32 = the per-32 signed sum)
+        quant_q8_0_row(x2.data(), K2, xq2.data(), xd2.data(), xs2.data());
+        double dkin = 0, dref = 0, l1 = 0;
+        for (int g = 0; g < K2 / 32; g++)
+            dkin += dot_iq1sh_sim(W2, 0, g, xq2.data() + g * 32, xd2[g], xs2[g], sumi_bad2);
+        for (int i = 0; i < K2; i++) {
+            dref += (double)a2[i] * x2[i];
+            l1 += fabs((double)a2[i] * x2[i]);
+        }
+        dot_err2 += fabs(dkin - dref);
+        dot_l12 += l1;
+        if (l1 > 0 && fabs(dkin - dref) > 0.02 * l1) dot_bad2++;
+    }
     printf("iq1s round-trip rows=%d %s  rmse=%.6f rel=%.4f\n", rows, bad ? "MISMATCH" : "OK",
            sqrt(sq / ((double)rows * K)), sqrt(sq / sq0));
     printf("iq1s M=1 dot twin: sumi-int %s (%d)  dot %s (%d rows over, err=%.3e l1=%.3e rel=%.2e)\n",
            sumi_bad ? "MISMATCH" : "EXACT", sumi_bad, dot_bad ? "FAIL" : "OK", dot_bad, dot_err, dot_l1,
            dot_l1 > 0 ? dot_err / dot_l1 : 0.0);
-    return (bad || sumi_bad || dot_bad) != 0;
+    printf("iq1s half-block (dn 640) round-trip rows=%d %s  rmse=%.6f rel=%.4f\n", rows2, bad2 ? "MISMATCH" : "OK",
+           sqrt(sq2 / ((double)rows2 * K2)), sqrt(sq2 / sq02));
+    printf("iq1s half-block M=1 dot twin: sumi-int %s (%d)  dot %s (%d rows over, rel=%.2e)\n",
+           sumi_bad2 ? "MISMATCH" : "EXACT", sumi_bad2, dot_bad2 ? "FAIL" : "OK", dot_bad2,
+           dot_l12 > 0 ? dot_err2 / dot_l12 : 0.0);
+    return (bad || sumi_bad || dot_bad || bad2 || sumi_bad2 || dot_bad2) != 0;
 }

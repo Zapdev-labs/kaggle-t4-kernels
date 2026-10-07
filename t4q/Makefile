@@ -54,7 +54,17 @@ $(BUILD)/test_iq1s: tests/test_iq1s.cpp src/requant.h src/iq1s_table.h src/packe
 test_iq1s: $(BUILD)/test_iq1s
 	$(BUILD)/test_iq1s
 
+# cf-m6 r3 (CF_REQUANT.md section 5): the iq1_s expert-slab packer + its local gate.
+# Host-only (g++ -fopenmp): the pack reads the BF16 expert tensors, the gate runs the
+# full synthetic round (generate -> pack -> read back -> deq32-vs-ref on every row).
+$(BUILD)/cf_requant_pack: tools/cf_requant_pack.cpp src/requant.h src/iq1s_table.h src/packed.h src/kernels/deq.cuh
+	@mkdir -p $(BUILD)
+	$(HOSTCXX) -O3 -fopenmp -std=c++17 -ffp-contract=off -o $@ $<
+
+pack_gate: $(BUILD)/cf_requant_pack
+	$(BUILD)/cf_requant_pack --synthetic --ne 4 --out $(BUILD)/pack_gate_slab.bin
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all clean test_iq1s
+.PHONY: all clean test_iq1s pack_gate

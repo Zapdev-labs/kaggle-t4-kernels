@@ -223,7 +223,53 @@ warnings exactly HEAD's 77. THE DEVICE-FORM NOTE: the grid reads go straight to 
 __device__ table (the ggml MMVQ's own form, L1-resident at 8 KB) - the spec's
 shared-memory staging stays a RATE-tuning option for the L4 measure, not a correctness
 difference.
-r3: the packer kernel (the Kaggle streaming pipeline) + the dataset push.
+r3 [LANDED, all local except the Kaggle streaming driver]: the packer tool + THE TILING
+FINDING + the half-block amendment. THE GATE'S CATCH (the round's reason): the first
+pack_gate run FAILED on the dn plane - the dn rows are 640 wide and 640 % 256 = 128,
+the 256-elem iq1_s block CANNOT tile the dn (this is why the GGUF's dn experts are
+Q4_0, a 32-block format); the naive 768-pad would put the pool at 25.17 GB, OVER the
+~24-25 GB room. THE AMENDMENT: FMT_IQ1SH = 10, the 128-elem half block - 16 B codes +
+8 B hi + 2 B d = 26 B/128 = 1.625 bpw, 640 = 5x128 EXACTLY; the SAME per-32-group
+search/scale/lattice/dp4a arithmetic, only the block scope halves (the max_scale and d
+span 4 groups, not 8 - a FINER scale grid on the dn, a marginal quality gain if
+anything); the corrected pool gu 15.73 GB (80.5 G elems at 1.5625 bpw) + dn 8.18 GB
+(40.2 G elems at 1.625 bpw) = 23.90 GB, INSIDE the room. THE PAIRING (settled here):
+the SH dot pairs with q8_0, NOT q8_K - the q8_K 256-super-blocks also cannot tile 640,
+while the q8_0 32-blocks tile anything, and its per-32 SIGNED int sum xs[g] is exactly
+the correction term the dot needs (the weight value = L + delta - 1, so the group dot
+= d1q*dy*(sumi + delta*s32) - the ggml (delta-1)*sum_q8 correction at the repo's own
+q8_0 activation). LANDED AS: requant.h TEMPLATED (BlockT<NG> with the 50/26-B
+static_asserts, quant_row_t<NG>, dequant_row_ref_t<NG>, the stock-256 wrappers
+quant_row/dequant_row_ref unchanged - the r1 gate passes unmodified through the
+refactor); FMT_IQ1SH = 10 in packed.h; the deq32 FMT_IQ1SH branch in deq.cuh (nb =
+cols/128, the 16/8/2-B plane strides, the group decode IDENTICAL); the
+dot_q8_0_iq1sh branch + k_gemv_iq1sh in gemv_ref.cu (the k_gemv_q80 warp-per-row
+twin: the nibble-grid dp4a identical per group, the index build one u32 grid load,
+the s32 correction, the d1q/delta tail) + the launch_gemv_q8_0 FMT_IQ1SH case + the
+gemv() dispatch branch in cf_engine.cu (FMT_IQ1SH joins the P4/Q8 q8_0 pairing);
+tools/cf_requant_pack.cpp v2 (the 96-B SlabHdr with fmt + dn_fmt + the plane offsets,
+the dn planes at the half-block strides, quantize_tensor<NG> OpenMP, the synthetic
+source generator, the verify reading BOTH plane sets and decoding the dn via
+deq32<FMT_IQ1SH> + dequant_row_ref_t<4>) + the Makefile pack_gate target. THE GATES
+(all local): test_iq1s EXTENDED - the r1/r2 gates UNCHANGED through the BlockT
+refactor (the 256-block round-trip still BIT-IDENTICAL, rmse rel 0.4022 the same
+value, the M=1 dot twin 6.9e-05 the same - the refactor is byte-identical); the NEW
+SH gates: the 640-wide round-trip (2048 rows x 5 blocks, the same input classes incl.
+the eps/constant paths) BIT-IDENTICAL deq32-vs-ref, rmse rel 0.4021 (the same honest
+lattice class); the SH M=1 dot twin (the host q8_0 quantizer twin: amax/127, the
+fp16-rounded d, roundf(x*id), the per-32 signed sum; the full kernel-arithmetic dot)
+vs the deq32-decode dot: sumi INTEGER-EXACT (0 mismatches vs the independent u16
+per-elem walk) and rel 1.23e-04 L1-normalized (the honest q8_0 activation class,
+bound 2e-2). pack_gate GREEN: ne=4 synthetic, the slab 3,891,296 B EXACTLY (96-B
+header + 2,560,000 gu + 1,331,200 dn - the plane arithmetic checks to the byte), all
+15,360 rows verified deq32-vs-ref BIT-IDENTICAL, src rmse rel 0.4024 (the diagnostic,
+NOT a quality verdict). THE BUILD GATE: nvcc clean, k_gemv_iq1sh = 64 registers /
+0 spills / 0 smem (the k_gemv_q80 P4 twin's own 64 - the family budget), ZERO ptxas
+warnings in the rebuilt TUs (HEAD's 77 are all in tp_prefill 41 + tp_spec 36, objects
+unchanged - the counts re-confirmed from the tracked ptxas logs). STILL OPEN in r3's
+frame: the Kaggle streaming driver notebook (the 131-shard HTTP-range read of the
+expert tensors, the largest 3.36 GB, feeding this packer) + the dataset push - rides
+the Saturday L4 window.
 r4: the stage-1 tiered residency (the loader reads the slabs, the HIT branch dispatches
 FMT_IQ1S) + the L4 smoke + the A/B + the rate measure.
 r5: the M=8 amortized verify kernel + its L4 measure.

@@ -8,7 +8,7 @@ const char* pack_fmt_name(int f) {
         case FMT_F32: return "F32"; case FMT_P4: return "P4"; case FMT_P4M: return "P4M";
         case FMT_Q8: return "Q8"; case FMT_K5: return "K5"; case FMT_K6: return "K6";
         case FMT_K2: return "K2"; case FMT_K4: return "K4"; case FMT_Q51: return "Q51";
-        case FMT_IQ1S: return "IQ1S";
+        case FMT_IQ1S: return "IQ1S"; case FMT_IQ1SH: return "IQ1SH";
         default: return "?";
     }
 }

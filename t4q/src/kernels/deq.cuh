@@ -179,6 +179,26 @@ T4Q_HD void deq32(const PackedW& W, int64_t row, int64_t g, float* w) {
             for (int j = 0; j < 8; ++j)
                 w[8 * l + j] = __fmul_rn(dl, __fadd_rn((float)(((kv >> (2 * j)) & 3) - 1), delta));
         }
+    } else if constexpr (FMT == FMT_IQ1SH) {
+        // IQ1_S half-block (cf-m6 r3, the dn tiling): 26 B / 128, the group decode
+        // IDENTICAL to FMT_IQ1S - only the block mapping (4 groups/block, the 16/8/2
+        // plane strides) differs.
+        const int64_t nb = W.cols / 128;
+        const int64_t blk = row * nb + (g >> 2);
+        const int ib = (int)(g & 3);
+        const uint8_t* qs = W.codes + blk * 16;
+        const uint16_t qhi = ((const uint16_t*)W.hi + blk * 4)[ib];
+        const float d = h2f(W.d[blk]);
+        const float dl = __fmul_rn(d, (float)(2 * ((qhi >> 12) & 7) + 1));
+        const float delta = (qhi & 0x8000u) ? -T4Q_IQ1S_DELTA : T4Q_IQ1S_DELTA;
+#pragma unroll
+        for (int l = 0; l < 4; ++l) {
+            const int idx = qs[4 * ib + l] | (int)(((qhi >> (3 * l)) & 7) << 8);
+            const uint16_t kv = t4q_kgrid_1bit_2048[idx];
+#pragma unroll
+            for (int j = 0; j < 8; ++j)
+                w[8 * l + j] = __fmul_rn(dl, __fadd_rn((float)(((kv >> (2 * j)) & 3) - 1), delta));
+        }
     }
 }
 

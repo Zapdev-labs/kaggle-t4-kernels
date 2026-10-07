@@ -16,6 +16,7 @@ __pycache__/
 *.exe
 t4q/build/cf_run
 t4q/build/test_iq1s
+t4q/build/cf_requant_pack
 
 # Editor / OS
 .vscode/

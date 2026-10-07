@@ -470,6 +470,57 @@ void launch_quantize_q8_0(const float* x, int K, int8_t* xq, float* xd, int* xs,
     k_quantize_q8_0<<<(K + 255) / 256, 256, 0, s>>>(x, K, xq, xd, xs);
 }
 
+// cf-m6 r3 (CF_REQUANT.md, the dn tiling): the iq1_s half-block dot at the q8_0 pairing.
+// The nibble-grid dp4a is IDENTICAL to the FMT_IQ1S branch above (the same lattice, the
+// same index build, the same 2 dp4a per 8 elems); the block mapping halves (4 groups per
+// 128-elem block, the 16/8/2 plane strides) and the correction pairs with the q8_0's
+// per-32 SIGNED INT sum (s32 = xs[g]): the weight value = L + (delta-1), so the group
+// dot = d1q*dy*(sumi + delta*s32) - exactly the (delta-1)*sum_q8 correction, at the
+// activation format whose 32-blocks tile the dn's 640-wide rows (the q8_K 256-super-
+// blocks do not).
+__device__ __forceinline__ float dot_q8_0_iq1sh(const PackedW& W, int64_t row, int64_t g, const int8_t* x, float dy,
+                                                int s32) {
+    const int64_t nb = W.cols / 128;
+    const int64_t blk = row * nb + (g >> 2);
+    const int ib = (int)(g & 3);
+    const int qs4 = *(const int*)(W.codes + blk * 16 + 4 * ib);
+    const uint8_t* qs = (const uint8_t*)&qs4;
+    const int qh = ((const uint16_t*)W.hi + blk * 4)[ib];
+    int sumi = 0;
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        const int grid = t4q_iq1s_grid_gpu[qs[k] | (((qh >> (3 * k)) & 0x07) << 8)];
+        const int grid0 = (grid >> 0) & 0x0F0F0F0F;
+        const int grid1 = (grid >> 4) & 0x0F0F0F0F;
+        const int* xw = (const int*)x;
+        sumi = __dp4a(grid0, xw[2 * k], sumi);
+        sumi = __dp4a(grid1, xw[2 * k + 1], sumi);
+    }
+    const float d1q = h2f(W.d[blk]) * (float)(((qh >> 11) & 0x0E) + 1);
+    const float delta = -1.f + T4Q_IQ1S_DELTA - (float)(qh & 0x8000) * (2.f * T4Q_IQ1S_DELTA / 0x8000);
+    return d1q * dy * ((float)sumi + delta * (float)s32);
+}
+
+// the FMT_IQ1SH M=1 twin of k_gemv_q80 (the same warp-per-row / lane-per-group form)
+__global__ void __launch_bounds__(256) k_gemv_iq1sh(PackedW W, const int8_t* __restrict__ xq,
+                                                    const float* __restrict__ xd, const int* __restrict__ xs,
+                                                    float* __restrict__ y) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int64_t row = (int64_t)blockIdx.x * 8 + warp;
+    if (row >= W.rows) return;
+    const int64_t ng = W.cols / 32;
+    float acc = 0.f;
+    for (int64_t g = lane; g < ng; g += 32) {
+        int8_t xv[32];
+        *(int4*)xv = __ldg((const int4*)(xq + g * 32));
+        *(int4*)(xv + 16) = __ldg((const int4*)(xq + g * 32 + 16));
+        acc += dot_q8_0_iq1sh(W, row, g, xv, xd[g], xs[g]);
+    }
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, o);
+    if (lane == 0) y[row] = acc;
+}
+
 // ggml_vec_dot_q4_0_q8_0_generic verbatim (the PLAIN form - no sum fold): v = nib-8, the two
 // 16-elem int partials, then sumi * dx * dy (the left-assoc chain). The group IS the 32-block,
 // so the integers are bit-identical to the oracle's own Q4_0xQ8_0 arithmetic. The dp4a form
@@ -547,6 +598,10 @@ __global__ void __launch_bounds__(256) k_gemv_q80_b(const PackedW* __restrict__ 
 void launch_gemv_q8_0(const PackedW& W, const int8_t* xq, const float* xd, const int* xs, float* y,
                       cudaStream_t s) {
     const unsigned G = (unsigned)((W.rows + 7) / 8);
+    if (W.fmt == FMT_IQ1SH) {  // cf-m6 r3: the dn's half-block form (the M=1 greedy path)
+        k_gemv_iq1sh<<<G, 256, 0, s>>>(W, xq, xd, xs, y);
+        return;
+    }
     k_gemv_q80<FMT_P4><<<G, 256, 0, s>>>(W, xq, xd, xs, y);
 }
 
