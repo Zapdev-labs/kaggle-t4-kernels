@@ -513,11 +513,18 @@ MEASURES it, nothing is assumed; the grid decode (the shared-memory codebook gat
 sign unpack + the float dot, not the dp4a nibble path) sits below the r18-measured K-quant
 family - the kernel-rate estimate needs the exact ggml CUDA iq1_s vec_dot instruction
 count, the freeze's first study; the payoff rides the TP split (section 6's design). THE
-ORDER: (1) the freeze (research/CF_REQUANT.md - the format pick, the exact arithmetic,
-the kernel design at the CF shapes, the packer pipeline, the TP-split residency design,
-the gates), after the ggml-quants.c + iq1_s vec_dot study; (2) the packer (the BF16
-streaming + the grid search) + the kernel; (3) the L4 quality/rate gates; (4) the TP
-split. The PROGRESS r19ab/r19ac records carry the arithmetic + the source facts.
+ORDER: (0) DONE (r19ad): the ggml-quants.c + iq1_s vec_dot study (the exact decode form,
+the quantizer's SSD split search, the ~48 INT ops/32 elems M=1 / the amortized ~0.22
+ops/elem-dot M=8 instruction count, the ~1.0e12 INT ops/s/GPU roof -> the expert class
+collapses from ~112-155 ms to the ~2-15 ms band) + the FROZEN SPEC (research/CF_REQUANT.md:
+the stock iq1_s pick with the 2-grid fallback, the exact arithmetic, the M=1 + the amortized
+M=8 kernel forms, the self-scaled-weights packer with the imatrix fallback, the staged
+residency - stage 1 the tiered by-layer slabs, stage 2 the by-ID TP split with the
+replicated core + the per-layer combine, the gates, the r1-r6 round order); (1) the
+implementation rounds per the spec's section 9 - r1 is ALL LOCAL (FMT_IQ1S + the deq32
+host sim + the packer core + the round-trip test); (2) the L4 quality/rate gates; (3) the
+TP split. The PROGRESS r19ab/r19ac/r19ad records carry the arithmetic + the source facts;
+research/CF_REQUANT.md is the frozen spec.
 
 ## 6. Risk register
 

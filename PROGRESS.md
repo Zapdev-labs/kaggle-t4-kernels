@@ -2740,3 +2740,65 @@ the exact arithmetic, the kernel design at the CF shapes, the packer pipeline
 (the BF16 streaming + the grid search), the TP-split residency design, the gates),
 then the implementation rounds. The r19ab note carries the pool arithmetic; this
 note carries the source facts.
+
+## r19ad - the requant freeze: the vec_dot + quantizer study closed, the FROZEN SPEC
+## landed (research/CF_REQUANT.md; records only, no code)
+
+The round that closes the r19ac study list and lands the frozen spec. THE PRIMARY
+SOURCES (fetched, ggml-org/llama.cpp master): vecdotq.cuh (the exact CUDA
+vec_dot_iq1_s_q8_1), ggml-quants.c (the quantize_row_iq1_s_impl + the reference
+dequant + iq1_find_best_neighbour2), ggml-common.h (the block_iq1_s struct, the
+IQ1S_DELTA = 0.125, the NGRID_IQ1S = 2048, BOTH grid tables - the CPU uint64[2048]
+byte form {0xff, 0x00, 0x01} = L-1, and the GPU REPACKED uint32[2048] NIBBLE form -
+one entry = 8 nibbles = 8 L-indices of one 8-elem group), common.cuh (the
+arch/feature classes). THE DECODE FORM (now exact): the nibble L-index dots against
+the q8 activation via dp4a, and the true value (L-1)+delta is recovered through the
+group's q8 SUM - the group dot = d8*(sumi + (delta-1)*sum_q8_group) - the repo's
+r18 q8_K activation path ALREADY produces those sums (the bsums the K2/K4 kernels
+read for the min corrections; a 32-group = bs[2g]+bs[2g+1]), so NO new activation
+format, the launch_quantize_q8_K preprocessing is reused verbatim. THE QUANTIZER
+FORM (now exact): per 32-elem group the weighted sort + prefix sums, the EXHAUSTIVE
+2-boundary split search over 33 boundaries in both shift directions (x_p =
+{-1+d, d, 1+d}, x_m = {-1-d, -d, 1-d}, ~1.1k O(1) evaluations), the ternary L
+assignment, then per 8-elem group the kmap grid mapping (the 6561-entry u16->index
+map) with the weighted-distance NEIGHBOR fallback; the scale l = round(0.5*(id*s-1))
+clamped [0,7] with the shift bit at l bit 3 -> qh bits 12-15, the index halves at
+qh 3k, the block d = (max_scale/15)*1.125 and the neighbor's 1.05 - the ggml fudge
+factors are part of the tuned format, replicated EXACTLY. THE INSTRUCTION COUNT (the
+r19ac open question, closed): per 32 elems M=1 ~48 INT-pipe ops (4 iters of [~4 idx
+ops + 1 shared grid load + 3 unpack + 2 dp4a] + a ~10-op tail) = ~1.5 ops/elem; M=8
+AMORTIZED (the decode once per (expert, 32-group), 8 dp4a pairs) ~56 ops per 256
+elem-dots = 0.22 ops/elem-dot. THE ROOF (the honest math): the T4 INT32+dp4a pipe
+~16 lanes/SM/cycle x 40 SMs x ~1.59 GHz ~ 1.0e12 INT ops/s per GPU - the greedy
+step's expert class (2.36 G elem-dots, 461 MB) ~3.4 ms single-GPU / ~1.7-2 ms at the
+TP half-split (the HBM side 1.5 ms, under the INT roof); the verify round (M=8, 18.9
+G elem-dots over ~2.36 G decode-elems) ~4 ms single-GPU / ~2 ms split - FROM the
+~114 ms greedy / ~112-155 ms round class, a ~10-25x collapse of the engine's
+dominant cost even at 2-3x off-roof. MEASURED AT THE L4, never assumed. THE CRITICAL
+KERNEL FINDING: the repo's current launch_gemv_q8k_b RE-DECODES W per (row, batch)
+pair - the drop-in form at 1.5 ops/elem-dot would cost ~28 ms/round; the spec FREEZES
+the amortized M=8 form as a requirement, not the drop-in. THE REPO SURVEY: the engine
+is single-GPU today (cudaSetDevice(0); the TP split is future work the spec stages);
+the PackedW planar SoA takes FMT_IQ1S cleanly (codes = qs 32 B/256, hi = qh 16 B/256,
+d = 2 B/256 = the 50 B/256 block); the tiered loader's HIT branch (the resident slab,
+zero staging) is the stage-1 landing surface - the resident layers go iq1_s, the miss
+layers keep the current UVA/chunked + Q2_K_S repack path UNCHANGED, and the quality
+gate runs on exactly that mix. THE SPEC (research/CF_REQUANT.md, 9 sections): the pick
+(stock iq1_s both tensors, 23.6 GB; the 2-grid ~1.69 bpw custom as the NAMED fallback
+if the gate fails), the exact arithmetic, the M=1 + amortized M=8 kernel forms, the
+packer (the self-scaled weights w = sqrt(sigma2+x*x) FIRST - the honest imatrix risk
+named, the llama.cpp imatrix over the Q2_K_S GGUF as the fallback if the A/B fails),
+the pipeline (the BF16 HTTP-range streaming per (layer, tensor) - the largest single
+read one layer's gu 3.36 GB, fits the host RAM; the own-layout output file,
+expert-major so each GPU's half is one range; ~1.5-3 h one-time Kaggle kernel), the
+staged residency (stage 1: the tiered by-layer slabs, no TP, no combine tax, the
+interim ~60-80 ms/round class; stage 2: the by-ID TP split, the replicated core
+(~2.6 GB x 2, deterministic, no AR), the router on both, one per-layer 2560-float
+combine - the r14 AR floor ~0.2-1 ms/step, the honest TP tax), the gates (the LOCAL
+round-trip via the deq32 host sim - no GPU needed; the L4 smoke, the perplexity A/B,
+the greedy agreement, the rate vs the r18 family, the VRAM inventory), the risk
+register, and the r1-r6 round order - r1 is ALL LOCAL (FMT_IQ1S + the deq32 host sim
++ the packer core + the round-trip test), so the implementation starts regardless of
+the quota gate. PLAN_CF section 5's ORDER updated to the landed state. STILL AHEAD:
+the spec's r1 (the local format + packer core round), then r2+ as gated; the
+L4-blocked r19w-r19aa battery rides the same Saturday sessions.
