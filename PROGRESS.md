@@ -2683,13 +2683,22 @@ projections batched M-form, the gates/conv/l2/recur/gnorm folded per layer, the
 ring semantics, the 27B shapes vs the CF shapes differ throughout). The r19y
 decision's own math (zero kernel surface, ~0.34 GiB) stands; the L4 measures the
 MTP path first (the acceptance histogram + the verify's ms/token decide whether
-2% is worth a kernel round). THE HONTEST NEXT LEVER by the same arithmetic: the
+2% is worth a kernel round). THE HONEST NEXT LEVER by the same arithmetic: the
 requant stretch (PLAN_CF section 5, census-unlocked - the router is flat, the
 tiering does not pay), whose round 1 is the FORMAT DESIGN (the frozen-spec form:
-the ~1.6-2.0 bit layout + the exact decode arithmetic, the error budget vs the
-Q2_K trunk's own quality, the T4 kernel-rate roof at the LUT-decode class, the
-~12.75 GB pool at 2.06 bpw vs the 2x T4 residency + the TP split it rides) - a
-fresh research round, not started this turn. The G2 device router stays the same
-verdict as before (the order-exact trap for a ~1-2% win, and the full-step graph
-form cannot run on the RAM-capped Kaggle host - the UVA covers only ~60% of the
-layers).
+the bit layout + the exact decode arithmetic, the error budget vs the Q2_K
+trunk's own quality, the T4 kernel-rate roof at the LUT-decode class, the
+residency band below) - a fresh research round, not started this turn. THE POOL
+ARITHMETIC (the corrected frame, re-derived from the in-repo shapes): the expert
+pool is 120.7 G-elems (gu 80.5 = [1280 x 2560]/expert x 24,576 experts + dn 40.2 =
+[2560 x 640] x 24,576); at 2.0625 bpw (the iq2-xxs class) that is ~31 GB - it does
+NOT fit the 2x T4 frame (30.7 GB total VRAM minus the ~2.6 GB must-resident core,
+the KV, the draft, the scratch leaves ~24-25 GB of expert room); the FULL-residency
+band is ~1.56-1.7 bpw (~24 GB at 1.6, ~23.6 at the iq1_s 1.5625 class), which
+concentrates the quality risk at the low-bpw end (vs the Q2_K_S trunk's own 2.625
+gu / 4.5 dn) - the round's central question is the quality gate (the perplexity-
+class bar, not full greedy agreement, at that band), and the payoff rides the TP
+split (the experts by ID across the 2 T4s, the plan's risk-register design). The
+G2 device router stays the same verdict as before (the order-exact trap for a
+~1-2% win, and the full-step graph form cannot run on the RAM-capped Kaggle host -
+the UVA covers only ~60% of the layers).
