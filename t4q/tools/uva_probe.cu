@@ -128,11 +128,11 @@ int main(int argc, char** argv) {
     printf("[probe] %s: %.2f GiB at %lld MB | %s, %d SMs, pcie link via the measured path\n", path, (double)len / (1 << 30),
            off_mb, prop.name, prop.multiProcessorCount);
 
-    // touch the range once so the mapped and staged paths read the SAME (warm) page cache
+    // touch EVERY page once so the mapped and staged paths read the SAME (warm) page cache
+    // (one word per 4 KiB page - a 32 KiB stride would leave 7 of 8 pages cold)
     {
         volatile unsigned long long acc = 0;
-        const unsigned long long* q = (const unsigned long long*)map;
-        for (size_t i = 0; i + 8 <= len; i += 8 * 4096) acc += q[i / 8];
+        for (size_t i = 0; i + 8 <= len; i += 4096) acc += *(const unsigned long long*)((const char*)map + i);
         (void)acc;
     }
     size_t rss1 = resident_bytes();
