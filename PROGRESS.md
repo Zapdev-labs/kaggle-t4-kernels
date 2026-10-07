@@ -1863,3 +1863,36 @@ base + census + batching + q8 + dp4a + the Q4_K fix + the identity table (zero
 change), and the failure ladder is ordered by behavior-change size (c980111 first,
 78d480e last - it is bit-exact by construction).
 
+
+### r19l: the resident tier landed (the loader e27b610 + the dual-path moe, this round)
+TWO units, both attribution-clean (ABSENT FILE = OFF = the verbatim full-staging
+path, the load-time identity W table stands, zero behavior change):
+
+Part 1 (e27b610, the loader): cf_census.py --hotset emits 'CFHS' + NL + H + the
+per-layer top-H expert ids (layer-major, by accumulated routed mass, H capped at the
+per-layer unique count) - round-trip verified on a synthetic census. The loader
+(T4Q_CF_HOTSET=<path>): header validation, the VRAM check before any alloc
+(~2.0 MB/expert-layer, 102% of need vs cudaMemGetInfo), the per-layer hot_idx
+(NE -> h | -1), and the SAME chunked raw->pinned->H2D->repack path the moe's per-step
+staging uses (TOPK slabs per pass, sync at the loop top before each refill), into the
+per-layer res_gu [hn*2*EE, D] K2 + res_dn [hn*D, EE] P4 - the SAME packed shapes as
+the staging, so the resident slabs are byte-identical to what the staging would produce
+for the same experts. The engine TU was mid-edit by the parallel session (the T4QD
+bisect-capture tooling, landed 3b0aaa1: T4Q_CF_DUMP captures the engine's named
+intermediates + T4Q_CF_NOFAST=1 bypasses the r18 q8 fast paths for the debug-bisect
+A/B; the oracle's kNames whitelist + first-eval-wins try_emplace on the other side).
+
+Part 2 (this round, the moe fork): the dual-path moe. If c->tiered: each pick k reads
+hot_idx[eid[k]] - a HIT builds its W-table views into the resident slabs (the same
+view offsets a staged slab would have: K2 codes h*2*EE*(D/4) / meta h*2*EE*(D/256)*20,
+P4 codes h*D*(EE/2) / d h*D*(EE/32)) with ZERO staging; a MISS stages only its OWN
+rows, packed compactly at the staging front (slot m = the miss ordinal, the staging
+layout unchanged), and the per-step table (host h_wt_gu/h_wt_dn) is uploaded to the
+same device table the r19k batched gemvs read - the KERNELS ARE UNTOUCHED, the
+launches are the identical lines. An all-hit layer pays neither the host memcpys nor
+the H2D nor the repacks; an all-miss layer pays exactly the old path (nmiss == TOPK
+reproduces the full staging byte-for-byte). The OFF branch is the verbatim old code.
+Full podman nvcc 12.8 build: 0 errors (libt4q + cf_run). The engine-side correctness
+gate rides the next quota round: base verdicts first, then the census -> the hot-set
+file -> the tiered A/B (the census_f write and the T4Q_CF_NOFAST/T4Q_CF_DUMP levers
+all still stand for the bisect).

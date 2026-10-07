@@ -197,21 +197,71 @@ void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
         fwrite(c->eid, 4, TOPK, c->census_f);
         fwrite(c->we_h, 4, TOPK, c->census_f);
     }
-    // stage the 10 experts' slabs: [gate 640 | up 640] per expert (Q2_K), then 2560 down rows (Q4_0)
     const size_t gu_row = L.t_gate_exps->row_bytes;   // 840
     const size_t dn_row = L.t_down_exps->row_bytes;   // 360
     const size_t up_bytes = (size_t)TOPK * 2 * EE * gu_row;
-    for (int k = 0; k < TOPK; k++) {
-        const int64_t e = c->eid[k];
-        uint8_t* dst = c->raw_stage + (size_t)k * 2 * EE * gu_row;
-        memcpy(dst, L.t_gate_exps->data + (size_t)e * EE * gu_row, (size_t)EE * gu_row);
-        memcpy(dst + (size_t)EE * gu_row, L.t_up_exps->data + (size_t)e * EE * gu_row, (size_t)EE * gu_row);
-        memcpy(c->raw_stage + up_bytes + (size_t)k * D * dn_row, L.t_down_exps->data + (size_t)e * D * dn_row,
-               (size_t)D * dn_row);
+    if (c->tiered) {
+        // the dual-path moe (cf-m3, r19l part 2): a HIT pick reads its resident slab with ZERO
+        // staging (the load-time repack already made it byte-identical to what the staging would
+        // produce); only the MISS picks pay the MMAP->pinned->H2D path, each for its OWN rows,
+        // packed compactly at the staging front (slot m = the miss ordinal). The per-pick W
+        // table is rebuilt on the host per step and uploaded - the same table the r19k batched
+        // gemvs read; the kernels are untouched.
+        int nmiss = 0;
+        for (int k = 0; k < TOPK; k++) {
+            const int64_t e = c->eid[k];
+            const int h = L.hot_idx[e];
+            PackedW& v = c->h_wt_gu[k];
+            PackedW& w = c->h_wt_dn[k];
+            if (h >= 0) {  // hit: the resident slab view, the same offsets a staged slab would have
+                v = L.res_gu;
+                v.rows = 2 * EE;
+                v.codes = L.res_gu.codes + (size_t)h * 2 * EE * (D / 4);
+                v.meta = L.res_gu.meta + (size_t)h * 2 * EE * (size_t)(D / 256) * 20;
+                w = L.res_dn;
+                w.rows = D;
+                w.codes = L.res_dn.codes + (size_t)h * D * (EE / 2);
+                w.d = L.res_dn.d + (size_t)h * D * (EE / 32);
+            } else {  // miss: stage this expert's own rows at the compact slot m
+                const int m = nmiss++;
+                uint8_t* dst = c->raw_stage + (size_t)m * 2 * EE * gu_row;
+                memcpy(dst, L.t_gate_exps->data + (size_t)e * EE * gu_row, (size_t)EE * gu_row);
+                memcpy(dst + (size_t)EE * gu_row, L.t_up_exps->data + (size_t)e * EE * gu_row, (size_t)EE * gu_row);
+                memcpy(c->raw_stage + up_bytes + (size_t)m * D * dn_row,
+                       L.t_down_exps->data + (size_t)e * D * dn_row, (size_t)D * dn_row);
+                v = c->up_stage;
+                v.rows = 2 * EE;
+                v.codes = c->up_stage.codes + (size_t)m * 2 * EE * (D / 4);
+                v.meta = c->up_stage.meta + (size_t)m * 2 * EE * (size_t)(D / 256) * 20;
+                w = c->dn_stage;
+                w.rows = D;
+                w.codes = c->dn_stage.codes + (size_t)m * D * (EE / 2);
+                w.d = c->dn_stage.d + (size_t)m * D * (EE / 32);
+            }
+        }
+        if (nmiss) {  // stage + repack ONLY the miss rows (an all-hit layer pays neither)
+            CK(cudaMemcpyAsync(c->raw_dev, c->raw_stage, (size_t)nmiss * 2 * EE * gu_row, cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(c->raw_dev + up_bytes, c->raw_stage + up_bytes, (size_t)nmiss * D * dn_row,
+                               cudaMemcpyHostToDevice, st));
+            launch_repack(c->up_stage, GT_Q2_K, c->raw_dev, 0, (int64_t)nmiss * 2 * EE, st);
+            launch_repack(c->dn_stage, GT_Q4_0, c->raw_dev + up_bytes, 0, (int64_t)nmiss * D, st);
+        }
+        CK(cudaMemcpyAsync(c->wt_gu, c->h_wt_gu, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(c->wt_dn, c->h_wt_dn, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+    } else {
+        // OFF (no hot-set file): the verbatim full-staging path over the load-time identity table
+        for (int k = 0; k < TOPK; k++) {
+            const int64_t e = c->eid[k];
+            uint8_t* dst = c->raw_stage + (size_t)k * 2 * EE * gu_row;
+            memcpy(dst, L.t_gate_exps->data + (size_t)e * EE * gu_row, (size_t)EE * gu_row);
+            memcpy(dst + (size_t)EE * gu_row, L.t_up_exps->data + (size_t)e * EE * gu_row, (size_t)EE * gu_row);
+            memcpy(c->raw_stage + up_bytes + (size_t)k * D * dn_row, L.t_down_exps->data + (size_t)e * D * dn_row,
+                   (size_t)D * dn_row);
+        }
+        CK(cudaMemcpyAsync(c->raw_dev, c->raw_stage, up_bytes + (size_t)TOPK * D * dn_row, cudaMemcpyHostToDevice, st));
+        launch_repack(c->up_stage, GT_Q2_K, c->raw_dev, 0, (int64_t)TOPK * 2 * EE, st);
+        launch_repack(c->dn_stage, GT_Q4_0, c->raw_dev + up_bytes, 0, (int64_t)TOPK * D, st);
     }
-    CK(cudaMemcpyAsync(c->raw_dev, c->raw_stage, up_bytes + (size_t)TOPK * D * dn_row, cudaMemcpyHostToDevice, st));
-    launch_repack(c->up_stage, GT_Q2_K, c->raw_dev, 0, (int64_t)TOPK * 2 * EE, st);
-    launch_repack(c->dn_stage, GT_Q4_0, c->raw_dev + up_bytes, 0, (int64_t)TOPK * D, st);
     CK(cudaGetLastError());
     CK(cudaMemcpyAsync(c->we, c->we_h, (size_t)TOPK * 4, cudaMemcpyHostToDevice, st));
     // gate|up gemv over the stacked staging, then the batched silu*up and the batched down gemv
@@ -354,6 +404,13 @@ void cf_free(CfCtx* c) {
     if (c->h_logits) cudaFreeHost(c->h_logits);
     delete[] c->eid;
     delete[] c->toks;
+    for (int il = 0; il < NL; il++) {  // the resident tier (cf-m3): the device bases + the host maps
+        CfLayer& L = c->layers[il];
+        if (L.res_gu.base) cudaFree(L.res_gu.base);
+        if (L.res_dn.base) cudaFree(L.res_dn.base);
+        delete[] L.hot_ids;
+        delete[] L.hot_idx;
+    }
     CK(cudaSetDevice(c->gpu));
     CK(cudaDeviceReset());
     delete c;
