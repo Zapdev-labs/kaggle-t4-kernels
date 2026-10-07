@@ -478,7 +478,13 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
         }
         CK(cudaMallocHost(&c->h_router, (size_t)NE * 4));
         CK(cudaMallocHost(&c->we_h, (size_t)TOPK * 4));
-        c->eid = new int[TOPK];
+        // r19v: eid pinned (the UVA path's per-step eid H2D rides it; a captured memcpy node
+        // must read pinned host memory - a pageable source is not capture-legal)
+        CK(cudaMallocHost(&c->eid, (size_t)TOPK * 4));
+        // r19v: the step params - pos rides the pinned word, uploaded at every step head
+        CK(cudaMallocHost(&c->h_params, 4 * sizeof(int)));
+        memset(c->h_params, 0, 4 * sizeof(int));
+        c->d_params = dalloc<int>(4, false);
         CK(cudaMallocHost(&c->h_emb, (size_t)D * 4));
         CK(cudaMallocHost(&c->h_ple, (size_t)D * 4));
         CK(cudaMallocHost(&c->h_logits, (size_t)V * 4));

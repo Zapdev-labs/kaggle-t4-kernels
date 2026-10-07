@@ -146,6 +146,12 @@ struct CfCtx {
     void* uva_reg = nullptr;          // the coalesced page-span host base (one registration, unregistered at free)
     size_t uva_reg_len = 0;
     int* eid_dev = nullptr;          // device: [TOPK] the per-step expert ids for the scatter repack
+    // cf-m3 (r19v) the step params: pos rides a pinned host word uploaded at the step head,
+    // and the attention kernels read it from the device word - the same int, the same
+    // downstream arithmetic (byte-identical), but the ONLY per-step varying kernel arg
+    // becomes capture-constant (the G1/G2 graph forms; the r19p census found no other).
+    int* h_params = nullptr;         // pinned host [4]: h_params[0] = pos ([1..3] spare)
+    int* d_params = nullptr;         // device [4]
     float* ye = nullptr;              // [TOPK*D] per-expert down outputs
     float* we = nullptr;              // [TOPK] renormalized router weights (device)
     float* ysh = nullptr;             // [D] shared expert out
@@ -179,11 +185,11 @@ void launch_cf_hc_combine(float* res, const float* block, const float* inj, cuda
 void launch_cf_res_init(float* res, const float* emb, cudaStream_t s);
 void launch_cf_gdn_gnorm(const float* o, const float* z, const float* w, float* out, float eps, cudaStream_t s);
 void launch_cf_qk_norm_rope(const float* qfull, const float* k, const float* qw, const float* kw, float* qn,
-                            float* kn, int pos, float eps, float freq_base, int n_rot, cudaStream_t s);
-void launch_cf_kv_store(const float* k, const float* v, uint16_t* kc, uint16_t* vc, int pos, int max_ctx,
+                            float* kn, const int* pos_dev, float eps, float freq_base, int n_rot, cudaStream_t s);
+void launch_cf_kv_store(const float* k, const float* v, uint16_t* kc, uint16_t* vc, const int* pos_dev, int max_ctx,
                         cudaStream_t s);
 void launch_cf_attn_decode(const float* q, const uint16_t* kc, const uint16_t* vc, float* out, float* scores,
-                           int n_kv, int max_ctx, float scale, cudaStream_t s);
+                           const int* pos_dev, int max_ctx, float scale, cudaStream_t s);
 void launch_cf_ple_sg(const float* key, const float* query, float* s_out, float* gate, cudaStream_t s);
 void launch_cf_ple_gated(const float* value, const float* gate, float* gated, cudaStream_t s);
 void launch_cf_ple_conv(const float* gnorm, float* hist, const float* w, float* out, cudaStream_t s);

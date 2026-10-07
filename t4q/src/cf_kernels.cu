@@ -146,10 +146,11 @@ void launch_cf_gdn_gnorm(const float* o, const float* z, const float* w, float* 
 
 // blocks 0..23: q heads ([24][512]: q 256 | gate 256), 24..25: the 2 kv heads
 __global__ void k_cf_qk_norm_rope(const float* qfull, const float* k, const float* qw, const float* kw, float* qn,
-                                  float* kn, int pos, float eps, float theta_scale, int n_rot) {
+                                  float* kn, const int* pos_dev, float eps, float theta_scale, int n_rot) {
     __shared__ float red[8];
     __shared__ float y[256];
     const int b = blockIdx.x, d = threadIdx.x;
+    const int pos = *pos_dev;  // r19v: the step params (capture-constant; the same int)
     const bool isq = b < HQ;
     const float* src = isq ? qfull + b * 512 : k + (b - HQ) * 256;
     const float* w = isq ? qw : kw;
@@ -172,32 +173,35 @@ __global__ void k_cf_qk_norm_rope(const float* qfull, const float* k, const floa
 }
 
 void launch_cf_qk_norm_rope(const float* qfull, const float* k, const float* qw, const float* kw, float* qn, float* kn,
-                            int pos, float eps, float freq_base, int n_rot, cudaStream_t s) {
+                            const int* pos_dev, float eps, float freq_base, int n_rot, cudaStream_t s) {
     const float theta_scale = powf(freq_base, -2.0f / n_rot);
-    k_cf_qk_norm_rope<<<HQ + HKV, 256, 0, s>>>(qfull, k, qw, kw, qn, kn, pos, eps, theta_scale, n_rot);
+    k_cf_qk_norm_rope<<<HQ + HKV, 256, 0, s>>>(qfull, k, qw, kw, qn, kn, pos_dev, eps, theta_scale, n_rot);
 }
 
-__global__ void k_cf_kv_store(const float* k, const float* v, uint16_t* kc, uint16_t* vc, int pos, int max_ctx) {
+__global__ void k_cf_kv_store(const float* k, const float* v, uint16_t* kc, uint16_t* vc, const int* pos_dev,
+                              int max_ctx) {
     const int j = blockIdx.x, d = threadIdx.x;
+    const int pos = *pos_dev;  // r19v: the step params (capture-constant; the same int)
     __half* kh = (__half*)kc;
     __half* vh = (__half*)vc;
     kh[((int64_t)j * max_ctx + pos) * 256 + d] = __float2half_rn(k[j * 256 + d]);
     vh[((int64_t)j * max_ctx + pos) * 256 + d] = __float2half_rn(v[j * 256 + d]);
 }
 
-void launch_cf_kv_store(const float* k, const float* v, uint16_t* kc, uint16_t* vc, int pos, int max_ctx,
+void launch_cf_kv_store(const float* k, const float* v, uint16_t* kc, uint16_t* vc, const int* pos_dev, int max_ctx,
                         cudaStream_t s) {
-    k_cf_kv_store<<<HKV, 256, 0, s>>>(k, v, kc, vc, pos, max_ctx);
+    k_cf_kv_store<<<HKV, 256, 0, s>>>(k, v, kc, vc, pos_dev, max_ctx);
 }
 
 __global__ void k_cf_attn_decode(const float* q, const uint16_t* kc, const uint16_t* vc, float* out, float* scores,
-                                 int n_kv, int max_ctx, float scale) {
+                                 const int* pos_dev, int max_ctx, float scale) {
     __shared__ float qs[256];
     __shared__ float red[8];
     const __half* kh = (const __half*)kc;
     const __half* vh = (const __half*)vc;
     const int h = blockIdx.x, j = h / 12;  // GQA 12
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const int n_kv = *pos_dev + 1;  // r19v: the step params (the caller passed pos+1)
     qs[tid] = q[h * 256 + tid];
     __syncthreads();
     const __half* K = kh + (int64_t)j * max_ctx * 256;
@@ -229,8 +233,8 @@ __global__ void k_cf_attn_decode(const float* q, const uint16_t* kc, const uint1
 }
 
 void launch_cf_attn_decode(const float* q, const uint16_t* kc, const uint16_t* vc, float* out, float* scores,
-                           int n_kv, int max_ctx, float scale, cudaStream_t s) {
-    k_cf_attn_decode<<<HQ, 256, 0, s>>>(q, kc, vc, out, scores, n_kv, max_ctx, scale);
+                           const int* pos_dev, int max_ctx, float scale, cudaStream_t s) {
+    k_cf_attn_decode<<<HQ, 256, 0, s>>>(q, kc, vc, out, scores, pos_dev, max_ctx, scale);
 }
 
 // PLE: per-stream s = sum_c key*query / sqrt(D), then gate = sigmoid(sgn(s)*sqrt(clamp(|s|,1e-6)))

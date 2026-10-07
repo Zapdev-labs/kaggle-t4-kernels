@@ -111,15 +111,15 @@ void deltanet(CfCtx* c, CfLayer& L, CfScratch& s) {
     check_launch("ssm_out");
 }
 
-void attention(CfCtx* c, CfLayer& L, CfScratch& s, int pos) {
+void attention(CfCtx* c, CfLayer& L, CfScratch& s) {
     cudaStream_t st = c->st;
     gemv(s, L.wq, s.mixed, s.qfull, st);
     gemv(s, L.wk, s.mixed, s.k, st);
     gemv(s, L.wv, s.mixed, s.v, st);
     check_launch("attn proj");
-    launch_cf_qk_norm_rope(s.qfull, s.k, L.q_norm, L.k_norm, s.aq, s.ak, pos, EPS, ROPE_BASE, NROT, st);
-    launch_cf_kv_store(s.ak, s.v, L.kc, L.vc, pos, c->max_ctx, st);
-    launch_cf_attn_decode(s.aq, L.kc, L.vc, s.att, s.scores, pos + 1, c->max_ctx, 1.0f / 16.0f, st);
+    launch_cf_qk_norm_rope(s.qfull, s.k, L.q_norm, L.k_norm, s.aq, s.ak, c->d_params, EPS, ROPE_BASE, NROT, st);
+    launch_cf_kv_store(s.ak, s.v, L.kc, L.vc, c->d_params, c->max_ctx, st);
+    launch_cf_attn_decode(s.aq, L.kc, L.vc, s.att, s.scores, c->d_params, c->max_ctx, 1.0f / 16.0f, st);
     check_launch("attn");
     launch_gate_sigmoid(s.att, s.qfull, s.attg, st);  // 24 blocks, [24][512]: same layout
     gemv(s, L.wo, s.attg, s.block, st);
@@ -353,6 +353,10 @@ bool cf_step(CfCtx* c, int token) {
                              D))
             throw std::runtime_error("embedding dequant failed");
         CK(cudaMemcpyAsync(s.h, c->h_emb, (size_t)D * 4, cudaMemcpyHostToDevice, st));
+        // r19v: the step params (pos) ride the pinned word -> the device word; the attention
+        // kernels read it from there (the same int, the same arithmetic - capture-constant)
+        c->h_params[0] = c->pos;
+        CK(cudaMemcpyAsync(c->d_params, c->h_params, 4 * sizeof(int), cudaMemcpyHostToDevice, st));
         launch_cf_res_init(s.h, s.h, st);  // in-place: first-D writes are identities, safe
         if (cfdump_active()) {  // model.input_embed: the raw [D] host embedding, matching the oracle's cb name
             uint32_t nl = 17;
@@ -371,7 +375,7 @@ bool cf_step(CfCtx* c, int token) {
             { std::string nm = "hc_gate-" + std::to_string(il); cfdump_rec(nm.c_str(), s.gate, HCD); }
             { std::string nm = "hc_mixed-" + std::to_string(il); cfdump_rec(nm.c_str(), s.mixed, D); }
             { std::string nm = "hc_inject-" + std::to_string(il); cfdump_rec(nm.c_str(), s.inj, HC); }
-            if (L.attn) attention(c, L, s, c->pos);
+            if (L.attn) attention(c, L, s);
             else deltanet(c, L, s);
             {
                 std::string bn = (L.attn ? "attn_output-" : "linear_attn_out-") + std::to_string(il);
@@ -437,6 +441,8 @@ void cf_free(CfCtx* c) {
     if (c->raw_stage) cudaFreeHost(c->raw_stage);
     if (c->raw_dev) cudaFree(c->raw_dev);
     if (c->eid_dev) cudaFree(c->eid_dev);
+    if (c->d_params) cudaFree(c->d_params);   // r19v: the step-params device word
+    if (c->h_params) cudaFreeHost(c->h_params);
     if (c->wt_gu) cudaFree(c->wt_gu);
     if (c->wt_dn) cudaFree(c->wt_dn);
     if (c->h_router) cudaFreeHost(c->h_router);
@@ -444,7 +450,7 @@ void cf_free(CfCtx* c) {
     if (c->h_emb) cudaFreeHost(c->h_emb);
     if (c->h_ple) cudaFreeHost(c->h_ple);
     if (c->h_logits) cudaFreeHost(c->h_logits);
-    delete[] c->eid;
+    if (c->eid) cudaFreeHost(c->eid);  // r19v: pinned (the captured eid H2D reads it)
     delete[] c->toks;
     for (int il = 0; il < NL; il++) {  // the resident tier (cf-m3): the device bases + the host maps
         CfLayer& L = c->layers[il];
