@@ -32,7 +32,11 @@ void gemv(CfScratch& sc, const PackedW& W, const float* x, float* y, cudaStream_
     } else if (W.fmt == FMT_Q51) {
         launch_quantize_q8_1(x, (int)W.cols, sc.xq1, sc.xq1_d, sc.xq1_s, st);
         launch_gemv_q8(W, sc.xq1, sc.xq1_d, sc.xq1_s, y, st);
-    } else if (W.fmt == FMT_P4) {
+    } else if (W.fmt == FMT_P4 || W.fmt == FMT_Q8) {
+        // FMT_Q8 (cf-m4, r19w): the Q8_0 weights pair with the SAME q8_0-form activation
+        // (amax/127, no s-term) - launch_quantize_q8_0 already produces it; the dot is the
+        // gate-proven FAST_Q8 int8-dp4a family (the 27B's own MTP graft passed the
+        // byte-identical spec gates on this exact arithmetic)
         launch_quantize_q8_0(x, (int)W.cols, sc.xq0, sc.xd0, sc.xs0, st);
         launch_gemv_q8_0(W, sc.xq0, sc.xd0, sc.xs0, y, st);
     } else {
@@ -199,19 +203,10 @@ void emit_router(CfCtx* c, CfLayer& L) {
     CK(cudaMemcpyAsync(c->h_router, s.logits, (size_t)NE * 4, cudaMemcpyDeviceToHost, st));
 }
 
-// the host window between segments: the sync (the router D2H has landed), then the r19t
-// order-exact softmax/top-10/we renorm (the host loops verbatim), the census, and the staging
-// HOST work (the OFF-path mmap->pinned memcpys; the tiered compose - the tiered mode never
-// runs under graphs) - the pinned sources (eid/we_h/raw_stage) the next segment's captured
-// H2D nodes re-carry at its replay
-void host_router(CfCtx* c, CfLayer& L) {
-    CfScratch& s = c->sc;
-    cudaStream_t st = c->st;
-    CK(cudaStreamSynchronize(st));
-    { std::string nm = "moe_router-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.logits, NE); }
-    if (cfdump_active())
-        fprintf(stderr, "[moe] il %d pos ? router[0..3] %.4f %.4f %.4f %.4f\n", L.il, c->h_router[0],
-                c->h_router[1], c->h_router[2], c->h_router[3]);
+// the order-exact host router loops (r19t: the fp accumulation ORDER is the correctness bar
+// for the G2 device router and every other consumer; ONE source, shared by the trunk's host
+// window and the draft's forward - the draft's routing MUST be the same order-exact form)
+void host_top10(CfCtx* c) {
     // host softmax over 512 (fp32, exact formula), then top-10 renormalized
     float m = c->h_router[0];
     for (int i = 1; i < NE; i++) m = std::max(m, c->h_router[i]);
@@ -235,6 +230,22 @@ void host_router(CfCtx* c, CfLayer& L) {
     float wsum = 0.f;
     for (int k = 0; k < TOPK; k++) wsum += c->we_h[k];
     for (int k = 0; k < TOPK; k++) c->we_h[k] /= wsum;
+}
+
+// the host window between segments: the sync (the router D2H has landed), then the r19t
+// order-exact softmax/top-10/we renorm (the host loops verbatim), the census, and the staging
+// HOST work (the OFF-path mmap->pinned memcpys; the tiered compose - the tiered mode never
+// runs under graphs) - the pinned sources (eid/we_h/raw_stage) the next segment's captured
+// H2D nodes re-carry at its replay
+void host_router(CfCtx* c, CfLayer& L) {
+    CfScratch& s = c->sc;
+    cudaStream_t st = c->st;
+    CK(cudaStreamSynchronize(st));
+    { std::string nm = "moe_router-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.logits, NE); }
+    if (cfdump_active())
+        fprintf(stderr, "[moe] il %d pos ? router[0..3] %.4f %.4f %.4f %.4f\n", L.il, c->h_router[0],
+                c->h_router[1], c->h_router[2], c->h_router[3]);
+    host_top10(c);
     if (c->census_f) {  // cf-m2: the router concentration census, same round as the gate
         fwrite(c->eid, 4, TOPK, c->census_f);
         fwrite(c->we_h, 4, TOPK, c->census_f);
@@ -542,6 +553,115 @@ bool cf_step(CfCtx* c, int token) {
     }
 }
 
+// cf-m4 (r19w): one MTP draft forward (the frozen CF_MTP.md section 1 - the exact block
+// forward of cf-arch.md section 6). The pair (token, h) at the draft's OWN KV position:
+// h = the trunk's pre-final-mixer wide residual (a device pointer, valid until the next
+// trunk step), or nullptr = the h_{-1} = 0 pair (the 27B's gate-proven form). The draft's
+// logits land in d->h_logits (the prediction for the NEXT position); the chain state
+// d->hres holds the final res' (the next chained draft's h). STAGING-FREE: the per-step W
+// table composes the 10 picks' ALL-RESIDENT Q8_0 views (the tiering's mechanism, all hits,
+// zero host staging) and the router runs the SAME order-exact host loops (host_top10, the
+// r19t bar). The draft's pos word rides d_params[1] (the spare slot), written in this
+// driver BEFORE the upload (the r19v discipline: the write precedes the enqueue).
+bool cf_draft_step(CfCtx* c, int token, const float* h) {
+    try {
+        if (!c->draft) throw std::runtime_error("cf_draft_step: no draft block (T4Q_CF_MTP=1 at load)");
+        if (token < 0 || token >= V) throw std::runtime_error("draft token id out of range");
+        CfDraft* d = c->draft;
+        CfLayer& L = d->L;
+        CfScratch& s = d->sc;
+        cudaStream_t st = c->st;
+        if (d->pos >= c->max_ctx) throw std::runtime_error("draft context full");
+        CK(cudaSetDevice(c->gpu));
+        // the pair's h input: the arg (a D2D so the source is stable across the chain) or
+        // the h_{-1} = 0 zeros
+        CK(cudaMemcpyAsync(d->h_in, h ? h : d->zero_h, (size_t)HCD * 4, cudaMemcpyDeviceToDevice, st));
+        // e = token_embd[token] (the host dequant into the draft's own host row)
+        if (!dequant_row_cpu(c->tok_embd->type, c->tok_embd->data + (size_t)token * c->tok_embd->row_bytes, d->h_e, D))
+            throw std::runtime_error("draft embedding dequant failed");
+        CK(cudaMemcpyAsync(d->e, d->h_e, (size_t)D * 4, cudaMemcpyHostToDevice, st));
+        // the draft's pos word (the spare slot): the write PRECEDES the upload's enqueue
+        c->h_params[1] = d->pos;
+        CK(cudaMemcpyAsync(c->d_params + 1, c->h_params + 1, 4, cudaMemcpyHostToDevice, st));
+        // e_norm = RMSNorm(e, enorm) [D]; h_norm = the grouped RMSNorm(h, hnorm) [HCD];
+        // the per-stream [e_norm ; h_norm_s] gather [4][2D]
+        launch_rmsnorm(d->e, d->enorm, d->e_norm, D, EPS, st);
+        launch_cf_hc_norm(d->h_in, d->hnorm, d->h_norm, st);
+        launch_cf_eh_gather(d->e_norm, d->h_norm, d->eh_cat, st);
+        // res' = [u_0..u_3]: the eh_proj gemv per stream (the shared [2560,5120] Q8_0)
+        for (int sd = 0; sd < HC; sd++)
+            gemv(s, d->eh_proj, d->eh_cat + (size_t)sd * 2 * D, d->hres + (size_t)sd * D, st);
+        check_launch("draft eh_proj");
+        // a = FullAttn(blk.48, hc_attn_mix(res'), the draft's own pos/KV): the attention()
+        // twin with the draft's own weights + KV + scratch + pos word slot
+        hc_mix(c, d->hres, L.hc_norm[0], L.hc_down[0], L.hc_up[0], &L.hc_inject[0], s);
+        gemv(s, L.wq, s.mixed, s.qfull, st);
+        gemv(s, L.wk, s.mixed, s.k, st);
+        gemv(s, L.wv, s.mixed, s.v, st);
+        check_launch("draft attn proj");
+        launch_cf_qk_norm_rope(s.qfull, s.k, L.q_norm, L.k_norm, s.aq, s.ak, c->d_params + 1, EPS, ROPE_BASE, NROT,
+                              st);
+        launch_cf_kv_store(s.ak, s.v, L.kc, L.vc, c->d_params + 1, c->max_ctx, st);
+        launch_cf_attn_decode(s.aq, L.kc, L.vc, s.att, s.scores, c->d_params + 1, c->max_ctx, 1.0f / 16.0f, st);
+        check_launch("draft attn");
+        launch_gate_sigmoid(s.att, s.qfull, s.attg, st);  // 24 blocks, [24][512]: same layout
+        gemv(s, L.wo, s.attg, s.block, st);
+        check_launch("draft attn out");
+        hc_combine(c, d->hres, s.block, s.inj);
+        // m = MoE(blk.48, hc_ffn_mix(res')) + the gated shared expert
+        hc_mix(c, d->hres, L.hc_norm[1], L.hc_down[1], L.hc_up[1], &L.hc_inject[1], s);
+        gemv(s, L.router, s.mixed, s.logits, st);  // borrow the draft's logits scratch [512 of V]
+        CK(cudaMemcpyAsync(c->h_router, s.logits, (size_t)NE * 4, cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));
+        host_top10(c);  // the SAME order-exact loops as the trunk's host window
+        // the W table: the 10 picks' ALL-RESIDENT views (the tiering's mechanism, all hits;
+        // the Q8_0 packed plane strides: codes D/EE bytes per row, d D/32 per row)
+        for (int k = 0; k < TOPK; k++) {
+            const int64_t e = c->eid[k];
+            PackedW& v = d->h_wt_gu[k];
+            v = d->res_gu;
+            v.rows = 2 * EE;
+            v.codes = d->res_gu.codes + (size_t)e * 2 * EE * D;
+            v.d = d->res_gu.d + (size_t)e * 2 * EE * (D / 32);
+            PackedW& w = d->h_wt_dn[k];
+            w = d->res_dn;
+            w.rows = D;
+            w.codes = d->res_dn.codes + (size_t)e * D * EE;
+            w.d = d->res_dn.d + (size_t)e * D * (EE / 32);
+        }
+        CK(cudaMemcpyAsync(d->wt_gu, d->h_wt_gu, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(d->wt_dn, d->h_wt_dn, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(c->we, c->we_h, (size_t)TOPK * 4, cudaMemcpyHostToDevice, st));
+        // the batched Q8_0 gemvs (the gate|up on the shared mixed - strides 0; the down on
+        // the per-pick ffa) - the trunk's moe family with the draft's own buffers
+        launch_quantize_q8_0(s.mixed, D, s.xq0, s.xd0, s.xs0, st);
+        launch_gemv_q8_0_b(d->wt_gu, 2 * EE, s.xq0, s.xd0, s.xs0, d->ygu, 0, 2 * EE, 0, TOPK, st);
+        launch_cf_silu_mul_b(d->ygu, s.ffa, EE, TOPK, st);  // [gate n | up n] per expert, stride 2n
+        launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, s.xs0, st);
+        launch_gemv_q8_0_b(d->wt_dn, D, s.xq0, s.xd0, s.xs0, d->ye, EE, D, EE / 32, TOPK, st);
+        // shared expert + its sigmoid gate, then the weighted combine
+        gemv(s, L.sh_gate, s.mixed, s.ffg, st);
+        gemv(s, L.sh_up, s.mixed, s.ffu, st);
+        launch_silu_mul(s.ffg, s.ffu, s.ffa, EE, st);
+        gemv(s, L.sh_down, s.ffa, d->ysh, st);
+        gemv(s, L.sh_ginp, s.mixed, d->sh_gate_raw, st);
+        launch_cf_moe_out(d->ye, c->we, d->ysh, d->sh_gate_raw, s.block, st);
+        check_launch("draft moe");
+        hc_combine(c, d->hres, s.block, s.inj);
+        // the draft's own final mixer (hc_head), then the SHARED lm_head (full vocab)
+        hc_mix(c, d->hres, d->hh_norm, d->hh_down, d->hh_up, nullptr, s);
+        gemv(s, c->output, s.mixed, s.logits, st);
+        check_launch("draft lm_head");
+        CK(cudaMemcpyAsync(d->h_logits, s.logits, (size_t)V * 4, cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));
+        d->pos++;
+        return true;
+    } catch (const std::exception& e) {
+        c->err = e.what();
+        return false;
+    }
+}
+
 void cf_reset(CfCtx* c) {
     CK(cudaSetDevice(c->gpu));
     for (int il = 0; il < NL; il++) {
@@ -552,6 +672,7 @@ void cf_reset(CfCtx* c) {
     }
     CK(cudaMemset(c->ple_hist, 0, (size_t)PLE_HIST * HCD * 4));
     memset(c->toks, -1, (size_t)c->max_ctx * sizeof(int));
+    if (c->draft) c->draft->pos = 0;  // cf-m4: the draft's own KV pos (cells beyond it are never read)
     CK(cudaDeviceSynchronize());
     c->pos = 0;
     c->have_logits = false;
@@ -576,6 +697,12 @@ void cf_free(CfCtx* c) {
     if (c->h_ple) cudaFreeHost(c->h_ple);
     if (c->h_logits) cudaFreeHost(c->h_logits);
     if (c->eid) cudaFreeHost(c->eid);  // r19v: pinned (the captured eid H2D reads it)
+    if (c->draft) {  // cf-m4 (r19w): the draft's pinned host rows (the device buffers fall to
+        // the cudaDeviceReset below, the same as the trunk's scratch)
+        cudaFreeHost(c->draft->h_e);
+        cudaFreeHost(c->draft->h_logits);
+        delete c->draft;
+    }
     delete[] c->toks;
     for (int il = 0; il < NL; il++) {  // the resident tier (cf-m3): the device bases + the host maps
         CfLayer& L = c->layers[il];

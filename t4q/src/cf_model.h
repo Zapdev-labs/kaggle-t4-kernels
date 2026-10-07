@@ -113,6 +113,36 @@ struct CfScratch {
     int* xs0 = nullptr;                  // [TOPK*EE/32] the per-32-block signed code sum (the dp4a factored -8 bias)
 };
 
+// cf-m4 (r19w): the MTP draft block's state. The weights ride a CfLayer (L.il = 48,
+// L.attn = true - blk.48 is non-recurrent); the nextn extras (enorm/hnorm/eh_proj +
+// the draft's own final mixer hc_head_*) are direct members. The draft's OWN scratch
+// (the trunk's is never touched between steps); the ALL-512 resident expert slabs +
+// the per-step composed W tables (the tiering's mechanism, all hits - staging-free);
+// the chain state hres (res' carried across draft steps) + the draft's own KV position
+// (the pos word rides d_params[1], the spare slot of the r19v step-params pair).
+struct CfDraft {
+    CfLayer L;                        // il = 48, attn = true (the full-attn family + the MoE shell)
+    float *enorm = nullptr, *hnorm = nullptr;   // nextn: [2560] plain / [2560,4] grouped F32
+    PackedW eh_proj;                  // nextn: [2560 out, 5120 in] Q8_0 (shared by the 4 streams)
+    float* hh_norm = nullptr;         // nextn.hc_head_norm [2560,4] F32 (the draft's final mixer)
+    PackedW hh_down, hh_up;           // nextn.hc_head_{down,up} Q8_0
+    float* zero_h = nullptr;          // device [HCD] the h_{-1} = 0 pair input (the 27B's form)
+    float* h_e = nullptr;             // host [D] the draft's own embedding row (pinned)
+    float* h_logits = nullptr;        // host [V] the draft's logits (pinned)
+    float* h_in = nullptr;            // device [HCD] the h input (D2D from the arg, or zero_h)
+    float* hres = nullptr;            // device [HCD] the chain state (the draft's res' output)
+    float *e = nullptr, *e_norm = nullptr, *h_norm = nullptr;  // device [D]/[D]/[HCD]
+    float* eh_cat = nullptr;          // device [4][5120] the per-stream [e_norm ; h_norm_s] gather
+    float* ygu = nullptr;             // device [TOPK*2*EE] the gate|up batched gemv output (own buffer)
+    float* ye = nullptr;              // device [TOPK*D] the batched down gemv output (the trunk's is CfCtx-level)
+    float *ysh = nullptr, *sh_gate_raw = nullptr;  // device [D]/[1] the shared expert out + its sigmoid gate
+    CfScratch sc;                     // the draft's OWN scratch (the trunk's is never touched)
+    PackedW res_gu, res_dn;            // the ALL-512 resident slabs: [512*2*EE, D] / [512*D, EE] Q8_0
+    PackedW h_wt_gu[cf::TOPK] = {}, h_wt_dn[cf::TOPK] = {};  // the per-step composed host tables
+    PackedW *wt_gu = nullptr, *wt_dn = nullptr;             // the device W tables [TOPK]
+    int pos = 0;                      // the draft's own KV position
+};
+
 struct CfCtx {
     GgufFile f;
     std::vector<CfLayer> layers;
@@ -122,6 +152,17 @@ struct CfCtx {
     float* o_norm = nullptr;         // [HCD]
     PackedW output;                  // lm_head [V, D]
     const GgufTensor* tok_embd = nullptr;
+    // cf-m4 (r19w): the MTP draft block (blk.48, ALL Q8_0, resident - the frozen CF_MTP.md
+    // design). Loaded only under T4Q_CF_MTP=1 (absent = not loaded, the VRAM stays free);
+    // INERT until cf_draft_step is called (the acceptance smoke now; the speculative
+    // verify/rollback driver later). The draft reuses CfLayer (the full-attn family + the hc
+    // mixers + the MoE shell; blk.48 is non-recurrent per attention.recurrent_layers[49]);
+    // ALL 512 experts pack into VRAM at load (the same chunked raw->pinned->H2D->repack
+    // pass as the hot-set tier), so the draft's MoE is STAGING-FREE: the per-step W table
+    // composes the 10 picks' resident views and uploads (the tiering's mechanism, all
+    // hits). The pair semantics are the 27B's gate-proven form: (x_q, h_{q-1}) at the
+    // draft's own KV position q, h_{-1} = 0; the chain state hres carries res' forward.
+    CfDraft* draft = nullptr;
     // staging (raw GGUF slabs -> repack on device)
     uint8_t *raw_stage = nullptr;     // pinned: one layer's 10 experts (gate+up Q2_K, down Q4_0)
     uint8_t *raw_dev = nullptr;       // device mirror
@@ -208,9 +249,17 @@ void launch_cf_ple_conv(const float* gnorm, float* hist, const float* w, float* 
 void launch_cf_moe_out(const float* ye, const float* we, const float* ysh, const float* sh_gate_raw, float* out,
                         cudaStream_t s);
 void launch_cf_silu_mul_b(const float* gu, float* out, int n_per, int batch, cudaStream_t s);
+// cf-m4 (r19w): the MTP draft's eh_proj input gather - out[s][0:2560] = e_norm (shared),
+// out[s][2560:5120] = h_norm[s*2560:(s+1)*2560] (the per-stream half), out flat [4][5120]
+void launch_cf_eh_gather(const float* e_norm, const float* h_norm, float* out, cudaStream_t s);
 
 // cf_engine.cu / cf_loader.cu
 CfCtx* cf_load(const char* path, int max_ctx, std::string* err);
 void cf_free(CfCtx* c);
 bool cf_step(CfCtx* c, int token);       // one decode step; logits land in c->h_logits
+// cf-m4 (r19w): one MTP draft forward at the draft's own KV position (the pair
+// (token, h): h = the trunk's pre-final-mixer wide residual, or nullptr = h_{-1} = 0).
+// The draft's logits land in c->draft->h_logits (the prediction for the NEXT position);
+// the chain state (res') carries into the next draft call. Requires T4Q_CF_MTP=1 at load.
+bool cf_draft_step(CfCtx* c, int token, const float* h);
 void cf_reset(CfCtx* c);

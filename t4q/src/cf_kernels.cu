@@ -319,3 +319,17 @@ __global__ void k_cf_silu_mul_b(const float* gu, float* out, int n_per, int stri
 void launch_cf_silu_mul_b(const float* gu, float* out, int n_per, int batch, cudaStream_t s) {
     k_cf_silu_mul_b<<<dim3((n_per + 255) / 256, batch), 256, 0, s>>>(gu, out, n_per, 2 * n_per);
 }
+
+// cf-m4 (r19w): the MTP draft's eh_proj input gather - the per-stream [e_norm ; h_norm_s]
+// concat: out[s][0:D] = e_norm (the shared half), out[s][D:2D] = h_norm[s*D:(s+1)*D]
+// (the per-stream half). out flat [4][2D]; one launch, HC*2D threads.
+__global__ void k_cf_eh_gather(const float* e_norm, const float* h_norm, float* out) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= HC * 2 * D) return;
+    const int s = i / (2 * D), j = i % (2 * D);
+    out[i] = (j < D) ? e_norm[j] : h_norm[s * D + (j - D)];
+}
+
+void launch_cf_eh_gather(const float* e_norm, const float* h_norm, float* out, cudaStream_t s) {
+    k_cf_eh_gather<<<(HC * 2 * D + 255) / 256, 256, 0, s>>>(e_norm, h_norm, out);
+}

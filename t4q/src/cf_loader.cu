@@ -476,6 +476,136 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                     c->uva_n, NL, (double)(hi - lo) / (1ull << 30),
                     std::chrono::duration<double>(tr1 - tr0).count());
         }
+        // cf-m4 (r19w): the MTP draft block (blk.48, ALL Q8_0, resident - the frozen
+        // CF_MTP.md design). T4Q_CF_MTP=1 loads it (absent = not loaded, the ~2.5 GiB
+        // stays free for the tiering); INERT until cf_draft_step is called (the acceptance
+        // smoke now, the speculative verify/rollback driver later). The pair semantics are
+        // the 27B's gate-proven form: (x_q, h_{q-1}) at the draft's own KV position q,
+        // h_{-1} = 0. blk.48 is NON-RECURRENT (attention.recurrent_layers[49]) despite
+        // 48 % 4 != 3, so L.attn is forced true. ALL 512 experts pack into VRAM (the same
+        // chunked raw->pinned->H2D->repack pass as the hot-set tier; the trunk-sized
+        // raw_stage takes 3 draft experts per pass - the Q8_0 rows are 2720/680 B vs the
+        // trunk's 840/360), so the draft's MoE is STAGING-FREE: the per-step W table
+        // composes the 10 picks' resident views (the tiering's mechanism, all hits).
+        if (getenv("T4Q_CF_MTP") && atoi(getenv("T4Q_CF_MTP"))) {
+            CfDraft* d = new CfDraft();
+            c->draft = d;
+            CfLayer& L = d->L;
+            L.il = NL; L.gpu = 0; L.attn = true;
+            const std::string p = "blk." + std::to_string(NL) + ".";
+            for (int side = 0; side < 2; side++) {
+                const std::string tag = side == 0 ? "hc_attn_" : "hc_ffn_";
+                L.hc_norm[side] = upload_vec(c, p + tag + "norm.weight", HCD);
+                upload_matrix(c, pin, dev, &rs, p + tag + "down.weight", 0, L.hc_down[side]);
+                upload_matrix(c, pin, dev, &rs, p + tag + "up.weight", 0, L.hc_up[side]);
+                upload_matrix(c, pin, dev, &rs, p + tag + "inject.weight", 0, L.hc_inject[side]);
+            }
+            upload_matrix(c, pin, dev, &rs, p + "attn_q.weight", 0, L.wq);
+            upload_matrix(c, pin, dev, &rs, p + "attn_k.weight", 0, L.wk);
+            upload_matrix(c, pin, dev, &rs, p + "attn_v.weight", 0, L.wv);
+            upload_matrix(c, pin, dev, &rs, p + "attn_output.weight", 0, L.wo);
+            L.q_norm = upload_vec(c, p + "attn_q_norm.weight", HD);
+            L.k_norm = upload_vec(c, p + "attn_k_norm.weight", HD);
+            L.kc = dalloc<uint16_t>((size_t)HKV * c->max_ctx * HD);
+            L.vc = dalloc<uint16_t>((size_t)HKV * c->max_ctx * HD);
+            upload_matrix(c, pin, dev, &rs, p + "ffn_gate_inp.weight", 0, L.router);
+            upload_matrix(c, pin, dev, &rs, p + "ffn_gate_shexp.weight", 0, L.sh_gate);
+            upload_matrix(c, pin, dev, &rs, p + "ffn_up_shexp.weight", 0, L.sh_up);
+            upload_matrix(c, pin, dev, &rs, p + "ffn_down_shexp.weight", 0, L.sh_down);
+            upload_matrix(c, pin, dev, &rs, p + "ffn_gate_inp_shexp.weight", 0, L.sh_ginp);
+            L.t_gate_exps = c->f.find(p + "ffn_gate_exps.weight");
+            L.t_up_exps = c->f.find(p + "ffn_up_exps.weight");
+            L.t_down_exps = c->f.find(p + "ffn_down_exps.weight");
+            if (!L.t_gate_exps || !L.t_up_exps || !L.t_down_exps)
+                throw std::runtime_error("missing draft expert tensors (blk.48)");
+            d->enorm = upload_vec(c, p + "nextn.enorm.weight", D);
+            d->hnorm = upload_vec(c, p + "nextn.hnorm.weight", HCD);
+            upload_matrix(c, pin, dev, &rs, p + "nextn.eh_proj.weight", 0, d->eh_proj);
+            d->hh_norm = upload_vec(c, p + "nextn.hc_head_norm.weight", HCD);
+            upload_matrix(c, pin, dev, &rs, p + "nextn.hc_head_down.weight", 0, d->hh_down);
+            upload_matrix(c, pin, dev, &rs, p + "nextn.hc_head_up.weight", 0, d->hh_up);
+            // the draft's own scratch (the trunk's is never touched); the planes sized for
+            // the largest gemv K (HCD: the hc mixers' down/inject columns)
+            CfScratch& ds = d->sc;
+            d->zero_h = dalloc<float>(HCD);
+            CK(cudaMallocHost(&d->h_e, (size_t)D * 4));
+            CK(cudaMallocHost(&d->h_logits, (size_t)V * 4));
+            d->h_in = dalloc<float>(HCD, false);
+            d->hres = dalloc<float>(HCD, false);
+            d->e = dalloc<float>(D, false); d->e_norm = dalloc<float>(D, false);
+            d->h_norm = dalloc<float>(HCD, false);
+            d->eh_cat = dalloc<float>((size_t)HC * 2 * D, false);
+            d->ygu = dalloc<float>((size_t)TOPK * 2 * EE, false);
+            ds.h = dalloc<float>(HCD, false); ds.xn = dalloc<float>(HCD, false); ds.lo = dalloc<float>(LORA);
+            ds.gate = dalloc<float>(HCD); ds.mixed = dalloc<float>(D); ds.inj = dalloc<float>(HC);
+            ds.block = dalloc<float>(D, false);
+            ds.qfull = dalloc<float>(HQ * HD * 2, false); ds.aq = dalloc<float>(HQ * HD, false);
+            ds.ak = dalloc<float>(HKV * HD, false); ds.k = dalloc<float>(HKV * HD, false);
+            ds.v = dalloc<float>(HKV * HD, false); ds.att = dalloc<float>(HQ * HD, false);
+            ds.attg = dalloc<float>(HQ * HD, false); ds.scores = dalloc<float>((size_t)HQ * c->max_ctx);
+            ds.ffg = dalloc<float>((size_t)TOPK * EE, false); ds.ffu = dalloc<float>((size_t)TOPK * EE, false);
+            ds.ffa = dalloc<float>((size_t)TOPK * EE, false);
+            d->ye = dalloc<float>((size_t)TOPK * D, false); d->ysh = dalloc<float>(D, false);
+            d->sh_gate_raw = dalloc<float>(1, false);
+            ds.xq0 = dalloc<int8_t>(HCD, false); ds.xd0 = dalloc<float>(HCD / 32, false);
+            ds.xs0 = dalloc<int>(HCD / 32, false);
+            ds.xqk = dalloc<int8_t>(HCD, false); ds.xqk_b = dalloc<int16_t>(HCD / 16, false);
+            ds.xqk_d = dalloc<float>(HCD / 256, false);
+            // the Q8_1 trio (the FMT_Q51 branch's planes; the graft is all-Q8_0 so these
+            // are dead weight, but the shared lm_head is Q4_K and the engine's gemv() must
+            // never deref a NULL plane whatever the file's draft tensors turn out to be)
+            ds.xq1 = dalloc<int8_t>(HCD, false); ds.xq1_d = dalloc<float>(HCD / 32, false);
+            ds.xq1_s = dalloc<float>(HCD / 32, false);
+            ds.logits = dalloc<float>(V, false);
+            // the ALL-512 resident slabs (the VRAM check first: ~2.67 GB packed)
+            {
+                const double need_gib =
+                    (NE * 2.0 * EE * D + (double)NE * D * EE) * 1.0625 / (1ull << 30) * 1.0;
+                size_t free_b = 0, total_b = 0;
+                CK(cudaMemGetInfo(&free_b, &total_b));
+                if ((double)free_b < need_gib * (1ull << 30) * 1.02)
+                    throw std::runtime_error("the draft block needs " + std::to_string(need_gib) +
+                                             " GiB resident, only " + std::to_string((double)free_b / (1ull << 30)) +
+                                             " GiB free");
+                fprintf(stderr, "[cf] draft block: resident tier %.2f GiB\n", need_gib);
+            }
+            alloc_packed(d->res_gu, 0, FMT_Q8, (int64_t)NE * 2 * EE, D);
+            alloc_packed(d->res_dn, 0, FMT_Q8, (int64_t)NE * D, EE);
+            CK(cudaMalloc(&d->wt_gu, (size_t)TOPK * sizeof(PackedW)));
+            CK(cudaMalloc(&d->wt_dn, (size_t)TOPK * sizeof(PackedW)));
+            {
+                const size_t gu_row_d = L.t_gate_exps->row_bytes;   // Q8_0 rows of D (2720)
+                const size_t dn_row_d = L.t_down_exps->row_bytes;   // Q8_0 rows of EE (680)
+                const size_t up_bytes =
+                    (size_t)TOPK * 2 * EE * c->layers[0].t_gate_exps->row_bytes;  // the raw_stage layout
+                const size_t dn_bytes = (size_t)TOPK * D * c->layers[0].t_down_exps->row_bytes;
+                const int ch = std::max(
+                    1, (int)std::min(up_bytes / (2 * EE * gu_row_d), dn_bytes / ((size_t)D * dn_row_d)));
+                for (int e0 = 0; e0 < NE; e0 += ch) {
+                    const int n = std::min(ch, NE - e0);
+                    CK(cudaStreamSynchronize(st));  // the previous pass's H2D must drain before the refill
+                    for (int j = 0; j < n; j++) {
+                        const int64_t e = e0 + j;
+                        uint8_t* dst = c->raw_stage + (size_t)j * 2 * EE * gu_row_d;
+                        memcpy(dst, L.t_gate_exps->data + (size_t)e * EE * gu_row_d, (size_t)EE * gu_row_d);
+                        memcpy(dst + (size_t)EE * gu_row_d, L.t_up_exps->data + (size_t)e * EE * gu_row_d,
+                               (size_t)EE * gu_row_d);
+                        memcpy(c->raw_stage + up_bytes + (size_t)j * D * dn_row_d,
+                               L.t_down_exps->data + (size_t)e * D * dn_row_d, (size_t)D * dn_row_d);
+                    }
+                    CK(cudaMemcpyAsync(c->raw_dev, c->raw_stage, (size_t)n * 2 * EE * gu_row_d, cudaMemcpyHostToDevice,
+                                       st));
+                    CK(cudaMemcpyAsync(c->raw_dev + up_bytes, c->raw_stage + up_bytes, (size_t)n * D * dn_row_d,
+                                       cudaMemcpyHostToDevice, st));
+                    launch_repack(d->res_gu, GT_Q8_0, c->raw_dev, (int64_t)e0 * 2 * EE, (int64_t)n * 2 * EE, st);
+                    launch_repack(d->res_dn, GT_Q8_0, c->raw_dev + up_bytes, (int64_t)e0 * D, (int64_t)n * D, st);
+                    CK(cudaGetLastError());
+                }
+                CK(cudaStreamSynchronize(st));
+            }
+            const double d_dur = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            fprintf(stderr, "[cf] draft block loaded (all-512 resident) %.1f s\n", d_dur);
+        }
         CK(cudaMallocHost(&c->h_router, (size_t)NE * 4));
         CK(cudaMallocHost(&c->we_h, (size_t)TOPK * 4));
         // r19v: eid pinned (the UVA path's per-step eid H2D rides it; a captured memcpy node

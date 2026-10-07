@@ -316,6 +316,43 @@ dequant rates and the platform paths are measured, no more assumptions**:
   t/s, a ~1.5x over the G2 engine)). Implementation: the draft/verify/rollback wiring
   on the UVA engine, the n-gram table prefetch driven by the sampled token, k tuned on
   the measured acceptance. Gate: >= 40-60 tok/s, byte-identical greedy at every k.
+  THE DRAFT BLOCK LANDED (r19w, build-clean 0 errors/0 warnings, OFF by default - absent
+  T4Q_CF_MTP=1 at load the draft is not loaded and the 2.49 GiB stays free): the CfDraft
+  struct (a CfLayer at il=48/attn=true + the nextn extras + the OWN scratch + the
+  all-512 resident slabs + the per-step W tables + the own KV pos), the loader wiring
+  (the weights/nextn extras via the normal upload path, the 512 experts through the
+  SAME chunked raw->pinned->H2D->repack pass as the hot-set tier - the trunk-sized
+  raw_stage takes 3 Q8_0 draft experts per pass, the layout math self-reviewed against
+  the physical region boundaries: 10.75 MB gu / 3.48 MB per expert = 3, 9.22 MB dn /
+  1.74 MB = 5, ch = 3), the FMT_Q8 case in gemv() (the Q8_0 activation pairing with the
+  gate-proven FAST_Q8 dot), the ONE new op k_cf_eh_gather (the per-stream
+  [e_norm ; h_norm_s] concat, 19 regs 0 spills), the host_top10 extraction (ONE
+  order-exact softmax/top-10/we source shared by the trunk's host window and the
+  draft's forward - the draft's routing MUST be the same order-exact form), and
+  cf_draft_step: the exact CF_MTP section 1 forward - the pair (x_q, h_{q-1}) with
+  h_{-1} = 0 (the position-0 pair), the e host-dequant, e_norm/h_norm, the gather, the
+  4 eh_proj gemvs composing res', the attention twin (the trunk's exact op list on the
+  draft's own KV/scratch, the pos word riding d_params[1] - the spare slot, written in
+  the driver BEFORE the upload per the r19v discipline), the MoE via host_top10 + the
+  ALL-RESIDENT W-table compose (the tiering's mechanism, all hits, staging-free) + the
+  gated shared expert, the draft's OWN final mixer, the SHARED lm_head, the logits D2H
+  into the draft's pinned row. cf_reset rewinds the draft's pos; cf_free drops the
+  pinned rows (the device buffers fall to the cudaDeviceReset, the trunk's own style).
+  The shared host router buffers (h_router/eid/we_h) are safe because the draft step
+  NEVER interleaves a trunk step mid-flight (the smoke is strictly sequential; the
+  future speculative driver must keep that rule). THE ACCEPTANCE SMOKE: cf_run's new
+  `draft` mode - the prompt + n greedy with the per-pair draft forward interleaved
+  (the pre-loop (ids[0], 0) pair, then after each trunk step at i the lagged 1-step
+  compare (the draft's prediction from its pair at i vs the run's ACTUAL token at
+  i+1) + the next pair (x_{i+1}, h_i = the trunk's pre-final-mixer residual)), printing
+  alpha1 (the 1-step acceptance the whole MTP speed math rides on) + the draft/trunk
+  mean ms. Runtime verification (the L4): T4Q_CF_MTP=1 + the draft mode -> the measured
+  alpha1 decides the adoption class (the 27B's class ~2.2 accepted/verify); the draft
+  forward's byte-exactness rides the trunk's own argument (every op is the trunk's op
+  with the draft's own buffers - the same kernels, the same args, the same order - and
+  the Q8_0 pairing is the 27B's gate-proven arithmetic). STILL AHEAD: the catch-up
+  (pending_h ring), the batched verify (THE GATE: bit-exact vs sequential), the
+  rollback, the speculative driver, k tuned on the measured acceptance.
 - **cf-m5 - the closure rounds**: the r4-r16 method (every lever A/B'd, every bucket measured
   or roof-closed, PROGRESS.md sections per round). Stretch goals: the TC verify columns at
   the M=4 batch (the int4 mma path exists), the draft's lm_head truncation (0.34 GiB of the

@@ -3,6 +3,10 @@
 //                                                          oracle's token-by-token dump (max rel diff, top1 agree)
 //   gen  <model> <ids.i32> <n> <oracle.gen.i32>        -> feed the ids, then n greedy tokens (byte-compare)
 //   time <model> <ids.i32> <n>                        -> the timed run: prompt + n greedy, tok/s + step stats
+//   draft <model> <ids.i32> <n>                       -> cf-m4: the MTP acceptance smoke (needs T4Q_CF_MTP=1 at
+//                                                          load): the prompt + n greedy with the per-pair draft
+//                                                          forward (x_q, h_{q-1}); prints alpha1 (the 1-step
+//                                                          acceptance the MTP speed math rides on) + draft/trunk ms
 // Prints CF {json} summary lines; exits 0 on pass, 3 on mismatch.
 #include <algorithm>
 #include <chrono>
@@ -44,7 +48,7 @@ static int argmax(const float* x, int n) {
 int main(int argc, char** argv) {
     setbuf(stdout, nullptr);
     if (argc < 4) {
-        fprintf(stderr, "usage: %s seq|gen|time <model> <ids.i32> [args]\n", argv[0]);
+        fprintf(stderr, "usage: %s seq|gen|time|census|draft <model> <ids.i32> [args]\n", argv[0]);
         return 2;
     }
     const std::string mode = argv[1];
@@ -184,6 +188,49 @@ int main(int argc, char** argv) {
         fclose(cf);
         printf("CF {\"mode\":\"census\",\"prompt_n\":%d,\"gen_n\":%d,\"steps\":%d,\"mean_ms\":%.2f}\n",
                (int)ids.size(), (int)gen.size() - 1, c->steps, c->step_s * 1000 / std::max(1, c->steps));
+        cf_free(c);
+        return 0;
+    }
+
+    if (mode == "draft") {
+        // cf-m4 (r19w): the MTP acceptance smoke - the 1-step acceptance (alpha1) the whole
+        // MTP speed math rides on. The pair semantics (x_q, h_{q-1}), h_{-1} = 0: the
+        // pre-loop pair (ids[0], 0) fills the draft's slot 0 and predicts position 1;
+        // after each trunk step at i, the compare (the draft's prediction from its pair at
+        // i vs the run's ACTUAL token at i+1 - the prompt id or the trunk's own greedy
+        // argmax) and the next pair (x_{i+1}, h_i = the trunk's pre-final-mixer residual).
+        const int n = atoi(argv[4]);
+        const int P = (int)ids.size();
+        if (P < 1) { printf("CF {\"error\":\"draft needs >= 1 prompt token\"}\n"); return 1; }
+        if (!c->draft) { printf("CF {\"error\":\"no draft block (T4Q_CF_MTP=1 at load)\"}\n"); return 1; }
+        double draft_s = 0;
+        int pairs = 0, agree1 = 0, first_dis = -1;
+        auto tdd = [&](int tok, const float* h) {
+            const auto ta = std::chrono::steady_clock::now();
+            if (!cf_draft_step(c, tok, h)) {
+                printf("CF {\"error\":\"draft step: %s\"}\n", c->err.c_str());
+                exit(1);
+            }
+            draft_s += std::chrono::duration<double>(std::chrono::steady_clock::now() - ta).count();
+        };
+        tdd(ids[0], nullptr);  // the position-0 pair: (x_0, h_{-1} = 0)
+        int pred = argmax(c->draft->h_logits, cf::V);
+        for (int i = 0; i < P + n - 1; i++) {
+            const int x = (i < P) ? ids[i] : argmax(c->h_logits, cf::V);
+            if (!cf_step(c, x)) { printf("CF {\"error\":\"trunk step %d: %s\"}\n", i, c->err.c_str()); return 1; }
+            const int next = (i + 1 < P) ? ids[i + 1] : argmax(c->h_logits, cf::V);
+            pairs++;
+            if (pred == next) agree1++;
+            else if (first_dis < 0) first_dis = i;
+            if (i + 1 < P + n - 1) {  // the pair at i+1; the final, compare-less pair is skipped
+                tdd(next, c->sc.h);
+                pred = argmax(c->draft->h_logits, cf::V);
+            }
+        }
+        printf("CF {\"mode\":\"draft\",\"pairs\":%d,\"agree1\":%d,\"alpha1\":%.4f,\"first_dis\":%d,"
+               "\"draft_ms\":%.2f,\"trunk_ms\":%.2f,\"load_s\":%.1f}\n",
+               pairs, agree1, (double)agree1 / std::max(1, pairs), first_dis,
+               draft_s * 1000 / std::max(1, pairs), c->step_s * 1000 / std::max(1, c->steps), load_s);
         cf_free(c);
         return 0;
     }
