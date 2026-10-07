@@ -105,7 +105,13 @@ On the UVA'd T4 (~83 ms/token after cf-m3 + the G2 graph, ~12 t/s): k=3 gives th
 union ~1.44 GB over the UVA path ~112 ms + 3 drafts ~8 ms, at the measured acceptance
 (~2.2 tokens/verify expected from the 27B's class) ~ 55 ms/token ~ 18 t/s (a ~1.5x over
 the G2 engine; the ceiling ladder in PLAN_CF section 2 stays the reference - the
-all-resident stretch ~125-135 t/s). k is tuned on the measured acceptance at the round.
+all-resident stretch ~125-135 t/s).
+On the RAM-CAPPED Kaggle host (the partial-UVA form, ~60% of the layers alias-read -
+PLAN_CF cf-m3's RAM cap): the verify's union splits the same way (~0.86 GB alias-read
+~67 ms + ~0.58 GB staged ~87 ms incl. its memcpys) ~ 155 ms + the drafts ~8 -> at ~2.2
+accepted ~ 75 ms/token ~ 13 t/s - still a ~1.4x over that host's non-MTP ~110 ms/token
+class, so the lever pays on both hosts. k is tuned on the measured acceptance at the
+round.
 The lm_head truncation (341 MiB of the 0.44 GiB draft step) stays the quality-gated
 stretch (the 27B's `dv` pattern; the CF graft has NO own draft head, so it is an
 engine-side vocab subset, gated on the smoke test + greedy agreement).

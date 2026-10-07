@@ -235,6 +235,20 @@ dequant rates and the platform paths are measured, no more assumptions**:
   ratio all print). Gate: the correctness gates intact +
   the staged-vs-UVA A/B tok/s on the same hardware (the L4 locally, the T4 on the next
   quota window).
+  THE RAM CAP (r19r, from the tensor map): the trunk's expert region is 47.9 GiB (the
+  per-layer 1,022 MB: the gate 275.25 + the up 275.25 + the down 471.86, x 48) - MORE
+  than the Kaggle host's ~29 GB RAM, so the FULL registration does not fit on the
+  TARGET platform; the full-region form is the big-RAM host's (the probe's RSS growth
+  + registration time decide that host's feasibility). THE KAGGLE FORM: the PARTIAL
+  registration - the first N layers' expert spans (the layer-granular contiguous
+  ~1 GiB/layer spans), N driven by the measured usable RAM (~28-29 layers at ~28.8 GiB,
+  ~60% of the pool), carried by the LANDED dual-path/W-table mechanism: the registered
+  layers' picks read via the alias (the repack's input = the per-pick alias offsets),
+  the unregistered layers run the verbatim staged path. The honest Kaggle ladder: the
+  mixed staging ~29 x 1.56 + ~19 x 3.02 ~ 103 ms/token + ~7 GPU + the segmented graphs
+  (the staged layers keep their router syncs, so the full-step G2 graph is the
+  full-UVA host's; the Kaggle stays G1-class) ~1 -> ~110 ms/token ~ 9 t/s, vs the
+  full-UVA host's ~83 ms (~12 t/s, the G2). The probe's RSS output feeds N per host.
 - **cf-m4 - MTP spec**: the DESIGN IS FROZEN (r19q, `research/CF_MTP.md` - the
   pre-implementation spec: the draft block's exact forward (cf-arch section 6), the Q8_0
   gemv path ALREADY IN-REPO and gate-proven (the repack's GT_Q8_0 case + the FAST_Q8

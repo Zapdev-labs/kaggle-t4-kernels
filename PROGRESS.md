@@ -2196,3 +2196,27 @@ all-resident ceiling ladder stays the reference). The PLAN_CF cf-m4 bullet carri
 summary + the pointer. The implementation stays ordered after the UVA + the graphs (the
 verify's union staging rides whichever expert path wins the A/B; the draft steps join the
 G2 graph as fixed-shape work).
+
+## r19r - the cf-m3 RAM CAP decoded (the Kaggle form of the UVA is PARTIAL)
+
+The static check of the rebased cf-m3 against the tensor map found a platform blocker in
+the design as written: the trunk's expert region is 47.9 GiB (the per-layer 1,022 MB: the
+gate 275.25 + the up 275.25 + the down 471.86, x 48 layers) - MORE than the Kaggle host's
+~29 GB RAM, so cudaHostRegister over the WHOLE expert region does not fit on the TARGET
+platform; the full-region form is the big-RAM host's (the parallel session's L4; the
+probe's RSS growth + registration time decide that host's feasibility). THE KAGGLE FORM:
+the PARTIAL registration - the first N layers' expert spans (the layer-granular contiguous
+~1 GiB/layer spans), N driven by the measured usable RAM (~28-29 layers at ~28.8 GiB,
+~60% of the pool) - carried by the LANDED dual-path/W-table mechanism: the registered
+layers' picks read via the alias (the repack's input = the per-pick alias offsets), the
+unregistered layers run the verbatim staged path, so the mechanism is the tiering pattern
+repurposed (the layer split instead of the hot-set split, the alias views instead of the
+resident packed slabs). The honest Kaggle ladder: the mixed staging ~29 x 1.56 + ~19 x
+3.02 ~ 103 ms/token + ~7 GPU + the segmented graphs (the staged layers keep their router
+syncs, so the full-step G2 graph is the full-UVA host's; the Kaggle stays G1-class) ~1 ->
+~110 ms/token ~ 9 t/s, vs the full-UVA host's ~83 ms/token (~12 t/s, the G2). The MTP
+note gains the matching caveat: on the partial-UVA Kaggle the k=3 verify splits the same
+way (~0.86 GB alias + ~0.58 GB staged ~ 155 ms + ~8 ms of drafts) ~ 75 ms/token ~ 13 t/s
+- still a ~1.4x over that host's non-MTP class, so the lever pays on both hosts. The
+probe's RSS output feeds N per host; the quota is still 30/30 (the direct push rejected
+again this morning, the gatekeepers own the retries).
