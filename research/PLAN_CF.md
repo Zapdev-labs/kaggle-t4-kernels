@@ -177,32 +177,39 @@ dequant rates and the platform paths are measured, no more assumptions**:
   stage, compacted, scaling the memcpys + H2D + repacks with the miss count;
   absent file = OFF = the verbatim full-staging path) - the kernels untouched in
   both steps, and the tiering is complete except the miss-pipeline tuning (the
-  sticky-speculation prefetch), which needs the census's churn rate. Next speed
-  levers, in order, all AFTER the base gates - the order set by the staging-wall
-  decomposition above: (1) the census verdict -> the H choice -> the tiered A/B
-  (cf-m3: the staging IS the ~150-165 ms/token wall; the resident hits skip it
-  entirely), (2) the CUDA-graph capture of the static-shape sections (the ~57 ms
-  launch overhead is hidden under the staging today and becomes the wall only after
-  the tiering), (3) MTP (cf-m4).
-- **cf-m2 - the census**: the router concentration curve (section 3.2) + the per-bucket step
-  trace (the 27B trace method). Verdict: the tier split for cf-m3. Gate: the curve + the
-  chosen H per layer recorded, the projected tok/s with a measured miss model.
-- **cf-m3 - the tiered engine**: the resident tier (the hottest H experts/layer packed into
-  VRAM at load from the census's hot-set file; absent file = OFF = the exact current staging
-  path, so the landing is attribution-clean) + the dual-path moe (the hit picks run the
-  W-table batched gemvs over the resident slabs - NO staging, NO PCIe; the miss picks pay
-  the current MMAP->pinned->H2D staging for only their own rows) + the miss-pipeline
-  tuning the census measures (the sticky-speculation prefetch: the previous token's layer-L
-  picks prefetched into a double-buffered staging during the dense GPU window, so the miss
-  memcpys hide under the H2D; the churn rate decides its value) + the PLE 16-row async
-  prefetch after each sampling. The resident layout is the same packed staging shape
-  ([H*2*EE] K2 gate|up + [H*D] P4 down per layer), and the W-table mechanism is ALREADY
-  LANDED in the default path (r19k, 78d480e: k_gemv_q8k_b + the k_gemv_q80_b table form,
-  the identity table = the staged slab views reproduces the old uniform-stride pointers bit
-  for bit, zero behavior change) - the tiering only uploads the per-hit resident views into
-  the same table, with zero kernel change. Gate: >= 25 tok/s single-stream (3-4x the mmap
-  floor), correctness gates intact.
-- **cf-m4 - MTP spec**: the draft/verify/rollback wiring on the tiered engine, the n-gram
+  sticky-speculation prefetch), which needs the census's churn rate. THE CENSUS VERDICT
+  LANDED (r19n, the local L4 battery: the same tree as the passed gates): the routing is
+  NEAR-UNIFORM - 168,938 unique (layer,expert) slots of ~168,960 touched in 353 steps, the
+  top-64 slots carrying only 10.7% of the draws - so the residency tiering DOES NOT PAY at
+  this routing entropy; the mechanism stays landed + attribution-clean (absent hot-set =
+  OFF = the verbatim staging path), and the staging wall's fix is the UVA ZERO-COPY of the
+  mmap'd experts instead, matching the moe-l2 conclusion. Next speed
+  levers, in order - the order set by the staging-wall decomposition above and the census
+  verdict: (1) the UVA zero-copy (cf-m3 rebased: cudaHostRegister the mmap'd GGUF expert
+  region as mapped host memory and have the moe gemvs read the RAW GGUF bytes directly
+  over PCIe - no pinned staging, no H2D, no repack, the single touch; ~960 MB/token over
+  the T4's gen3 x16 (~12.8 GB/s) ~ 75 ms vs the ~150-165 ms staged path, a ~2x staging
+  cut; the L4's gen4 makes it ~38 ms), (2) the CUDA-graph capture of the static-shape
+  sections (the ~57 ms launch overhead is hidden under the staging today and becomes the
+  wall only after the UVA), (3) MTP (cf-m4).
+- **cf-m2 - the census**: VERDICT LANDED (r19n): near-uniform routing (168,938/168,960
+  slots touched in 353 steps; the top-64 = 10.7% of the draws) - no tier split pays; the
+  UVA zero-copy is the lever. The census tooling stays (any future model/file re-checks
+  the same way).
+- **cf-m3 - the UVA zero-copy moe** (REBASED from the tiered engine on the r19n census
+  verdict; the tiering mechanism stays landed + OFF + attribution-clean but pays ~nothing
+  at this entropy): cudaHostRegister(cudaHostRegisterMapped) the mmap'd GGUF expert
+  region once at load, and the moe gemvs read the RAW GGUF blocks directly from the mapped
+  host pages over PCIe - the dequant fused into the gemv (the block decode + the dp4a dot
+  per block, the r19i dot arithmetic unchanged) - eliminating the per-step MMAP->pinned
+  memcpys (~62 ms), the H2D (~83 ms), AND the repack launches, the single PCIe touch
+  (~960 MB/token ~ 75 ms on the T4's gen3 x16 vs the ~150-165 ms staged total). The
+  dual-path/W-table mechanism already supports per-pick views; the raw-reading gemv
+  becomes the third path (OFF by default until the A/B passes). The PLE 16-row async
+  prefetch after each sampling stays on the list. Gate: the correctness gates intact +
+  the staged-vs-UVA A/B tok/s on the same hardware (the L4 locally, the T4 on the next
+  quota window).
+- **cf-m4 - MTP spec**: the draft/verify/rollback wiring on the UVA engine, the n-gram
   table prefetch driven by the sampled token, k tuned on the measured acceptance.
   Gate: >= 40-60 tok/s, byte-identical greedy at every k.
 - **cf-m5 - the closure rounds**: the r4-r16 method (every lever A/B'd, every bucket measured

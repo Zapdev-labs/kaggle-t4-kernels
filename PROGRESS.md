@@ -2063,3 +2063,35 @@ The engine is CORRECT (byte-exact greedy chains, bit-exact layer 0, every
 divergence from the oracle accounted for as the oracle's own arithmetic or
 amplified fp-order noise) and FASTER than every llama.cpp configuration
 measured on this hardware.
+
+The sixth-catch hunt (this session, while the parallel session ran the L4
+battery): the full sweep of the remaining deep decode math vs cf-arch.md's
+formulas + the r17 census's ne[] convention (ne[0] = the gemv K) - CLEAN, no
+sixth catch, consistent with the L4 verdict. The GDN family: k_gdn_conv's
+silu = sum/(1+e^-sum) with the 3-tap causal state holding the RAW inputs;
+k_gdn_l2's rsqrt(ss/128 + eps/128) x (1/sqrt(128)) = the pure eps-guarded L2
+with the 1/sqrt(128) applied once at the recur's output (linear in q,
+equivalent placement); k_gdn_gates' beta = sigmoid(b_raw), g =
+softplus(a_raw + dt) * ssm_a with the stable softplus (x>20 ? x : log(1+e^x));
+the recur's tiled kh = h%16, S' = gamma*S + k*Delta^T with Delta =
+beta*(v - gamma*k^T S), o = q^T S' * 1/sqrt(128); k_cf_gdn_gnorm's PURE
+SIGMOID output gate 1/(1+e^-z) - the 4.5 delta correctly implemented,
+distinct from gdn.cu's 27B-lineage silu variant. The attention family:
+k_cf_qk_norm_rope's per-head RMSNorm x w, the NeoX pair rotation over the
+first 64 dims (the pair coverage complete: d<32 writes both d and d+32, d>=64
+passes through), theta = pos * base^(-2d/64); the f16 KV cache; the decode's
+GQA h/12, the 1/16 scale, the max-subtracted softmax, the f32 dot over the
+f16 K/V; the sigmoid output gate reading the [q|gate] interleaved 512-layout.
+The hc family: the s-major [hc, D] layout consistent engine<->graph<->memory
+(the {D, hc} views make the flat s-major), k_cf_hc_norm's per-stream RMS x
+the per-(c,s) weight, k_cf_hc_lo's silu(y/HC), k_cf_hc_mixed's (1/HC) sum_s
+xn*sigmoid(y_up), k_cf_hc_combine's res += 2*sigmoid(inj[s]/HC)*block,
+res_init's 4 copies. The PLE family: ple_key [2560,10240] = the gathered-emb
+[2560] -> the wide key [10240], ple_value [2560,2560], the sg's per-stream
+dot /sqrt(D) + the signed-sqrt clamp gate, the gated broadcast, the conv
+(the census settles ple_conv1d [4, 10240]: ne[0]=4 is the FAST dim so the
+flat is c*4+k = the engine's read; the dilation-3 taps k=0 -> hist[0] = t-9
+.. k=3 -> the current gnorm, the ring roll, the silu), the injection res +=
+gated + conv (commutative, bit-exact). The MoE combine: sum we*ye +
+sigmoid(sh_gate)*ysh. The layout question that sent this to the census (the
+doc's ple_conv1d[k,c] vs [k,c]-major) resolved by the ne[0]-fast convention.
