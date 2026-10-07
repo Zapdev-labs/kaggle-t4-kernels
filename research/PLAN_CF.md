@@ -127,21 +127,24 @@ dequant rates and the platform paths are measured, no more assumptions**:
   every timeout and burned the weekly 30 h GPU quota - DECODED (r19f): the downloader's own
   p.stat() on the fresh 82.85 GB file held the GIL through a D-state overlayfs stall and
   froze the whole process (thread watchdog included; the GPUs never ran); hardened with a
-  separate-process watchdog + a child-stat size probe. TWO payload-killing engine bugs
-  were then caught statically pre-quota (the r19l cluster): the Q4_K source-block order
-  (c980111: d/dmin were read from the block tail, poisoning the Q4_K token_embd +
-  lm_head) and THE BLOCK INPUT (ec1faac: every block projection consumed the raw
-  grouped-norm xn instead of the hc_mix OUTPUT s.mixed - the deltanet's qkv/z/beta/alpha,
-  the attention's wq/wk/wv, the moe's router + gate|up + shared experts; cf-arch.md
-  section 1 is unambiguous that x = hc_mix(res_hc) feeds every block, so every trunk
-  output would have diverged). The regenerated payload (ec1faac, byte-verified, sha
-  80f407cbc57876d5) now gates base + census + batching + q8 + the dp4a dots + the Q4_K
-  fix + the block-input fix + the zero-change identity W-table + the dual-path tiering +
-  the hot-set loader + the census emission + the bisect tooling (T4Q_CF_DUMP /
-  T4Q_CF_NOFAST), with the failure ladder ordered by behavior-change size: the
-  block-input fix (the biggest real change) -> the Q4_K fix (c980111) -> the dp4a
-  (942e86d, sim-verified 120/120) -> the zero-change mechanisms (78d480e the identity
-  table, e27b610/ec1faac the tiering's OFF path - both bit-exact by construction,
+  separate-process watchdog + a child-stat size probe. THREE payload-killing engine bugs
+  and one tooling race were then caught statically pre-quota (the r19l cluster): the Q4_K
+  source-block order (c980111: d/dmin read from the block tail, poisoning the Q4_K
+  token_embd + lm_head), THE BLOCK INPUT (ec1faac: every block projection consumed the
+  raw grouped-norm xn instead of the hc_mix OUTPUT s.mixed - cf-arch.md section 1 is
+  unambiguous that x = hc_mix(res_hc) feeds every block), and the q8_0 PLANE OVERFLOW
+  (7657d1c: the xq0/xd0/xs0 planes sized TOPK*EE = 6400 while every layer's hc_ffn_down
+  is Q4_0 with K = 10240 - the generic gemv helper's FMT_P4 branch overran the planes
+  into the neighboring scratch, NaN'ing the moe outputs; fixed to the largest gemv K,
+  HCD), plus the dump-stream race (the NULL-stream copies read pre-write garbage; the
+  z~0 phantom). The regenerated payload (7657d1c, byte-verified, sha 6fc494688d118093)
+  now gates base + census + batching + q8 + the dp4a dots + all three fixes + the
+  zero-change identity W-table + the dual-path tiering + the hot-set loader + the
+  census emission + the bisect tooling (T4Q_CF_DUMP / T4Q_CF_NOFAST), with the failure
+  ladder ordered by behavior-change size: the block-input fix (the biggest real change)
+  -> the Q4_K fix (c980111) -> the q8_0 plane fix (7657d1c) -> the dp4a (942e86d,
+  sim-verified 120/120) -> the zero-change mechanisms (78d480e the identity table,
+  e27b610/ec1faac the tiering's OFF path - both bit-exact by construction,
   near-zero suspicion) -> c3fb34c -> 35d8c2d -> 2f33431. The r18 worklist is CLOSED:
   every K-quant/P4 gemv pairs the activation with the oracle's own activation
   quantization (Q2_K/Q4_K <-> Q8_K, Q5_1 <-> Q8_1, Q4_0 <-> Q8_0, the exact ggml

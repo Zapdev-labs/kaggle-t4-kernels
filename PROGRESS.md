@@ -1920,3 +1920,20 @@ reordered by behavior-change size: the block-input fix (the biggest real change)
 -> the Q4_K fix -> the dp4a -> the zero-change mechanisms (the W-table identity,
 the tiering's OFF path, both bit-exact by construction). Build 0 errors across the
 whole cluster.
+
+The FOURTH catch (7657d1c, the parallel session's unit, verified here against the
+r17 census before committing): the q8_0 activation planes (xq0/xd0/xs0) were sized
+TOPK*EE = 6400 for the moe's down gemv, but the gemv helper's FMT_P4 branch is
+GENERIC - every layer's hc_ffn_down is Q4_0 [10240, 320] (K = 10240; the
+attn_down is Q5_1, the ffn_down is Q4_0 in all 48 layers), so the trunk's down
+gemv quantize overran the 6400/200/200-sized planes into the neighboring scratch
+allocs - the NaN'd neighbors, garbage moe outputs, a dead round. Fixed to the
+LARGEST gemv K (HCD = 10240); the sibling planes (xqk/xq1 families) were already
+HCD-sized - only the P4 planes were undersized. The same unit: the dump copies
+move to the engine's non-blocking stream (the NULL-stream copies raced the
+pending kernels - the z~0 phantom), and the captures expand (hc_gate/hc_mixed/
+hc_inject/res_mid/hc_combine/ffn_hc_norm/ffn_mixed/moe_mixed/moe_router, all
+dump-gated). The payload REGENERATED a FOURTH time (6fc49468 at 7657d1c,
+byte-verified, all four catches + the tiering + the tooling packed). The ladder
+gains the overflow fix between the block-input fix and the Q4_K fix (all three
+are the real-value changes; the rest is zero-change machinery).
