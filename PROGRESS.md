@@ -2555,3 +2555,74 @@ note: the DIRECT per-row-launch form pays the ~22 us launch wall x ~2600 x nr + 
 snapshot copies - the CF_MTP speed math (~55 ms/token ~ 18 t/s at k=3 on the UVA'd T4)
 still assumes the verify's own segment graphs + the UVA union scatters, the next
 rounds. The PLAN_CF cf-m4 block carries the driver's landed note.
+
+## r19z - the verify's own SEGMENT GRAPHS landed (the G1 pattern applied to cf_verify;
+## the sweep caught the r19x eid null-deref)
+
+The launch wall was the MTP verify's dominant direct-form cost: ~2600 launches per
+row x nr rows x ~22 us ~ 100-250 ms of pure wall per verify at nr=4 - the CF_MTP speed
+math (~55 ms/token ~ 18 t/s at k=3) assumed this round. The r19x inline body split
+into the SIX vfy_* functions at the end of the anonymous namespace (the r19v
+emission-split bar: ONE source for the direct driver and the graphs, the r19x bodies
+verbatim):
+- The host-only driver head (the embedding dequants into the pinned [nr][D] slices,
+  the toks records, the h_pos writes before any enqueue - the r19v discipline) +
+  vfy_head_em (the pos-word upload + the per-row emb H2Ds + the res inits).
+- vfy_ple_host (the per-row PLE gathers) - HOISTED out of the emission into the
+  driver's window work (the G1 form: host work cannot run mid-capture); value-safe:
+  the gathers write disjoint pinned slices and each row's H2D reads its own slice.
+- vfy_pre_em (per layer, per row: the PLE twin at layer 1 + the pre twin + the router
+  gemv/D2H; the r19y S/conv/PLE snapshot D2Ds ride at their exact per-(layer,row)
+  boundaries - fixed-arg nodes).
+- vfy_window (the sync + the per-row order-exact top-10 + the union dedup + the
+  union staging DIRECT - the union count varies per layer, not capture-constant -
+  + the W-table compose/uploads, pageable sources, direct).
+- vfy_moe_em (the we upload MOVED to its head - the pinned source is capture-legal
+  there, the r19v emit_moe_rest precedent, a memcpy among disjoint buffers written
+  by the window's host work and read by the moe_out after, in both orders - + the
+  per-row moe rest + the combine).
+- vfy_tail_em (the r19y pending_h capture + the final mixer + the shared lm_head +
+  the logits D2Hs into the pinned [nr][V] slices).
+The two moves (the PLE gather hoist, the we upload to the moe emission head) are the
+only deltas from the r19x-gate-proven stream order - both value-safe, both named in
+the split's header comment.
+
+THE GRAPH DRIVER: the same NL+1 = 49 sync-bounded segmentation as the step's G1
+(seg 0 = the head emission + L0's pre emission; seg k = L(k-1)'s moe emission + Lk's
+pre emission; seg 48 = L47's moe emission + the tail emission), captured at the
+FIRST full-nr verify call and replayed after (capture-at-first-use; each capture
+HEAD-SYNCED - the idle-stream invariant, the verify's windows, unlike the step's,
+enqueue staging - the sync runs only during the build, the steady state just
+replays; cudaStreamCaptureModeRelaxed keeps the mid-emission check_launch/CK queries
+legal). The per-layer host windows run between the replays exactly as the direct
+path's (vfy_window + the PLE gathers at the layers[0] window, before seg 1 - the G1
+host-window pattern: the gathers must precede the layer-1 emission's H2D node).
+Every varying content rides a pinned-fixed host source the captured memcpy nodes
+re-carry at each replay (the pos words, the emb rows, the PLE gather rows, the
+router D2Hs, the we rows, the logits D2Hs); the r19y snapshot D2Ds are fixed-arg
+nodes; the union staging + the W-table/uids uploads stay DIRECT in the windows.
+PARTIAL-nr calls (the `verify` gate mode's tail chunks, nr < v->nr) fall to the
+direct driver - the captured shapes are nr-bound; the direct and graph paths run the
+same ops with the same args in the same order (byte-identical by construction).
+Rides the same T4Q_CF_GRAPH=1 gate as the step's G1 graphs (c->gmode; the
+tiered/dump exclusions apply); INERT until cf_verify is called at full nr under the
+gate. cf_free destroys the execs/graphs after the stream drain (the G1 pattern).
+NO new kernels - host code only, the cf kernel register counts identical vs HEAD,
+0 errors/0 warnings (the 77 tp_* ptxas lines are the pre-existing 27B-lane set).
+
+THE SWEEP CAUGHT ONE REAL r19x BUG: v->eid (the per-row picks plane the window's
+host_top10_row writes, the dedup + the W-table compose read) was NEVER allocated -
+any cf_verify call would have segfaulted on the first window (the r19x round was
+build-verified only; the L4 runtime battery is quota-gated). Now cudaMallocHost'd in
+the verify block (pinned to match the sibling planes' discipline) + freed in cf_free.
+The CfDraft pointer fields were re-checked against the draft's alloc block - all
+allocated (the sweep's cross-check).
+
+Runtime verification (the L4): T4Q_CF_MTP=1 + T4Q_CF_GRAPH=1 + the `verify` gate ->
+the byte-match gate with the graphs riding (the full-nr chunks replay, the partial
+tails run direct - both drivers exercised in one run) + the verify ms/token vs the
+gmode-off direct form (the honest note: the launch wall collapses from ~10,400 x
+22 us to ~49 graph launches + the windows' direct staging launches ~5-22/layer; the
+r19y snapshot D2Ds and the union staging stay - the G2/UVA/k-tuning rounds' levers);
+the `spec` gate -> the pass gate + the accept histogram (the spec rounds always
+verify at full nr - the graph path always).

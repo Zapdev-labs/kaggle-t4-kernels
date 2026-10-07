@@ -421,8 +421,41 @@ dequant rates and the platform paths are measured, no more assumptions**:
   `cf_run spec <model> <ids> <n>`; the honest speed note: the direct-launch form pays
   the launch wall + the snapshot copies - the CF_MTP speed math (~55 ms/token ~ 18
   t/s at k=3 on the UVA'd T4) still assumes the verify's segment graphs + the UVA
-  union scatters. STILL AHEAD: the verify's own segment graphs, k tuned on the
-  measured acceptance, the lm_head truncation stretch.
+  union scatters. THE VERIFY'S OWN SEGMENT GRAPHS LANDED (r19z, build-clean 0
+  errors/0 warnings, NO new kernels - host code only, the cf kernel register counts
+  identical vs HEAD; rides the same T4Q_CF_GRAPH=1 gate as the step's G1 graphs via
+  c->gmode, so the tiered/dump exclusions apply; INERT until cf_verify is called at
+  full nr under the gate): the G1 pattern applied to cf_verify - the r19x inline
+  body split into the SIX vfy_* functions (ONE source for the direct driver and the
+  graphs: the host-only driver head + vfy_head_em/vfy_ple_host/vfy_pre_em/
+  vfy_window/vfy_moe_em/vfy_tail_em; the PLE gathers hoisted to the driver's window
+  work - host work cannot run mid-capture, disjoint pinned slices so value-safe -
+  and the we upload moved to the moe emission head - the pinned source is
+  capture-legal there, the r19v emit_moe_rest precedent; both moves named in the
+  split's header), then the NL+1 = 49 sync-bounded segments captured at the FIRST
+  full-nr call (each capture head-synced - the idle-stream invariant, the verify's
+  windows enqueue staging unlike the step's; relaxed mode keeps the mid-emission
+  check_launch/CK queries legal) and replayed after with the windows between the
+  replays (the union staging + the W-table/uids uploads DIRECT - the union count
+  varies per layer, not capture-constant; the PLE gathers at the layers[0] window,
+  before seg 1); every varying content rides a pinned-fixed host source the captured
+  memcpy nodes re-carry at each replay, the r19y snapshot D2Ds are fixed-arg nodes,
+  and partial-nr calls (the `verify` gate mode's tail chunks) fall to the direct
+  driver (the captured shapes are nr-bound; the two paths run the same ops/args/
+  order). The launch wall - the verify's dominant direct-form cost, ~2600 x nr x
+  ~22 us ~ 100-250 ms/verify at nr=4 - collapses to ~49 graph launches + the
+  windows' direct staging launches; the r19y snapshot D2Ds and the union staging
+  stay (the honest remaining copy cost; the G2 multi-token kernel removes the
+  snapshots). THE SWEEP caught one real r19x bug: v->eid (the per-row picks plane
+  host_top10_row writes) was never allocated - any cf_verify call would have
+  segfaulted (build-verified only); now pinned-allocated in the verify block +
+  freed in cf_free. Runtime verification (the L4): T4Q_CF_MTP=1 + T4Q_CF_GRAPH=1 +
+  the `verify` gate (both drivers exercised: the full-nr chunks replay, the partial
+  tails run direct) + the `spec` gate (always full-nr -> the graph path always) ->
+  the byte-match/pass gates + the accept histogram + the verify ms/token vs the
+  gmode-off direct form. STILL AHEAD: k tuned on the measured acceptance, the
+  lm_head truncation stretch, the G2 (the full-step graph + the order-exact device
+  router), the multi-token GDN ring kernel (removes the snapshot copy cost).
 - **cf-m5 - the closure rounds**: the r4-r16 method (every lever A/B'd, every bucket measured
   or roof-closed, PROGRESS.md sections per round). Stretch goals: the TC verify columns at
   the M=4 batch (the int4 mma path exists), the draft's lm_head truncation (0.34 GiB of the

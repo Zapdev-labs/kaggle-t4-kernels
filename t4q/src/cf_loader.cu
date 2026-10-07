@@ -625,6 +625,10 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                 CK(cudaMallocHost(&v->h_emb, (size_t)MAXR * D * 4));
                 CK(cudaMallocHost(&v->h_ple, (size_t)MAXR * D * 4));
                 CK(cudaMallocHost(&v->h_router, (size_t)MAXR * NE * 4));
+                // r19z sweep: the per-row picks plane - written by the window's host_top10_row,
+                // read by the dedup + the W-table compose (host-only, no captured node reads
+                // it; pinned to match the sibling planes' discipline)
+                CK(cudaMallocHost(&v->eid, (size_t)MAXR * TOPK * 4));
                 CK(cudaMallocHost(&v->we_h, (size_t)MAXR * TOPK * 4));
                 CK(cudaMalloc(&v->we_dev, (size_t)MAXR * TOPK * 4));
                 CK(cudaMallocHost(&v->h_logits, (size_t)MAXR * V * 4));

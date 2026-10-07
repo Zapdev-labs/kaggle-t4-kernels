@@ -198,6 +198,20 @@ struct CfVerify {
     int pending = -1;                 // the pending token (the one at position c->pos)
     double draft_s = 0, verify_s = 0, catch_s = 0;  // the round timers (the k tuning's eyes)
     long rounds = 0;
+    // cf-m4 (r19z): the verify's own segment graphs (the G1 pattern applied to cf_verify -
+    // the launch wall is the MTP path's dominant direct-form cost: ~2600 launches x nr
+    // rows ~ 100-250 ms of pure wall per verify). The same NL+1 = 49 sync-bounded segments
+    // (seg 0 = the head emission + L0's rows; seg k = L(k-1)'s moe rest + Lk's rows; seg 48
+    // = L47's moe rest + the tail emission), captured at the FIRST full-nr verify call and
+    // replayed after; the per-layer host windows (the sync + the top-10s + the union
+    // staging + the W-table uploads - the staging sizes VARY per layer, so they stay
+    // DIRECT) run between the replays. Partial-nr calls (the gate mode's tail chunks) fall
+    // to the direct path (the captured shapes are nr-bound). Rides the same T4Q_CF_GRAPH
+    // gate as the step's G1 graphs (the tiered/dump exclusions apply); every varying
+    // content rides a pinned-fixed host source the captured memcpy nodes re-carry at each
+    // replay, and the r19y snapshot D2Ds are fixed-arg nodes.
+    std::vector<cudaGraphExec_t> vgexec;   // [NL+1] the verify's per-segment instantiated execs
+    std::vector<cudaGraph_t> vggraph;      // the captured sources (destroyed at free)
 };
 
 struct CfCtx {
