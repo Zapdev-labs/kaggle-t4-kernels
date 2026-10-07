@@ -1,0 +1,30 @@
+t4q/src/kernels/gemv_ref.cu
+  s_ac85989787ca8c::t_8b8cb1ef9ab4bd 324-349
+  s_ac85989787ca8c::t_6d69c45e66eb3a 369
+  s_ac85989787ca8c::t_df35bb9a66ff8b 383-387
+research/CF_REQUANT.md
+  s_ac85989787ca8c::t_a035ec1b0e4d8f 196-225
+t4q/src/cf_engine.cu
+  s_ac85989787ca8c::t_15427769452b25 31-34
+t4q/tests/test_iq1s.cpp
+  s_ac85989787ca8c::t_b2d4bb4e3a4609 28-95
+  s_ac85989787ca8c::t_29efc21264b6e9 144-157,170-174
+  s_ac85989787ca8c::t_40100b8cd2b2e0 205-223
+  s_ac85989787ca8c::t_88ded5dc973d8f 227-230
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cda0f12d842d65399748c766addc1d69e9a383b7",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
