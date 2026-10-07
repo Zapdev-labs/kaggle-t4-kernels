@@ -1896,3 +1896,27 @@ Full podman nvcc 12.8 build: 0 errors (libt4q + cf_run). The engine-side correct
 gate rides the next quota round: base verdicts first, then the census -> the hot-set
 file -> the tiered A/B (the census_f write and the T4Q_CF_NOFAST/T4Q_CF_DUMP levers
 all still stand for the bisect).
+
+The round-killer catch bundled into the same cluster (the parallel session's find,
+verified here against the primary decode before committing): the BLOCK-INPUT FIX -
+every block projection now consumes the hc_mix OUTPUT (s.mixed, the sigmoid-gated
+stream-mean collapsed [D]) instead of the raw grouped-norm xn: the deltanet's
+qkv/z/beta/alpha, the attention's wq/wk/wv, the moe's router + the gate|up quantize +
+the three shared-expert gemvs. cf-arch.md section 1 is unambiguous (x = hc_mix(res_hc)
+is THE INPUT to every block); the r18/r19b engine fed them the xn intermediate, so
+every trunk output would have diverged - the SECOND pre-quota catch in this cluster
+(after the Q4_K block order), and the payload regenerated at bfd4850 was dead AGAIN
+(it predates the fix). Verified end-to-end: the hc_mix's own down/up gemvs and the
+inject correctly stay on xn/flat (flat = xn reshaped, inject = w_inject @ flat), the
+PLE's key/value consume the gathered emb (staged through the s.mixed buffer,
+overwritten before use), and the lm_head already consumed the mixed.
+
+The payload REGENERATED at ec1faac (the THIRD tonight: 8c2969a -> dead on the Q4_K
+order -> 533c2f13 at 78d480e -> dead on the block input -> 80f407cb at ec1faac),
+byte-verified 90 members zero mismatches, ALL gates packed: the Q4_K fix, the block
+input fix, the dp4a dots, the identity W-table, the dual-path moe + the hot-set
+loader + the census emission + the bisect tooling. The failure ladder for the round,
+reordered by behavior-change size: the block-input fix (the biggest real change)
+-> the Q4_K fix -> the dp4a -> the zero-change mechanisms (the W-table identity,
+the tiering's OFF path, both bit-exact by construction). Build 0 errors across the
+whole cluster.
