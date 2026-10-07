@@ -2702,3 +2702,41 @@ split (the experts by ID across the 2 T4s, the plan's risk-register design). The
 G2 device router stays the same verdict as before (the order-exact trap for a
 ~1-2% win, and the full-step graph form cannot run on the RAM-capped Kaggle host -
 the UVA covers only ~60% of the layers).
+
+## r19ac - the requant FORMAT STUDY opened (the primary-source facts fetched; the
+## freeze is the next round)
+
+The round-1 opening of the requant stretch (PLAN_CF section 5, census-unlocked).
+THE PRIMARY SOURCE (fetched this turn, ggml-common.h @ ggml-org/llama.cpp master):
+the exact candidate block structures - iq2_xxs 2.0625 bpw (a f16 d + 32 u16 grid
+indices per 256-elem superblock, the 256-entry iq2xxs_grid codebook of 8-byte
+entries with the byte values {0x08, 0x19, 0x2b}), iq2_xs 2.3125 (+ 8 scale bytes),
+iq2_s 2.5625 (d + 64 qs + 8 qh + 8 scales), iq1_s 1.5625 (a f16 d + 32 u8 grid
+indices + 8 u16 qh per 256, the 2048-entry iq1s_grid + ksigns64), iq1_m 1.75 (32
+qs + 16 qh + 8 scales, no f16 d). THE RESIDENCY ARITHMETIC (the r19ab-corrected
+pool, 120.7 G-elems, against each candidate): iq1_s -> 23.6 GB, the ONLY stock
+format that fits the 2x T4 full-residency frame (~24-25 GB of expert room after the
+~2.6 GB core + the KV + the draft + the scratch); iq1_m -> 26.4 GB (over); iq2_xxs
+-> 31.1 GB (well over); and NO hybrid split fits either (gu iq2_xxs + dn iq1_s =
+28.6 GB, gu iq1_s + dn iq2_xxs = 26.1 GB - both over) - so the stock answer is
+BOTH expert tensors at iq1_s, or a custom leaner ~1.6 form (the iq1_s structure
+with a leaner scale, or the iq1_m scales without the f16 d). THE HONEST RISK
+CLASSES the freeze must argue: (1) QUALITY - the iq1_s lattice (the 1.5625 "1-bit"
+family) against the trunk's own Q2_K_S 2.625 gu class is a substantial per-expert
+noise step; the source is the BF16 original (355 GB, streamed tensor-by-tensor
+per the plan), not the quantized trunk; the gate is the perplexity-class A/B (the
+Q2_K_S trunk vs the iq1_s-experts trunk) + the greedy-agreement rate at temp 0 -
+measured at the L4, not assumed; (2) RATE - the grid decode (the shared-memory
+codebook gather + the sign unpack + the float dot, NOT the dp4a nibble path) sits
+below the r18-measured K-quant family (Q2_K ~179-200 GB/s at the expert shapes);
+the honest kernel-rate estimate needs the exact ggml CUDA iq1_s vec_dot
+instruction count - the next study, not yet done; (3) the QUALITY-RESIDENCY
+TENSION - if iq1_s fails the quality gate, the fallback is the custom ~1.65-1.7
+form (a leaner-scale iq1_s/iq1_m hybrid) which trades bpw headroom against the
+same lattice noise. STILL AHEAD (the freeze's inputs): the ggml-quants.c +
+iq1_s CUDA vec_dot study (the exact decode + the quantizer's grid search + the
+instruction count), then the FROZEN SPEC (research/CF_REQUANT.md: the format pick,
+the exact arithmetic, the kernel design at the CF shapes, the packer pipeline
+(the BF16 streaming + the grid search), the TP-split residency design, the gates),
+then the implementation rounds. The r19ab note carries the pool arithmetic; this
+note carries the source facts.
