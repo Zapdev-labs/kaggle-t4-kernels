@@ -321,8 +321,10 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
         s.xq1_s = dalloc<float>(HCD / 32, false);
         s.xqk = dalloc<int8_t>(HCD, false); s.xqk_b = dalloc<int16_t>(HCD / 16, false);
         s.xqk_d = dalloc<float>(HCD / 256, false);
-        s.xq0 = dalloc<int8_t>((size_t)TOPK * EE, false); s.xd0 = dalloc<float>((size_t)TOPK * EE / 32, false);
-        s.xs0 = dalloc<int>((size_t)TOPK * EE / 32, false);
+        // the q8_0 activation planes sized for the LARGEST gemv K (HCD): the trunk's Q4_0 gemv
+        // (hc_ffn_down, K=10240) overflowed the old TOPK*EE=6400 sizing and NaN'd the neighbors
+        s.xq0 = dalloc<int8_t>(HCD, false); s.xd0 = dalloc<float>(HCD / 32, false);
+        s.xs0 = dalloc<int>(HCD / 32, false);
         c->ye = dalloc<float>((size_t)TOPK * D, false);
         c->we = dalloc<float>(TOPK, false);
         c->ysh = dalloc<float>(D, false);

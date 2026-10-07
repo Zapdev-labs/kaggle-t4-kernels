@@ -49,14 +49,17 @@ void check_launch(const char* what) {
 static FILE* cfdump = (FILE*)1;
 static int cfdump_last = -2;
 static int cfdump_tag = -1;
+// the dump copies MUST go on the engine's (non-blocking) stream: a NULL-stream copy races the
+// pending kernels and reads pre-write garbage (the "z ~ 0" phantom was this race)
+static cudaStream_t cfdump_st = nullptr;
 static bool cfdump_active() {
     return cfdump && cfdump_tag >= 0;
 }
 static void cfdump_rec(const char* name, const float* dev, int n) {
     if (!cfdump_active()) return;
     std::vector<float> tmp(n);
-    cudaMemcpyAsync(tmp.data(), dev, (size_t)n * 4, cudaMemcpyDeviceToHost, nullptr);
-    cudaStreamSynchronize(nullptr);
+    cudaMemcpyAsync(tmp.data(), dev, (size_t)n * 4, cudaMemcpyDeviceToHost, cfdump_st);
+    cudaStreamSynchronize(cfdump_st);
     uint32_t nl = (uint32_t)strlen(name);
     fwrite(&nl, 4, 1, cfdump); fwrite(name, 1, nl, cfdump);
     fwrite(&cfdump_tag, 4, 1, cfdump);
@@ -166,10 +169,15 @@ void ple(CfCtx* c, int token) {
 // The MoE: router -> host softmax/top-10/renorm -> stage 10 experts -> repack -> gemv -> combine
 void moe(CfCtx* c, CfLayer& L, CfScratch& s) {
     cudaStream_t st = c->st;
+    { std::string nm = "moe_mixed-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.mixed, D); }
     // the router and every expert/shared input is the ffn-side hc mixed (build_layer_ffn(cur))
     gemv(s, L.router, s.mixed, s.logits, st);  // borrow the logits scratch [512 of V]
     CK(cudaMemcpyAsync(c->h_router, s.logits, (size_t)NE * 4, cudaMemcpyDeviceToHost, st));
     CK(cudaStreamSynchronize(st));
+    { std::string nm = "moe_router-" + std::to_string(L.il); cfdump_rec(nm.c_str(), s.logits, NE); }
+    if (cfdump_active())
+        fprintf(stderr, "[moe] il %d pos ? router[0..3] %.4f %.4f %.4f %.4f\n", L.il, c->h_router[0],
+                c->h_router[1], c->h_router[2], c->h_router[3]);
     // host softmax over 512 (fp32, exact formula), then top-10 renormalized
     float m = c->h_router[0];
     for (int i = 1; i < NE; i++) m = std::max(m, c->h_router[i]);
@@ -305,6 +313,7 @@ bool cf_step(CfCtx* c, int token) {
         if (cfdump == (FILE*)1) {
             const char* p = getenv("T4Q_CF_DUMP");
             cfdump = (p && *p) ? fopen(p, "wb") : nullptr;
+            cfdump_st = st;
             if (cfdump) {
                 const char* lp = getenv("T4Q_CF_DUMP_LAST");
                 cfdump_last = lp ? atoi(lp) : -1;
@@ -335,6 +344,9 @@ bool cf_step(CfCtx* c, int token) {
             hc_mix(c, s.h, L.hc_norm[0], L.hc_down[0], L.hc_up[0], &L.hc_inject[0], s);
             // hc_norm: the FIRST (attn-side) norm output; the oracle's first-capture matches
             { std::string nm = "hc_norm-" + std::to_string(il); cfdump_rec(nm.c_str(), s.xn, HCD); }
+            { std::string nm = "hc_gate-" + std::to_string(il); cfdump_rec(nm.c_str(), s.gate, HCD); }
+            { std::string nm = "hc_mixed-" + std::to_string(il); cfdump_rec(nm.c_str(), s.mixed, D); }
+            { std::string nm = "hc_inject-" + std::to_string(il); cfdump_rec(nm.c_str(), s.inj, HC); }
             if (L.attn) attention(c, L, s, c->pos);
             else deltanet(c, L, s);
             {
@@ -342,7 +354,11 @@ bool cf_step(CfCtx* c, int token) {
                 cfdump_rec(bn.c_str(), s.block, D);
             }
             hc_combine(c, s.h, s.block, s.inj);
+            { std::string nm = "res_mid-" + std::to_string(il); cfdump_rec(nm.c_str(), s.h, HCD); }
+            { std::string nm = "hc_combine-" + std::to_string(il); cfdump_rec(nm.c_str(), s.h, HCD); }
             hc_mix(c, s.h, L.hc_norm[1], L.hc_down[1], L.hc_up[1], &L.hc_inject[1], s);
+            { std::string nm = "ffn_hc_norm-" + std::to_string(il); cfdump_rec(nm.c_str(), s.xn, HCD); }
+            { std::string nm = "ffn_mixed-" + std::to_string(il); cfdump_rec(nm.c_str(), s.mixed, D); }
             moe(c, L, s);
             { std::string nm = "ffn_out-" + std::to_string(il); cfdump_rec(nm.c_str(), s.block, D); }
             hc_combine(c, s.h, s.block, s.inj);
