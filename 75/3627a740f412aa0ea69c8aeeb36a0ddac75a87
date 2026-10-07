@@ -1,0 +1,37 @@
+t4q/tools/cf_run.cu
+  s_ac85989787ca8c::t_017d9b67d12a80 315-384
+  s_ac85989787ca8c::t_c09fd3e15e2e1b 64
+  s_ac85989787ca8c::t_617e3dbcbe0c5a 15-22
+PROGRESS.md
+  s_ac85989787ca8c::t_d7202abcbb7509 2477-2557
+t4q/src/cf_loader.cu
+  s_ac85989787ca8c::t_20e965da2272ff 664-693
+research/PLAN_CF.md
+  s_ac85989787ca8c::t_518b8773287571 385-425
+t4q/src/cf_engine.cu
+  s_ac85989787ca8c::t_d0259a0e67a7dd 1043
+  s_ac85989787ca8c::t_f3a6762171c2e6 763-771
+  s_ac85989787ca8c::t_a42c2ddf782f00 883-886
+  s_ac85989787ca8c::t_dea30522073f81 742-744
+  s_ac85989787ca8c::t_3a549c09147585 902-1031
+t4q/src/cf_model.h
+  s_ac85989787ca8c::t_6c00634341b244 193
+  s_ac85989787ca8c::t_951208c8844560 177-192,194-200
+  s_ac85989787ca8c::t_aa350d2e861475 340-363
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "753627a740f412aa0ea69c8aeeb36a0ddac75a87",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
