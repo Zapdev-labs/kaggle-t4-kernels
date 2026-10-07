@@ -6,6 +6,9 @@ Verdicts printed: the per-layer concentration curve (the cumulative routed mass 
 experts), the unique-expert counts, the cross-layer overlap, an LRU working-set simulation at
 the measured VRAM budget, and the recommended split (hot VRAM / pinned warm / disk tail).
 Usage: cf_census.py <census.bin> [--vram-gib 27] [--tok-s 60]
+       cf_census.py <census.bin> --hotset <out.hotset> <H>: also write the hot-set file the
+       loader's resident tier reads (T4Q_CF_HOTSET=<path>): "CFHS" u32, u32 NL, u32 H, then
+       NL x H u32 expert ids, layer-major, the per-layer top-H by accumulated routed mass.
 """
 import json
 import struct
@@ -25,12 +28,17 @@ def main():
     p = Path(sys.argv[1])
     vram_gib = 27.0
     tok_s = 60.0
+    hotset_path = None
+    hotset_H = 0
     args = sys.argv[2:]
     for i, a in enumerate(args):
         if a == "--vram-gib":
             vram_gib = float(args[i + 1])
         elif a == "--tok-s":
             tok_s = float(args[i + 1])
+        elif a == "--hotset":
+            hotset_path = args[i + 1]
+            hotset_H = int(args[i + 2])
     data = p.read_bytes()
     magic, nl, topk = struct.unpack_from("<III", data, 0)
     assert magic == 0x31434643, f"bad magic {magic:#x}"
@@ -127,6 +135,22 @@ def main():
     out["layer_detail"] = detail
     Path(str(p) + ".json").write_text(json.dumps(out, indent=1))
     print(f"wrote {p}.json", file=sys.stderr)
+
+    if hotset_path:
+        # the hot-set file for the loader's resident tier (T4Q_CF_HOTSET): the per-layer
+        # top-H expert ids by accumulated routed mass, layer-major, uniform H (capped by
+        # the smallest per-layer unique count so every layer emits exactly H ids)
+        uniq_min = min(len(u) for u in uniques.values())
+        H = hotset_H
+        if H > uniq_min:
+            print(f"hotset: H {H} capped at the min unique count {uniq_min}", file=sys.stderr)
+            H = uniq_min
+        with open(hotset_path, "wb") as hf:
+            hf.write(struct.pack("<III", 0x53484643, nl, H))
+            for l in range(nl):
+                ids = [e for e, _ in layers[l].most_common(H)]
+                hf.write(struct.pack(f"<{H}I", *ids))
+        print(f"hotset: wrote {hotset_path} (H={H})", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -362,6 +362,74 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
         CK(cudaMalloc(&c->wt_dn, (size_t)TOPK * sizeof(PackedW)));
         CK(cudaMemcpy(c->wt_gu, c->h_wt_gu, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice));
         CK(cudaMemcpy(c->wt_dn, c->h_wt_dn, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice));
+        // the resident tier (cf-m3): T4Q_CF_HOTSET=<path>, produced by cf_census.py --hotset
+        // from the round's census.bin. ABSENT = OFF = the verbatim full-staging path (the
+        // identity W table above stands). Present = ON: the per-layer top-H experts (by
+        // routed mass) are packed into VRAM here at load, in the SAME packed shapes as the
+        // staging, through the SAME chunked raw->pinned->H2D->repack path the moe uses per
+        // step - so the resident slabs are byte-identical to what the staging would produce
+        // for the same experts, and the dual-path moe's hit picks read them with zero staging.
+        if (const char* hs_path = getenv("T4Q_CF_HOTSET")) {
+            FILE* hf = fopen(hs_path, "rb");
+            if (!hf) throw std::runtime_error(std::string("hot-set open failed: ") + hs_path);
+            uint32_t magic = 0, nl = 0, h = 0;
+            if (fread(&magic, 4, 1, hf) != 1 || fread(&nl, 4, 1, hf) != 1 || fread(&h, 4, 1, hf) != 1 ||
+                magic != 0x53484643u /* "CFHS" */ || (int)nl != NL || h == 0 || h > (uint32_t)NE)
+                throw std::runtime_error("bad hot-set header (want CFHS, NL, 0 < H <= NE)");
+            // the VRAM check before any alloc: H resident slabs/layer at ~2.0 MB each
+            {
+                const double per_layer_mb = h * (2.0 * EE * 840.0 / 1e6 + (double)D * 360.0 / 1e6);
+                const double need_gib = per_layer_mb * NL / 1024.0;
+                size_t free_b = 0, total_b = 0;
+                CK(cudaMemGetInfo(&free_b, &total_b));
+                if ((double)free_b < need_gib * 1024 * 1024 * 1024 * 1.02)
+                    throw std::runtime_error("hot set needs " + std::to_string(need_gib) + " GiB, only " +
+                                             std::to_string((double)free_b / (1 << 30)) + " GiB free");
+                fprintf(stderr, "[cf] resident tier: H=%u/layer, %.2f GiB\n", h, need_gib);
+            }
+            const size_t gu_row = c->layers[0].t_gate_exps->row_bytes;  // 840
+            const size_t dn_row = c->layers[0].t_down_exps->row_bytes;  // 360
+            const size_t up_bytes = (size_t)TOPK * 2 * EE * gu_row;    // the fixed raw_stage layout
+            for (int il = 0; il < NL; il++) {
+                CfLayer& L = c->layers[il];
+                L.hn = (int)h;
+                L.hot_ids = new int[h];
+                L.hot_idx = new int[NE];
+                memset(L.hot_idx, -1, (size_t)NE * sizeof(int));
+                if (fread(L.hot_ids, 4, h, hf) != h)
+                    throw std::runtime_error("hot-set truncated at layer " + std::to_string(il));
+                for (uint32_t j = 0; j < h; j++) {
+                    if (L.hot_ids[j] < 0 || L.hot_ids[j] >= NE || L.hot_idx[L.hot_ids[j]] >= 0)
+                        throw std::runtime_error("bad/duplicate hot-set id at layer " + std::to_string(il));
+                    L.hot_idx[L.hot_ids[j]] = (int)j;
+                }
+                alloc_packed(L.res_gu, 0, fmt_for(GT_Q2_K), (int64_t)L.hn * 2 * EE, D);
+                alloc_packed(L.res_dn, 0, fmt_for(GT_Q4_0), (int64_t)L.hn * D, EE);
+                for (int h0 = 0; h0 < L.hn; h0 += TOPK) {  // TOPK slabs per pass through raw_stage
+                    const int ch = std::min(TOPK, L.hn - h0);
+                    CK(cudaStreamSynchronize(st));  // the previous pass's H2D must drain before the refill
+                    for (int j = 0; j < ch; j++) {
+                        const int64_t e = L.hot_ids[h0 + j];
+                        uint8_t* dst = c->raw_stage + (size_t)j * 2 * EE * gu_row;
+                        memcpy(dst, L.t_gate_exps->data + (size_t)e * EE * gu_row, (size_t)EE * gu_row);
+                        memcpy(dst + (size_t)EE * gu_row, L.t_up_exps->data + (size_t)e * EE * gu_row,
+                               (size_t)EE * gu_row);
+                        memcpy(c->raw_stage + up_bytes + (size_t)j * D * dn_row,
+                               L.t_down_exps->data + (size_t)e * D * dn_row, (size_t)D * dn_row);
+                    }
+                    CK(cudaMemcpyAsync(c->raw_dev, c->raw_stage, (size_t)ch * 2 * EE * gu_row,
+                                       cudaMemcpyHostToDevice, st));
+                    CK(cudaMemcpyAsync(c->raw_dev + up_bytes, c->raw_stage + up_bytes, (size_t)ch * D * dn_row,
+                                       cudaMemcpyHostToDevice, st));
+                    launch_repack(L.res_gu, GT_Q2_K, c->raw_dev, (int64_t)h0 * 2 * EE, (int64_t)ch * 2 * EE, st);
+                    launch_repack(L.res_dn, GT_Q4_0, c->raw_dev + up_bytes, (int64_t)h0 * D, (int64_t)ch * D, st);
+                    CK(cudaGetLastError());
+                }
+            }
+            fclose(hf);
+            CK(cudaStreamSynchronize(st));
+            c->tiered = true;
+        }
         CK(cudaMallocHost(&c->h_router, (size_t)NE * 4));
         CK(cudaMallocHost(&c->we_h, (size_t)TOPK * 4));
         c->eid = new int[TOPK];

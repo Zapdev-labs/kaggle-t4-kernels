@@ -64,6 +64,15 @@ struct CfLayer {
     // MoE: router + shared expert in VRAM; the 512 routed experts stay mmap'd
     PackedW router, sh_gate, sh_up, sh_down, sh_ginp;
     const GgufTensor *t_gate_exps = nullptr, *t_up_exps = nullptr, *t_down_exps = nullptr;
+    // the resident tier (cf-m3, the hot-set landing): with a hot-set file loaded, the
+    // per-layer top-H experts (by routed mass) are packed into VRAM at load in the SAME
+    // packed shapes as the staging ([hn*2*EE, D] K2 gate|up + [hn*D, EE] P4 down), so the
+    // dual-path moe's hit picks read them through the W table with zero staging. hn = 0
+    // (absent file) = OFF = the verbatim full-staging path.
+    PackedW res_gu, res_dn;
+    int hn = 0;
+    int* hot_ids = nullptr;   // [hn] the resident expert ids, the load-time packing order
+    int* hot_idx = nullptr;  // [NE] the expert id -> the resident index h, or -1 (a miss)
 };
 
 // The PLE module (layer 1 only). The 26.85 GiB hash table stays mmap'd.
@@ -121,6 +130,12 @@ struct CfCtx {
     PackedW* wt_dn = nullptr;         // device: [TOPK] the down slab views
     PackedW h_wt_gu[cf::TOPK] = {};   // host staging for the upload
     PackedW h_wt_dn[cf::TOPK] = {};
+    // the dual-path moe (cf-m3): with the tier on, the per-step table composes the hit
+    // picks' RESIDENT views and the miss picks' staged-slot views and re-uploads per layer
+    // (1760 B); with the tier off these stay unused and the load-time identity upload stands
+    PackedW h_step_gu[cf::TOPK] = {};  // the per-step composed gate|up table (host)
+    PackedW h_step_dn[cf::TOPK] = {};  // the per-step composed down table (host)
+    bool tiered = false;              // a hot-set file was loaded (the resident tier is ON)
     float* ye = nullptr;              // [TOPK*D] per-expert down outputs
     float* we = nullptr;              // [TOPK] renormalized router weights (device)
     float* ysh = nullptr;             // [D] shared expert out
