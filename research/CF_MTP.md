@@ -110,7 +110,19 @@ The lm_head truncation (341 MiB of the 0.44 GiB draft step) stays the quality-ga
 stretch (the 27B's `dv` pattern; the CF graft has NO own draft head, so it is an
 engine-side vocab subset, gated on the smoke test + greedy agreement).
 
-## 8. The order
+## 8. The PLE prefetch: the honest window class (the r19e chain verdict holds)
+
+The 1-step-ahead row prefetch is IMPOSSIBLE in the greedy loop (r19e): the chain
+gather_i -> the step's GPU work -> the logits -> the argmax -> gather_{i+1} is hard - the
+next gather's hash needs THIS step's argmax, which exists only at the step's end, and the
+gather is the very next op. The MTP changes the class but only PARTIALLY: the verify's
+(k+1) x 16 rows become known at the DRAFTS (the draft tokens), so the prefetch window is
+the drafts themselves (~8 ms for k=3) against the ~184 faulted pages (~17 ms at the
+measured ~11k IOPS / ~98 us first-fault class) - MOST of the verify's PLE faults can
+hide under the draft steps, the tail pays. Realistic win: most of the ~1.4-1.6 ms/token
+gather fault cost, not all of it; the MTP's verify is the only window this engine has.
+
+## 9. The order
 
 The design is now frozen ahead of the implementation; the IMPLEMENTATION order stays
 (1) the UVA (cf-m3), (2) the graphs, (3) this spec (cf-m4) - the verify's union staging
