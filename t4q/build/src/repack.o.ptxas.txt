@@ -3,89 +3,89 @@ ptxas info    : Compiling entry function '_Z14k_dequant_rowsILi8EEv7PackedWPKiiP
 ptxas info    : Function properties for _Z14k_dequant_rowsILi8EEv7PackedWPKiiPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 57 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 11.455 ms
+ptxas info    : Compile time = 11.424 ms
 ptxas info    : Compiling entry function '_Z14k_dequant_rowsILi7EEv7PackedWPKiiPf' for 'sm_75'
 ptxas info    : Function properties for _Z14k_dequant_rowsILi7EEv7PackedWPKiiPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 11.632 ms
+ptxas info    : Compile time = 12.198 ms
 ptxas info    : Compiling entry function '_Z14k_dequant_rowsILi6EEv7PackedWPKiiPf' for 'sm_75'
 ptxas info    : Function properties for _Z14k_dequant_rowsILi6EEv7PackedWPKiiPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 10.511 ms
+ptxas info    : Compile time = 10.936 ms
 ptxas info    : Compiling entry function '_Z14k_dequant_rowsILi5EEv7PackedWPKiiPf' for 'sm_75'
 ptxas info    : Function properties for _Z14k_dequant_rowsILi5EEv7PackedWPKiiPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 15.080 ms
+ptxas info    : Compile time = 15.380 ms
 ptxas info    : Compiling entry function '_Z14k_dequant_rowsILi4EEv7PackedWPKiiPf' for 'sm_75'
 ptxas info    : Function properties for _Z14k_dequant_rowsILi4EEv7PackedWPKiiPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 15.671 ms
+ptxas info    : Compile time = 17.539 ms
 ptxas info    : Compiling entry function '_Z14k_dequant_rowsILi3EEv7PackedWPKiiPf' for 'sm_75'
 ptxas info    : Function properties for _Z14k_dequant_rowsILi3EEv7PackedWPKiiPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 7.507 ms
+ptxas info    : Compile time = 8.460 ms
 ptxas info    : Compiling entry function '_Z14k_dequant_rowsILi2EEv7PackedWPKiiPf' for 'sm_75'
 ptxas info    : Function properties for _Z14k_dequant_rowsILi2EEv7PackedWPKiiPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 53 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 7.958 ms
+ptxas info    : Compile time = 8.992 ms
 ptxas info    : Compiling entry function '_Z14k_dequant_rowsILi1EEv7PackedWPKiiPf' for 'sm_75'
 ptxas info    : Function properties for _Z14k_dequant_rowsILi1EEv7PackedWPKiiPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 54 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 7.637 ms
+ptxas info    : Compile time = 8.157 ms
 ptxas info    : Compiling entry function '_Z14k_dequant_rowsILi0EEv7PackedWPKiiPf' for 'sm_75'
 ptxas info    : Function properties for _Z14k_dequant_rowsILi0EEv7PackedWPKiiPf
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 64 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 5.936 ms
+ptxas info    : Compile time = 6.383 ms
 ptxas info    : Compiling entry function '_Z15k_repack_eid_q47PackedWPKhPKilll' for 'sm_75'
 ptxas info    : Function properties for _Z15k_repack_eid_q47PackedWPKhPKilll
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 26 registers, used 0 barriers, 480 bytes cmem[0]
-ptxas info    : Compile time = 6.220 ms
+ptxas info    : Compile time = 6.635 ms
 ptxas info    : Compiling entry function '_Z16k_repack_eid_q2k7PackedWPKhS1_PKillll' for 'sm_75'
 ptxas info    : Function properties for _Z16k_repack_eid_q2k7PackedWPKhS1_PKillll
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 26 registers, used 0 barriers, 496 bytes cmem[0]
-ptxas info    : Compile time = 13.036 ms
+ptxas info    : Compile time = 13.750 ms
 ptxas info    : Compiling entry function '_Z12k_repack_q517PackedWPKhll' for 'sm_75'
 ptxas info    : Function properties for _Z12k_repack_q517PackedWPKhll
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 22 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 5.536 ms
+ptxas info    : Compile time = 5.856 ms
 ptxas info    : Compiling entry function '_Z12k_repack_q4k7PackedWPKhll' for 'sm_75'
 ptxas info    : Function properties for _Z12k_repack_q4k7PackedWPKhll
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 22 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 6.110 ms
+ptxas info    : Compile time = 6.367 ms
 ptxas info    : Compiling entry function '_Z12k_repack_q2k7PackedWPKhll' for 'sm_75'
 ptxas info    : Function properties for _Z12k_repack_q2k7PackedWPKhll
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 24 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 11.331 ms
+ptxas info    : Compile time = 11.817 ms
 ptxas info    : Compiling entry function '_Z12k_repack_q6k7PackedWPKhll' for 'sm_75'
 ptxas info    : Function properties for _Z12k_repack_q6k7PackedWPKhll
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 26 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 12.072 ms
+ptxas info    : Compile time = 12.843 ms
 ptxas info    : Compiling entry function '_Z12k_repack_q5k7PackedWPKhll' for 'sm_75'
 ptxas info    : Function properties for _Z12k_repack_q5k7PackedWPKhll
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 24 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 8.292 ms
+ptxas info    : Compile time = 8.647 ms
 ptxas info    : Compiling entry function '_Z11k_repack_q87PackedWPKhll' for 'sm_75'
 ptxas info    : Function properties for _Z11k_repack_q87PackedWPKhll
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 20 registers, used 0 barriers, 464 bytes cmem[0]
-ptxas info    : Compile time = 5.811 ms
+ptxas info    : Compile time = 6.448 ms
 ptxas info    : Compiling entry function '_Z11k_repack_q47PackedWPKhllii' for 'sm_75'
 ptxas info    : Function properties for _Z11k_repack_q47PackedWPKhllii
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 18 registers, used 0 barriers, 472 bytes cmem[0]
-ptxas info    : Compile time = 5.728 ms
+ptxas info    : Compile time = 6.255 ms
