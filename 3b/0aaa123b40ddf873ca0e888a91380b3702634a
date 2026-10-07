@@ -1,0 +1,37 @@
+t4q/tools/oracle_dump.cpp
+  s_ee78a6a141091d::t_9f68e40be331d9 55-58
+  s_ee78a6a141091d::t_361d981fbfb708 92-94
+t4q/src/cf_engine.cu
+  s_ee78a6a141091d::t_049a15033256dc 25-28
+  s_ee78a6a141091d::t_e8aa1af7c2555c 48-57,59-66
+  s_ee78a6a141091d::t_e054e45b08563e 92-93,98-99,101,106
+  s_ee78a6a141091d::t_cd2a45d13c9749 223
+  s_ee78a6a141091d::t_bacd0a9af83edf 286-287
+  s_ee78a6a141091d::t_fc381720e95660 113-115
+  s_ee78a6a141091d::t_49e2686ad5c829 291,293
+  s_ee78a6a141091d::t_2664cd48b1216f 275-276
+  s_ee78a6a141091d::t_3e8d4b0aa7560f 253-266,311-312,314-316
+  s_ee78a6a141091d::t_c5a54b1552abc5 234-235,238
+  s_ee78a6a141091d::t_73acdad4501106 169-170
+  s_ee78a6a141091d::t_62205b479a7ee0 267
+  s_ee78a6a141091d::t_5fe38b877bb029 87-91,94-95
+  s_ee78a6a141091d::t_e7e0b7cc419607 274,277,290,292,297,299,305,310,313
+  s_ee78a6a141091d::t_df2008edd9e3bc 58
+  s_ee78a6a141091d::t_2a87c552bbd653 278-280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3b0aaa123b40ddf873ca0e888a91380b3702634a",
+  "prompts": {},
+  "sessions": {
+    "s_ee78a6a141091d": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "b8aa02a6-d6f7-4c6a-a2a4-8dd7cbfc6088",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
