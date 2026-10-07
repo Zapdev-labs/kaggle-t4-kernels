@@ -8,19 +8,19 @@ ptxas info    : Compiling entry function '_Z11k_gdn_recurPfPKfS1_S1_S1_S1_S_f' f
 ptxas info    : Function properties for _Z11k_gdn_recurPfPKfS1_S1_S1_S1_S_f
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 32 registers, used 0 barriers, 412 bytes cmem[0]
-ptxas info    : Compile time = 4.102 ms
+ptxas info    : Compile time = 4.162 ms
 ptxas info    : Compiling entry function '_Z11k_gdn_gatesPKfS0_S0_S0_PfS1_i' for 'sm_75'
 ptxas info    : Function properties for _Z11k_gdn_gatesPKfS0_S0_S0_PfS1_i
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 16 registers, used 0 barriers, 404 bytes cmem[0]
-ptxas info    : Compile time = 4.150 ms
+ptxas info    : Compile time = 3.948 ms
 ptxas info    : Compiling entry function '_Z8k_gdn_l2PKfPfS1_f' for 'sm_75'
 ptxas info    : Function properties for _Z8k_gdn_l2PKfPfS1_f
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 19 registers, used 1 barriers, 16 bytes smem, 380 bytes cmem[0]
-ptxas info    : Compile time = 2.140 ms
+ptxas info    : Compile time = 2.196 ms
 ptxas info    : Compiling entry function '_Z10k_gdn_convPKfPfS0_S1_i' for 'sm_75'
 ptxas info    : Function properties for _Z10k_gdn_convPKfPfS0_S1_i
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Used 20 registers, used 0 barriers, 388 bytes cmem[0]
-ptxas info    : Compile time = 4.634 ms
+ptxas info    : Compile time = 4.345 ms

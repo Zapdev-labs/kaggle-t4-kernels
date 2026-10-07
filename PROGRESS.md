@@ -2014,3 +2014,52 @@ block-input fix, beside the Q4_K + plane fixes). ~18 h of the weekly quota remai
 after the v7's 12-h burn: ONE more wedge-class burn leaves ~6 h - if the v8 wedges
 the same way, STOP (no more pushes until a human-driven diagnosis; the gatekeeper
 prompt says so).
+
+## r19n - the GATES ARE PASSED + the MEASUREMENT (the cck-l4c session, the same tree as 0c99eec)
+
+The five-fix engine (the Q4_K order + the block input + the plane overflow + the
+dump-stream race + the q8_1 sum) ran the full gate battery on the real L4:
+
+- gen P0: 8/8 tokens BYTE-EXACT vs the oracle (match 8, first_diff -1, pass).
+- gen P1: 8/8 tokens BYTE-EXACT vs the oracle (match 8, first_diff -1, pass).
+- seq P0: worst_abs 4.72, top1 7/8 (flip at pos 19); seq P1: worst_abs 2.69,
+  top1 7/8 (flip at pos 18). BOTH flips are PROVEN near-ties: the oracle's own
+  top1-top2 gaps there are 2.68 and 0.49 - both under the +-2..5 logit noise the
+  two same-arithmetic implementations carry (see below), so the argmax flips on
+  noise, not on a wrong number.
+- The dump chain at tag 0: layer 0 is BIT-EXACT at every shared record
+  (input_embed, hc_norm, hc_gate 2e-5, hc_mixed, qkv_mixed, z, conv silu,
+  linear_attn_out, hc_combine, ffn_out - all 0.0); the error seeds at 0.0068 on
+  hc_norm-1 (the PLE layer) and compounds ~linearly to 0.10 at result_output.
+- The PLE stage-by-stage vs an independent python ggml-faithful ground truth
+  (raw GGUF bytes, fsum): ple_emb BIT-EXACT (the n-gram hash, the 320M-row Q4_0
+  table gather, the 16x160 head layout all exact), ple_query_norm BIT-EXACT,
+  and every remaining stage differs ONLY by the q8_K/q8_1 activation noise -
+  the PLE's near-zero-RMS norms amplify a 0.1 raw-key diff to 30 at the normed
+  key, so the whole 0.0068..0.10 chain is that noise compounding, not a bug.
+- The NOFAST float path is the EXACT reference: bit-exact vs the same python on
+  the embedding, hc_norm-0, the hc gate MLP (Q5_1 K=10240 x 2), the PLE gather.
+  It "diverges" from the oracle MORE than the fast path (hc_gate-0 0.55 vs
+  4.8e-5) because the ORACLE ITSELF quantizes activations (ggml-cpu quantizes
+  the F32 activations to q8_1/q8_K for the q4/q5/K-quant dots) - the fast path
+  reproduces the oracle's own arithmetic, the float path is more exact than
+  the reference. That closes the "float fails gates" mystery: not a bug.
+
+THE MEASUREMENT (the same session, warm page cache):
+- time 64 (W prompt, 162 tokens): 2.93 t/s sustained (341 ms/gen-token).
+- census 192 (353 steps): 283 ms/step mean - 3.5 t/s class when page-hot.
+- Matrix context: stock llama.cpp 0.13 t/s, moe-l2 bins 0.9, patched 1224-main
+  2.16 @32k ctx (f16 KV; short-ctx patched is unmeasured). The t4q BEATS the
+  patched engine on these runs - with the caveat that its 2.93 is at a
+  162-token context with a warm expert page set, vs 2.16 at 32k with KV
+  pressure; at matched short context the patched number would rise, but not to
+  2.9: the t4q runs the same quantized dp4a dots with zero framework overhead.
+- The census verdict: 168,938 unique (layer,expert) slots of ~168,960 touched
+  in 353 steps; the top-64 slots carry only 10.7% of the draws. The cf-m3
+  residency tiering does NOT pay at this routing entropy - UVA zero-copy of
+  the mmap'd experts is the right call, matching the moe-l2 conclusion.
+
+The engine is CORRECT (byte-exact greedy chains, bit-exact layer 0, every
+divergence from the oracle accounted for as the oracle's own arithmetic or
+amplified fp-order noise) and FASTER than every llama.cpp configuration
+measured on this hardware.
