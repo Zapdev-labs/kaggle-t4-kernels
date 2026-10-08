@@ -1,0 +1,32 @@
+t4q/tests/test_iq1s.cpp
+  s_ac85989787ca8c::t_ad9e8e30a99f88 847
+  s_ac85989787ca8c::t_fba499dca12168 777-793,795,797-811,813-821,823,825-839,841-845
+research/CF_REQUANT.md
+  s_ac85989787ca8c::t_36d201be030791 453-482
+t4q/src/cf_model.h
+  s_ac85989787ca8c::t_f89b27873bf9de 150-153
+t4q/src/cf_loader.cu
+  s_ac85989787ca8c::t_0c2bc03252ca79 767-774,777-795,807-812,814-822,832-850,854-859
+  s_ac85989787ca8c::t_8c130696d4653e 862-863
+t4q/src/cf_engine.cu
+  s_ac85989787ca8c::t_0345df57a3e61a 1236
+  s_ac85989787ca8c::t_0ba7dbe12074b6 1135-1202
+  s_ac85989787ca8c::t_cc01c69c0972c7 1271-1272
+  s_ac85989787ca8c::t_b5b7105a70e809 1580-1584
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "edb4b232f7dd5e03b47f273a3d500679d6de8677",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
