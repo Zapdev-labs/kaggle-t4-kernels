@@ -637,6 +637,15 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                     memset(L.hot_idx, -1, (size_t)NE * sizeof(int));
                 }
             }
+            // cf-m6 r6e (the single-GPU fused uploads): the greedy's tiered branch's
+            // pinned fused tab (the per-step composed W pair + the we) - the interiors
+            // fixed here by pure offsetof arithmetic, the layout pinned by the
+            // static_asserts on CfIqtpTab
+            CK(cudaMalloc(&c->gtab_d, sizeof(CfIqtpTab)));
+            CK(cudaMallocHost(&c->gtab_h, sizeof(CfIqtpTab)));
+            c->gft_gu = (PackedW*)c->gtab_d;
+            c->gft_dn = (PackedW*)((char*)c->gtab_d + offsetof(CfIqtpTab, wt_dn));
+            c->gft_we = (float*)((char*)c->gtab_d + offsetof(CfIqtpTab, we));
         }
         // cf-m3 (r19u) the UVA third path: T4Q_CF_UVA_LAYERS=<n> registers the first n
         // layers' expert tensors as cudaHostRegisterMapped (ONE coalesced page-aligned
@@ -799,8 +808,12 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                 alloc_packed(d->res_gu1, 1, FMT_Q8, (int64_t)NE / 2 * 2 * EE, D);
                 alloc_packed(d->res_dn1, 1, FMT_Q8, (int64_t)NE / 2 * D, EE);
             }
-            CK(cudaMalloc(&d->wt_gu, (size_t)TOPK * sizeof(PackedW)));
-            CK(cudaMalloc(&d->wt_dn, (size_t)TOPK * sizeof(PackedW)));
+            // cf-m6 r6e: the draft's fused tab (the per-step views + the we in ONE plane)
+            CK(cudaMalloc(&d->dtab_d, sizeof(CfIqtpTab)));
+            CK(cudaMallocHost(&d->dtab_h, sizeof(CfIqtpTab)));
+            d->dft_gu = (PackedW*)d->dtab_d;
+            d->dft_dn = (PackedW*)((char*)d->dtab_d + offsetof(CfIqtpTab, wt_dn));
+            d->dft_we = (float*)((char*)d->dtab_d + offsetof(CfIqtpTab, we));
             {
                 const size_t gu_row_d = L.t_gate_exps->row_bytes;   // Q8_0 rows of D (2720)
                 const size_t dn_row_d = L.t_down_exps->row_bytes;   // Q8_0 rows of EE (680)
@@ -891,10 +904,18 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                 // it; pinned to match the sibling planes' discipline)
                 CK(cudaMallocHost(&v->eid, (size_t)MAXR * TOPK * 4));
                 CK(cudaMallocHost(&v->we_h, (size_t)MAXR * TOPK * 4));
-                CK(cudaMalloc(&v->we_dev, (size_t)MAXR * TOPK * 4));
+                // cf-m6 r6e (the single-GPU fused uploads): the non-split verify paths'
+                // pinned fused vtab (the union/per-row W pair + the rowmap + the we in
+                // ONE plane per layer per window) - the interiors fixed by offsetof
+                {
+                    CK(cudaMalloc(&v->vtab_d, sizeof(CfIqtpVTab)));
+                    CK(cudaMallocHost(&v->vtab_h, sizeof(CfIqtpVTab)));
+                    v->fuv_gu = (PackedW*)v->vtab_d;
+                    v->fuv_dn = (PackedW*)((char*)v->vtab_d + offsetof(CfIqtpVTab, uv_dn));
+                    v->frowmap = (int*)((char*)v->vtab_d + offsetof(CfIqtpVTab, rowmap));
+                    v->fwe_v = (float*)((char*)v->vtab_d + offsetof(CfIqtpVTab, we));
+                }
                 CK(cudaMallocHost(&v->h_logits, (size_t)MAXR * V * 4));
-                CK(cudaMalloc(&v->wt_gu, (size_t)MAXR * TOPK * sizeof(PackedW)));
-                CK(cudaMalloc(&v->wt_dn, (size_t)MAXR * TOPK * sizeof(PackedW)));
                 CK(cudaMalloc(&v->uids_dev, (size_t)MAXR * TOPK * 4));
                 CK(cudaMalloc(&v->ye, (size_t)MAXR * TOPK * D * 4));
                 CK(cudaMalloc(&v->ysh, (size_t)MAXR * D * 4));
@@ -929,12 +950,10 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                 // cf-m6 r5: the amortized verify's tables - the per-row plane table is
                 // FIXED (the scratch pointers never move; ONE upload at alloc), the union
                 // views + the row map are the per-layer varying part (vfy_window's
-                // resident path uploads them). The tab's gu side reads the same xqk/bsums/d
+                // resident path uploads them; cf-m6 r6e: they ride the FUSED vtab plane
+                // above). The tab's gu side reads the same xqk/bsums/d
                 // planes and writes the same s.logits slice the per-row _b launches did;
                 // the dn side the same xq0/xd0/xs0 + the ye row slice.
-                CK(cudaMalloc(&v->uv_gu, (size_t)MAXR * TOPK * sizeof(PackedW)));
-                CK(cudaMalloc(&v->uv_dn, (size_t)MAXR * TOPK * sizeof(PackedW)));
-                CK(cudaMalloc(&v->rowmap_dev, (size_t)MAXR * TOPK * T4Q_VFY_MAXR * 4));
                 {
                     VfyMoeTab t;
                     for (int r = 0; r < MAXR; r++) {

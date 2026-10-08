@@ -389,11 +389,16 @@ void host_router(CfCtx* c, CfLayer& L) {
         // table is rebuilt on the host per step and uploaded - the same table the r19k batched
         // gemvs read; the kernels are untouched.
         int nmiss = 0;
+        // cf-m6 r6e: the per-step tables land in the PINNED FUSED tab (the greedy's
+        // tiered branch uploads ONE fixed-size H2D per layer - the W pair + the we; the
+        // same view math, only the landing moved)
+        PackedW* hgu = c->gtab_h->wt_gu;
+        PackedW* hdn = c->gtab_h->wt_dn;
         for (int k = 0; k < TOPK; k++) {
             const int64_t e = c->eid[k];
             const int h = L.hot_idx[e];
-            PackedW& v = c->h_wt_gu[k];
-            PackedW& w = c->h_wt_dn[k];
+            PackedW& v = hgu[k];
+            PackedW& w = hdn[k];
             if (h >= 0) {  // hit: the resident slab view, the same offsets a staged slab would have
                 if (L.res_gu.fmt == FMT_IQ1S) {
                     // cf-m6 r4 (the iq1_s tier): the FMT_IQ1S/FMT_IQ1SH plane strides - the
@@ -440,6 +445,7 @@ void host_router(CfCtx* c, CfLayer& L) {
             }
         }
         c->tier_nmiss = nmiss;  // r19v: the emission's tiered branch reads it (never captured)
+        memcpy(c->gtab_h->we, c->we_h, (size_t)TOPK * 4);  // cf-m6 r6e: the we rides the fused tab
         }
     } else {
         // OFF (no hot-set file): the verbatim full-staging host memcpys over the load-time identity table
@@ -521,6 +527,13 @@ void emit_moe_rest(CfCtx* c, CfLayer& L) {
         check_launch("moe");
         return;
     }
+    // cf-m6 r6e (the single-GPU fused uploads): the branch-local W-table + we args - the
+    // tiered branch rides the pinned FUSED tab (ONE fixed-size H2D per layer carrying the
+    // W pair + the we, the r6d form extended to the non-split paths); the UVA/OFF branches
+    // keep the identity table (uploaded once at load) + their own we upload
+    PackedW* wgu = c->wt_gu;
+    PackedW* wdn = c->wt_dn;
+    float* wwe = c->we;
     if (c->uva && L.il >= c->uva_lo && L.il < c->uva_n) {  // cf-m6 r4: [uva_lo, uva_n) - the iq1_s prefix excluded
         // cf-m3 (r19u) the UVA pointer-swap path: the picks' raw slabs are read from the
         // REGISTERED mmap'd expert pages through the device aliases - NO host memcpys,
@@ -532,6 +545,7 @@ void emit_moe_rest(CfCtx* c, CfLayer& L) {
         launch_repack_eid_q2k(c->up_stage, L.uva_gate, L.uva_up, c->eid_dev, 0,
                               (int64_t)TOPK * 2 * EE, (int64_t)2 * EE, (int64_t)EE, st);
         launch_repack_eid_q4(c->dn_stage, L.uva_dn, c->eid_dev, 0, (int64_t)TOPK * D, (int64_t)D, st);
+        CK(cudaMemcpyAsync(c->we, c->we_h, (size_t)TOPK * 4, cudaMemcpyHostToDevice, st));
     } else if (c->tiered) {
         // the tiered stream ops (never captured - the miss-count-varying H2D sizes; the
         // compose ran in host_router and left c->tier_nmiss)
@@ -543,16 +557,20 @@ void emit_moe_rest(CfCtx* c, CfLayer& L) {
             launch_repack(c->up_stage, GT_Q2_K, c->raw_dev, 0, (int64_t)c->tier_nmiss * 2 * EE, st);
             launch_repack(c->dn_stage, GT_Q4_0, c->raw_dev + up_bytes, 0, (int64_t)c->tier_nmiss * D, st);
         }
-        CK(cudaMemcpyAsync(c->wt_gu, c->h_wt_gu, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
-        CK(cudaMemcpyAsync(c->wt_dn, c->h_wt_dn, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+        // cf-m6 r6e: the ONE fused upload (the W pair + the we in the pinned tab - the
+        // compose landed them in host_router; the old wt_gu/wt_dn/we H2Ds fold into it)
+        CK(cudaMemcpyAsync(c->gtab_d, c->gtab_h, sizeof(CfIqtpTab), cudaMemcpyHostToDevice, st));
+        wgu = c->gft_gu;
+        wdn = c->gft_dn;
+        wwe = c->gft_we;
     } else {
         // OFF (no hot-set file): the verbatim full-staging upload + repack over the identity table
         CK(cudaMemcpyAsync(c->raw_dev, c->raw_stage, up_bytes + (size_t)TOPK * D * dn_row, cudaMemcpyHostToDevice, st));
         launch_repack(c->up_stage, GT_Q2_K, c->raw_dev, 0, (int64_t)TOPK * 2 * EE, st);
         launch_repack(c->dn_stage, GT_Q4_0, c->raw_dev + up_bytes, 0, (int64_t)TOPK * D, st);
+        CK(cudaMemcpyAsync(c->we, c->we_h, (size_t)TOPK * 4, cudaMemcpyHostToDevice, st));
     }
     CK(cudaGetLastError());
-    CK(cudaMemcpyAsync(c->we, c->we_h, (size_t)TOPK * 4, cudaMemcpyHostToDevice, st));
     // gate|up gemv over the stacked staging, then the batched silu*up and the batched down gemv
     // (the r18 verdict: the batched launches are mandatory - one launch each instead of 10
     // underfilled ones, the measured 112.2 -> 144.2 GB/s family). The r19k form: the gemv runs
@@ -565,10 +583,10 @@ void emit_moe_rest(CfCtx* c, CfLayer& L) {
     // exists (whole-layer residency), so ONE branch per layer, not per pick.
     launch_quantize_q8_K(s.mixed, D, s.xqk, s.xqk_b, s.xqk_d, st);
     if (iqs)
-        launch_gemv_q8k_b(c->wt_gu, FMT_IQ1S, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0, (int64_t)2 * EE,
+        launch_gemv_q8k_b(wgu, FMT_IQ1S, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0, (int64_t)2 * EE,
                           TOPK, st);
     else
-        launch_gemv_q8k_b(c->wt_gu, FMT_K2, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0, (int64_t)2 * EE,
+        launch_gemv_q8k_b(wgu, FMT_K2, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0, (int64_t)2 * EE,
                           TOPK, st);
     launch_cf_silu_mul_b(s.logits, s.ffa, EE, TOPK, st);  // [gate n | up n] per expert, stride 2n
     {  // the down gemv as one batched launch over the 10-expert SoA staging, on the Q8_0
@@ -576,9 +594,9 @@ void emit_moe_rest(CfCtx* c, CfLayer& L) {
         // is flat and the expert boundaries are the 32-group boundaries, so one flat quantize
         launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, s.xs0, st);
         if (iqs)
-            launch_gemv_iq1sh_b(c->wt_dn, D, s.xq0, s.xd0, s.xs0, c->ye, EE, D, EE / 32, TOPK, st);
+            launch_gemv_iq1sh_b(wdn, D, s.xq0, s.xd0, s.xs0, c->ye, EE, D, EE / 32, TOPK, st);
         else
-            launch_gemv_q8_0_b(c->wt_dn, D, s.xq0, s.xd0, s.xs0, c->ye, EE, D, EE / 32, TOPK, st);
+            launch_gemv_q8_0_b(wdn, D, s.xq0, s.xd0, s.xs0, c->ye, EE, D, EE / 32, TOPK, st);
     }
     // shared expert + its sigmoid gate, then the weighted combine
     gemv(s, L.sh_gate, s.mixed, s.ffg, st);
@@ -586,7 +604,7 @@ void emit_moe_rest(CfCtx* c, CfLayer& L) {
     launch_silu_mul(s.ffg, s.ffu, s.ffa, EE, st);
     gemv(s, L.sh_down, s.ffa, c->ysh, st);
     gemv(s, L.sh_ginp, s.mixed, c->sh_gate_raw, st);
-    launch_cf_moe_out(c->ye, c->we, c->ysh, c->sh_gate_raw, s.block, st);
+    launch_cf_moe_out(c->ye, wwe, c->ysh, c->sh_gate_raw, s.block, st);
     check_launch("moe");
 }
 
@@ -834,29 +852,32 @@ void vfy_window(CfCtx* c, CfLayer& L, int nr) {
             v->nu_cnt++;
             return;
         }
+        // cf-m6 r6e (the single-GPU fused uploads): the non-split r5 compose lands in
+        // the pinned FUSED vtab (the union W pair + the rowmap + the we) - ONE
+        // fixed-size H2D per layer per window instead of the three prefix-sized ones
+        // (the stale tails past nu are never read, the count-guarded dots)
         for (int u = 0; u < v->nu; u++) {
             const int e = v->uids[u];
-            PackedW& vg = v->h_uv_gu[u];
+            PackedW& vg = v->vtab_h->uv_gu[u];
             vg = L.res_gu;  // fmt FMT_IQ1S rides the copy
             vg.rows = 2 * EE;
             vg.codes = L.res_gu.codes + (size_t)e * 2 * EE * (size_t)(D / 256) * 32;
             vg.hi = L.res_gu.hi + (size_t)e * 2 * EE * (size_t)(D / 256) * 16;
             vg.d = L.res_gu.d + (size_t)e * 2 * EE * (size_t)(D / 256);
-            PackedW& wd = v->h_uv_dn[u];
+            PackedW& wd = v->vtab_h->uv_dn[u];
             wd = L.res_dn;  // fmt FMT_IQ1SH rides the copy
             wd.rows = D;
             wd.codes = L.res_dn.codes + (size_t)e * D * (size_t)(EE / 128) * 16;
             wd.hi = L.res_dn.hi + (size_t)e * D * (size_t)(EE / 128) * 8;
             wd.d = L.res_dn.d + (size_t)e * D * (size_t)(EE / 128);
         }
-        memset(v->h_rowmap, -1, sizeof(v->h_rowmap));
+        memset(v->vtab_h->rowmap, -1, sizeof(v->vtab_h->rowmap));
         for (int r = 0; r < nr; r++)
             for (int k = 0; k < TOPK; k++)
-                v->h_rowmap[v->uidx[v->eid[(size_t)r * TOPK + k]]][r] = k;
+                v->vtab_h->rowmap[(size_t)v->uidx[v->eid[(size_t)r * TOPK + k]] * T4Q_VFY_MAXR + r] = k;
         for (int i = 0; i < v->nu; i++) v->uidx[v->uids[i]] = -1;  // the map sweep (the next layer's dedup reset)
-        CK(cudaMemcpyAsync(v->uv_gu, v->h_uv_gu, (size_t)v->nu * sizeof(PackedW), cudaMemcpyHostToDevice, st));
-        CK(cudaMemcpyAsync(v->uv_dn, v->h_uv_dn, (size_t)v->nu * sizeof(PackedW), cudaMemcpyHostToDevice, st));
-        CK(cudaMemcpyAsync(v->rowmap_dev, v->h_rowmap, (size_t)v->nu * T4Q_VFY_MAXR * 4, cudaMemcpyHostToDevice, st));
+        memcpy(v->vtab_h->we, v->we_h, (size_t)nr * TOPK * 4);  // cf-m6 r6e: the we rides the fused vtab
+        CK(cudaMemcpyAsync(v->vtab_d, v->vtab_h, sizeof(CfIqtpVTab), cudaMemcpyHostToDevice, st));
         v->nu_sum += v->nu;  // r5: the overlap stat (the mean union vs nr*TOPK)
         v->nu_cnt++;
         return;
@@ -903,17 +924,20 @@ void vfy_window(CfCtx* c, CfLayer& L, int nr) {
         }
     }
     // the per-row W tables: the row's pick k -> the union slot of eid[r][k] (the tiering's
-    // hit-branch view math verbatim), then the map sweep for the next layer's dedup
+    // hit-branch view math verbatim), then the map sweep for the next layer's dedup.
+    // cf-m6 r6e: the per-row tables land in the pinned FUSED vtab's uv sections (the
+    // same [r*TOPK + k] flat shape) + the we - ONE fixed-size H2D per layer per window
+    // instead of the two nr*TOPK-sized ones + the emission head's we upload
     for (int r = 0; r < nr; r++)
         for (int k = 0; k < TOPK; k++) {
             const int e = v->eid[(size_t)r * TOPK + k];
             const int64_t sl = v->uidx[e];
-            PackedW& vg = v->h_wt_gu[r][k];
+            PackedW& vg = v->vtab_h->uv_gu[(size_t)r * TOPK + k];
             vg = v->uni_gu;
             vg.rows = 2 * EE;
             vg.codes = v->uni_gu.codes + (size_t)sl * 2 * EE * (D / 4);
             vg.meta = v->uni_gu.meta + (size_t)sl * 2 * EE * (size_t)(D / 256) * 20;
-            PackedW& wd = v->h_wt_dn[r][k];
+            PackedW& wd = v->vtab_h->uv_dn[(size_t)r * TOPK + k];
             wd = v->uni_dn;
             wd.rows = D;
             wd.codes = v->uni_dn.codes + (size_t)sl * D * (EE / 2);
@@ -922,8 +946,8 @@ void vfy_window(CfCtx* c, CfLayer& L, int nr) {
     for (int i = 0; i < v->nu; i++) v->uidx[v->uids[i]] = -1;
     v->nu_sum += v->nu;  // r5: the overlap stat (both verify paths)
     v->nu_cnt++;
-    CK(cudaMemcpyAsync(v->wt_gu, v->h_wt_gu, (size_t)nr * TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
-    CK(cudaMemcpyAsync(v->wt_dn, v->h_wt_dn, (size_t)nr * TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+    memcpy(v->vtab_h->we, v->we_h, (size_t)nr * TOPK * 4);  // cf-m6 r6e: the we rides the fused vtab
+    CK(cudaMemcpyAsync(v->vtab_d, v->vtab_h, sizeof(CfIqtpVTab), cudaMemcpyHostToDevice, st));
 }
 
 // the per-layer moe emission - the we upload (the pinned source, capture-legal at the
@@ -1014,22 +1038,22 @@ void vfy_moe_em(CfCtx* c, CfLayer& L, int nr) {
         }
         return;
     }
-    // the NON-split paths' we upload (the pinned source, capture-legal at the emission
-    // head - the r19v emit_moe_rest precedent); the split branch above returns before it
-    // (its we rides the fused vtab planes).
-    CK(cudaMemcpyAsync(v->we_dev, v->we_h, (size_t)nr * TOPK * 4, cudaMemcpyHostToDevice, st));
+    // cf-m6 r6e: BOTH non-split paths' we rides the FUSED vtab (uploaded at the window -
+    // the head's we_dev upload is gone with the landing); the captured V1 segments (the
+    // opt-in graph form) read the FIXED vtab interiors, refreshed by the window's direct
+    // upload before each segment launch - the same values, one less captured node.
     if (iqs) {
         for (int r = 0; r < nr; r++) {
             CfScratch& s = v->sc[r];
             launch_quantize_q8_K(s.mixed, D, s.xqk, s.xqk_b, s.xqk_d, st);
         }
-        launch_gemv_iq1s_vfy(v->uv_gu, v->rowmap_dev, v->vtab_dev, 2 * EE, v->nu, st);
+        launch_gemv_iq1s_vfy(v->fuv_gu, v->frowmap, v->vtab_dev, 2 * EE, v->nu, st);
         for (int r = 0; r < nr; r++) {
             CfScratch& s = v->sc[r];
             launch_cf_silu_mul_b(s.logits, s.ffa, EE, TOPK, st);  // [gate n | up n] per expert, stride 2n
             launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, s.xs0, st);
         }
-        launch_gemv_iq1sh_vfy(v->uv_dn, v->rowmap_dev, v->vtab_dev, D, v->nu, st);
+        launch_gemv_iq1sh_vfy(v->fuv_dn, v->frowmap, v->vtab_dev, D, v->nu, st);
         for (int r = 0; r < nr; r++) {
             CfScratch& s = v->sc[r];
             float* ye_r = v->ye + (size_t)r * TOPK * D;
@@ -1038,7 +1062,7 @@ void vfy_moe_em(CfCtx* c, CfLayer& L, int nr) {
             launch_silu_mul(s.ffg, s.ffu, s.ffa, EE, st);
             gemv(s, L.sh_down, s.ffa, v->ysh + (size_t)r * D, st);
             gemv(s, L.sh_ginp, s.mixed, v->sh_gate_raw + r, st);
-            launch_cf_moe_out(ye_r, v->we_dev + (size_t)r * TOPK, v->ysh + (size_t)r * D, v->sh_gate_raw + r,
+            launch_cf_moe_out(ye_r, v->fwe_v + (size_t)r * TOPK, v->ysh + (size_t)r * D, v->sh_gate_raw + r,
                               s.block, st);
             check_launch("verify moe");
             hc_combine(c, s.h, s.block, s.inj);
@@ -1050,23 +1074,23 @@ void vfy_moe_em(CfCtx* c, CfLayer& L, int nr) {
         float* ye_r = v->ye + (size_t)r * TOPK * D;
         launch_quantize_q8_K(s.mixed, D, s.xqk, s.xqk_b, s.xqk_d, st);
         if (iqs)
-            launch_gemv_q8k_b(v->wt_gu + (size_t)r * TOPK, FMT_IQ1S, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0,
+            launch_gemv_q8k_b(v->fuv_gu + (size_t)r * TOPK, FMT_IQ1S, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0,
                               0, (int64_t)2 * EE, TOPK, st);
         else
-            launch_gemv_q8k_b(v->wt_gu + (size_t)r * TOPK, FMT_K2, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0,
+            launch_gemv_q8k_b(v->fuv_gu + (size_t)r * TOPK, FMT_K2, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0,
                               (int64_t)2 * EE, TOPK, st);
         launch_cf_silu_mul_b(s.logits, s.ffa, EE, TOPK, st);  // [gate n | up n] per expert, stride 2n
         launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, s.xs0, st);
         if (iqs)
-            launch_gemv_iq1sh_b(v->wt_dn + (size_t)r * TOPK, D, s.xq0, s.xd0, s.xs0, ye_r, EE, D, EE / 32, TOPK, st);
+            launch_gemv_iq1sh_b(v->fuv_dn + (size_t)r * TOPK, D, s.xq0, s.xd0, s.xs0, ye_r, EE, D, EE / 32, TOPK, st);
         else
-            launch_gemv_q8_0_b(v->wt_dn + (size_t)r * TOPK, D, s.xq0, s.xd0, s.xs0, ye_r, EE, D, EE / 32, TOPK, st);
+            launch_gemv_q8_0_b(v->fuv_dn + (size_t)r * TOPK, D, s.xq0, s.xd0, s.xs0, ye_r, EE, D, EE / 32, TOPK, st);
         gemv(s, L.sh_gate, s.mixed, s.ffg, st);
         gemv(s, L.sh_up, s.mixed, s.ffu, st);
         launch_silu_mul(s.ffg, s.ffu, s.ffa, EE, st);
         gemv(s, L.sh_down, s.ffa, v->ysh + (size_t)r * D, st);
         gemv(s, L.sh_ginp, s.mixed, v->sh_gate_raw + r, st);
-        launch_cf_moe_out(ye_r, v->we_dev + (size_t)r * TOPK, v->ysh + (size_t)r * D, v->sh_gate_raw + r, s.block,
+        launch_cf_moe_out(ye_r, v->fwe_v + (size_t)r * TOPK, v->ysh + (size_t)r * D, v->sh_gate_raw + r, s.block,
                           st);
         check_launch("verify moe");
         hc_combine(c, s.h, s.block, s.inj);
@@ -1339,37 +1363,38 @@ bool cf_draft_step(CfCtx* c, int token, const float* h) {
             check_launch("draft moe");
         } else {
         // the W table: the 10 picks' ALL-RESIDENT views (the tiering's mechanism, all hits;
-        // the Q8_0 packed plane strides: codes D/EE bytes per row, d D/32 per row)
+        // the Q8_0 packed plane strides: codes D/EE bytes per row, d D/32 per row).
+        // cf-m6 r6e: the views + the we land in the pinned FUSED tab - ONE fixed-size
+        // H2D per layer (the old wt_gu/wt_dn/c->we uploads fold into it)
         for (int k = 0; k < TOPK; k++) {
             const int64_t e = c->eid[k];
-            PackedW& v = d->h_wt_gu[k];
+            PackedW& v = d->dtab_h->wt_gu[k];
             v = d->res_gu;
             v.rows = 2 * EE;
             v.codes = d->res_gu.codes + (size_t)e * 2 * EE * D;
             v.d = d->res_gu.d + (size_t)e * 2 * EE * (D / 32);
-            PackedW& w = d->h_wt_dn[k];
+            PackedW& w = d->dtab_h->wt_dn[k];
             w = d->res_dn;
             w.rows = D;
             w.codes = d->res_dn.codes + (size_t)e * D * EE;
             w.d = d->res_dn.d + (size_t)e * D * (EE / 32);
         }
-        CK(cudaMemcpyAsync(d->wt_gu, d->h_wt_gu, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
-        CK(cudaMemcpyAsync(d->wt_dn, d->h_wt_dn, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
-        CK(cudaMemcpyAsync(c->we, c->we_h, (size_t)TOPK * 4, cudaMemcpyHostToDevice, st));
+        memcpy(d->dtab_h->we, c->we_h, (size_t)TOPK * 4);  // cf-m6 r6e: the we rides the draft's own tab
+        CK(cudaMemcpyAsync(d->dtab_d, d->dtab_h, sizeof(CfIqtpTab), cudaMemcpyHostToDevice, st));
         // the batched Q8_0 gemvs (the gate|up on the shared mixed - strides 0; the down on
         // the per-pick ffa) - the trunk's moe family with the draft's own buffers
         launch_quantize_q8_0(s.mixed, D, s.xq0, s.xd0, s.xs0, st);
-        launch_gemv_q8_0_b(d->wt_gu, 2 * EE, s.xq0, s.xd0, s.xs0, d->ygu, 0, 2 * EE, 0, TOPK, st);
+        launch_gemv_q8_0_b(d->dft_gu, 2 * EE, s.xq0, s.xd0, s.xs0, d->ygu, 0, 2 * EE, 0, TOPK, st);
         launch_cf_silu_mul_b(d->ygu, s.ffa, EE, TOPK, st);  // [gate n | up n] per expert, stride 2n
         launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, s.xs0, st);
-        launch_gemv_q8_0_b(d->wt_dn, D, s.xq0, s.xd0, s.xs0, d->ye, EE, D, EE / 32, TOPK, st);
+        launch_gemv_q8_0_b(d->dft_dn, D, s.xq0, s.xd0, s.xs0, d->ye, EE, D, EE / 32, TOPK, st);
         // shared expert + its sigmoid gate, then the weighted combine
         gemv(s, L.sh_gate, s.mixed, s.ffg, st);
         gemv(s, L.sh_up, s.mixed, s.ffu, st);
         launch_silu_mul(s.ffg, s.ffu, s.ffa, EE, st);
         gemv(s, L.sh_down, s.ffa, d->ysh, st);
         gemv(s, L.sh_ginp, s.mixed, d->sh_gate_raw, st);
-        launch_cf_moe_out(d->ye, c->we, d->ysh, d->sh_gate_raw, s.block, st);
+        launch_cf_moe_out(d->ye, d->dft_we, d->ysh, d->sh_gate_raw, s.block, st);
         check_launch("draft moe");
         }
         hc_combine(c, d->hres, s.block, s.inj);
@@ -1673,6 +1698,7 @@ void cf_free(CfCtx* c) {
     if (c->h_emb) cudaFreeHost(c->h_emb);
     if (c->h_ple) cudaFreeHost(c->h_ple);
     if (c->h_logits) cudaFreeHost(c->h_logits);
+    if (c->gtab_h) cudaFreeHost(c->gtab_h);  // cf-m6 r6e: the greedy tiered fused staging
     if (c->eid) cudaFreeHost(c->eid);  // r19v: pinned (the captured eid H2D reads it)
     if (c->iqp) {  // cf-m6 r6b: the split-moe side planes (the stream/event pair first -
         // the device buffers fall to the cudaDeviceReset below, the trunk's own form);
@@ -1694,6 +1720,7 @@ void cf_free(CfCtx* c) {
         // the cudaDeviceReset below, the same as the trunk's scratch)
         cudaFreeHost(c->draft->h_e);
         cudaFreeHost(c->draft->h_logits);
+        if (c->draft->dtab_h) cudaFreeHost(c->draft->dtab_h);  // cf-m6 r6e: the fused staging
         delete c->draft;
     }
     if (c->verify) {  // cf-m4 (r19x): the verify's pinned host planes (the per-row scratch
@@ -1706,6 +1733,7 @@ void cf_free(CfCtx* c) {
         cudaFreeHost(c->verify->h_router);
         cudaFreeHost(c->verify->eid);  // r19z sweep: the per-row picks plane
         cudaFreeHost(c->verify->we_h);
+        if (c->verify->vtab_h) cudaFreeHost(c->verify->vtab_h);  // cf-m6 r6e: the fused staging
         cudaFreeHost(c->verify->h_logits);
         delete c->verify;
     }

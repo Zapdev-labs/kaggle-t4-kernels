@@ -123,6 +123,53 @@ struct CfScratch {
     int* xs0 = nullptr;                  // [TOPK*EE/32] the per-32-block signed code sum (the dp4a factored -8 bias)
 };
 
+// cf-m6 r6d (the fused per-side upload, the section 6 freeze's call-count lever): the
+// per-layer VARYING upload content packed in ONE pinned, fixed-size struct per side -
+// ONE H2D per side per layer where the greedy/draft split paths paid three per side
+// (wt_gu + wt_dn + we, ~22 us of launch overhead each) and the verify's split window
+// paid nine per layer. The lever is the CALL COUNT - PLAN_CF's named next wall once the
+// tiering drops the staging (~2600 launches/token at ~22 us ~= 57 ms/token): the greedy
+// drops 4 calls per layer (192/token), the draft the same per draft step, the verify's
+// window drops 7. The bytes are unchanged, the kernel args become the plane's fixed
+// interior pointers (fixed once at alloc), and the fixed size + the pinned host source
+// is exactly the shape the later graph round captures as ONE memcpy node. The stale
+// tails past n/nk/nu are never read (the count-guarded dots + the [0,nk) gathers), so
+// the full-size sections upload garbage-free-by-contract. cf-m6 r6e extends the SAME
+// forms to the NON-split paths (the greedy's tiered branch, the draft, the verify's r5
+// resident + OFF/UVA branches) - defined here above their first user (CfDraft).
+struct CfIqtpTab {
+    PackedW wt_gu[cf::TOPK];
+    PackedW wt_dn[cf::TOPK];
+    float we[cf::TOPK];
+};
+// the verify's fused form (the r5 window's per-layer varying content): the sub-union W
+// pair + the rowmap + the per-row owned k-lists + the we in ONE pinned struct per side,
+// the FULL MAXR-sized sections (the [0,nu) dots, the [0,nk) gathers, the rowmap's
+// [ug*MAXR + r] slots only ever read for ug < nu). r6e: the NON-split verify paths
+// reuse the SAME struct (the uv sections carry the r5 union views OR the OFF per-row
+// tables - the same [MAXR*TOPK] flat shape; the ks section is the split's own, unused
+// by the non-split - the non-split reads all TOPK slots).
+struct CfIqtpVTab {
+    PackedW uv_gu[cf::MAXR * cf::TOPK];
+    PackedW uv_dn[cf::MAXR * cf::TOPK];
+    int rowmap[cf::MAXR * cf::TOPK * T4Q_VFY_MAXR];
+    int ks[cf::MAXR * cf::TOPK];
+    float we[cf::MAXR * cf::TOPK];
+};
+// the layout pins (the fixed-size upload contract): the interiors are addressed by pure
+// pointer arithmetic at alloc (offsetof on these standard-layout structs), so the
+// section order and the exact sizes are part of the form.
+static_assert(sizeof(PackedW) == 88, "the PackedW stride the tabs assume");
+static_assert(sizeof(CfIqtpTab) == (size_t)cf::TOPK * (2 * sizeof(PackedW) + 4),
+              "the fused tab: the W pair then the we, no padding");
+static_assert(offsetof(CfIqtpTab, we) == 2 * (size_t)cf::TOPK * sizeof(PackedW),
+              "the fused tab: the we section follows the W pair");
+static_assert(sizeof(CfIqtpVTab) ==
+                  (size_t)cf::MAXR * cf::TOPK * (2 * sizeof(PackedW) + 4 * (T4Q_VFY_MAXR + 2)),
+              "the fused vtab: the W pair, the rowmap, the ks, the we, no padding");
+static_assert(offsetof(CfIqtpVTab, rowmap) == 2 * (size_t)cf::MAXR * cf::TOPK * sizeof(PackedW),
+              "the fused vtab: the rowmap section follows the W pair");
+
 // cf-m4 (r19w): the MTP draft block's state. The weights ride a CfLayer (L.il = 48,
 // L.attn = true - blk.48 is non-recurrent); the nextn extras (enorm/hnorm/eh_proj +
 // the draft's own final mixer hc_head_*) are direct members. The draft's OWN scratch
@@ -152,8 +199,15 @@ struct CfDraft {
     // ~1.33 GiB per side): res_gu/res_dn shrink to GPU0's [0,256) half, res_gu1/res_dn1
     // are GPU1's [256,512) half (the same e>>8/e&255 owner map, the local row offsets)
     PackedW res_gu1, res_dn1;
-    PackedW h_wt_gu[cf::TOPK] = {}, h_wt_dn[cf::TOPK] = {};  // the per-step composed host tables
-    PackedW *wt_gu = nullptr, *wt_dn = nullptr;             // the device W tables [TOPK]
+    // cf-m6 r6e (the single-GPU fused uploads, the r6d lever extended): the draft's
+    // per-step tables (the resident views + the we) in ONE pinned CfIqtpTab - ONE
+    // fixed-size H2D per layer instead of the three (wt_gu + wt_dn + the shared c->we,
+    // all TOPK-sized, so the bytes are identical). The draft's we rides its OWN tab now
+    // (the old form wrote the trunk's c->we behind the serial-use discipline).
+    CfIqtpTab* dtab_d = nullptr;   // the fused device plane
+    CfIqtpTab* dtab_h = nullptr;   // the pinned host staging
+    PackedW *dft_gu = nullptr, *dft_dn = nullptr;  // the interiors, fixed at alloc
+    float* dft_we = nullptr;
     int pos = 0;                      // the draft's own KV position
 };
 
@@ -175,9 +229,19 @@ struct CfVerify {
     float* h_router = nullptr;         // pinned [MAXR][NE] the per-row router outputs
     int* eid = nullptr;                // host [MAXR][TOPK] the per-row picks
     float* we_h = nullptr;             // host [MAXR][TOPK] the per-row weights
-    float* we_dev = nullptr;          // device [MAXR][TOPK] (the row's moe_out reads we_dev + r*TOPK)
-    PackedW h_wt_gu[cf::MAXR][cf::TOPK] = {}, h_wt_dn[cf::MAXR][cf::TOPK] = {};  // the per-row composed tables
-    PackedW *wt_gu = nullptr, *wt_dn = nullptr;  // device [MAXR][TOPK] the per-row W tables
+    // cf-m6 r6e (the single-GPU fused uploads, the r6d lever extended): the NON-split
+    // verify paths' per-layer varying content in ONE pinned CfIqtpVTab - the r5 resident
+    // branch's (sub-union W pair + rowmap + we) and the OFF/UVA branch's (the per-row W
+    // tables + we) both compose into the plane's sections and ride ONE fixed-size H2D
+    // per layer per window instead of the three/four prefix-sized ones. The uv sections
+    // carry the r5 union views OR the OFF per-row tables (the same [MAXR*TOPK] flat
+    // shape); the ks section is the SPLIT's own (unused here - the non-split reads all
+    // TOPK slots); the stale tails past nu are never read (the count-guarded dots).
+    CfIqtpVTab* vtab_d = nullptr;   // the fused device plane
+    CfIqtpVTab* vtab_h = nullptr;   // the pinned host staging
+    PackedW *fuv_gu = nullptr, *fuv_dn = nullptr;  // the interiors, fixed at alloc
+    int* frowmap = nullptr;
+    float* fwe_v = nullptr;
     PackedW uni_gu, uni_dn;            // the UNION slabs: [nr*TOPK*2EE, D] K2 / [nr*TOPK*D, EE] P4 (the worst case)
     int* uids_dev = nullptr;          // device [MAXR*TOPK] the union's expert ids (the UVA scatter's eid)
     int uidx[cf::NE];                 // the union slot map (expert -> slot, -1 = absent; host, recomposed per layer)
@@ -192,11 +256,8 @@ struct CfVerify {
     // the per-row W tables on the RESIDENT path (the uncovered path keeps the _b form);
     // the per-row plane table (vtab) is FIXED at alloc - the scratch pointers never move -
     // and uploads once. rowmap[u][r] = row r's pick index of slot u, -1 = not picked.
-    PackedW* uv_gu = nullptr;         // device [MAXR*TOPK] the union's resident gu views (slot order)
-    PackedW* uv_dn = nullptr;         // device [MAXR*TOPK] the union's resident dn views
-    PackedW h_uv_gu[cf::MAXR * cf::TOPK] = {}, h_uv_dn[cf::MAXR * cf::TOPK] = {};
-    int* rowmap_dev = nullptr;        // device [MAXR*TOPK][T4Q_VFY_MAXR]
-    int h_rowmap[cf::MAXR * cf::TOPK][T4Q_VFY_MAXR] = {};
+    // cf-m6 r6e: the union views + the rowmap ride the FUSED vtab plane above (the r6d
+    // form extended to the non-split paths); the FIXED VfyMoeTab stays the dot's tab arg.
     VfyMoeTab* vtab_dev = nullptr;    // the fixed per-row plane table (uploaded once at alloc)
     float* ye = nullptr;              // device [MAXR][TOPK*D] the per-row batched down outputs
     float* ysh = nullptr;             // device [MAXR][D] the per-row shared-expert outputs
@@ -252,48 +313,6 @@ struct CfVerify {
 // scatter form SAVES the ~2.6 GB core twin, HALVES the launch wall, and removes the
 // lockstep-state determinism risk (the rolling states stay GPU0's own - the single source
 // of truth). GPU1's VRAM is the half pool + this trivial scratch (<1 MB).
-// cf-m6 r6d (the fused per-side upload, the section 6 freeze's call-count lever): the
-// per-layer VARYING upload content packed in ONE pinned, fixed-size struct per side -
-// ONE H2D per side per layer where the greedy/draft split paths paid three per side
-// (wt_gu + wt_dn + we, ~22 us of launch overhead each) and the verify's split window
-// paid nine per layer. The lever is the CALL COUNT - PLAN_CF's named next wall once the
-// tiering drops the staging (~2600 launches/token at ~22 us ~= 57 ms/token): the greedy
-// drops 4 calls per layer (192/token), the draft the same per draft step, the verify's
-// window drops 7. The bytes are unchanged, the kernel args become the plane's fixed
-// interior pointers (fixed once at alloc), and the fixed size + the pinned host source
-// is exactly the shape the later graph round captures as ONE memcpy node. The stale
-// tails past n/nk/nu are never read (the count-guarded dots + the [0,nk) gathers), so
-// the full-size sections upload garbage-free-by-contract.
-struct CfIqtpTab {
-    PackedW wt_gu[cf::TOPK];
-    PackedW wt_dn[cf::TOPK];
-    float we[cf::TOPK];
-};
-// the verify's fused form (the r5 window's per-layer varying content): the sub-union W
-// pair + the rowmap + the per-row owned k-lists + the we in ONE pinned struct per side,
-// the FULL MAXR-sized sections (the [0,nu) dots, the [0,nk) gathers, the rowmap's
-// [ug*MAXR + r] slots only ever read for ug < nu).
-struct CfIqtpVTab {
-    PackedW uv_gu[cf::MAXR * cf::TOPK];
-    PackedW uv_dn[cf::MAXR * cf::TOPK];
-    int rowmap[cf::MAXR * cf::TOPK * T4Q_VFY_MAXR];
-    int ks[cf::MAXR * cf::TOPK];
-    float we[cf::MAXR * cf::TOPK];
-};
-// the layout pins (the fixed-size upload contract): the interiors are addressed by pure
-// pointer arithmetic at alloc (offsetof on these standard-layout structs), so the
-// section order and the exact sizes are part of the form.
-static_assert(sizeof(PackedW) == 88, "the PackedW stride the tabs assume");
-static_assert(sizeof(CfIqtpTab) == (size_t)cf::TOPK * (2 * sizeof(PackedW) + 4),
-              "the fused tab: the W pair then the we, no padding");
-static_assert(offsetof(CfIqtpTab, we) == 2 * (size_t)cf::TOPK * sizeof(PackedW),
-              "the fused tab: the we section follows the W pair");
-static_assert(sizeof(CfIqtpVTab) ==
-                  (size_t)cf::MAXR * cf::TOPK * (2 * sizeof(PackedW) + 4 * (T4Q_VFY_MAXR + 2)),
-              "the fused vtab: the W pair, the rowmap, the ks, the we, no padding");
-static_assert(offsetof(CfIqtpVTab, rowmap) == 2 * (size_t)cf::MAXR * cf::TOPK * sizeof(PackedW),
-              "the fused vtab: the rowmap section follows the W pair");
-
 struct CfIqtp {
     cudaStream_t st1 = nullptr;                 // GPU1's moe stream (the events bridge the sides)
     cudaEvent_t ev0 = nullptr, ev1 = nullptr;    // the per-layer sync pair (the mixed 0->1, the partial 1->0)
@@ -405,11 +424,18 @@ struct CfCtx {
     PackedW* wt_dn = nullptr;         // device: [TOPK] the down slab views
     PackedW h_wt_gu[cf::TOPK] = {};   // host staging for the upload
     PackedW h_wt_dn[cf::TOPK] = {};
-    // the dual-path moe (cf-m3): with the tier on, the per-step table composes the hit
-    // picks' RESIDENT views and the miss picks' staged-slot views and re-uploads per layer
-    // (1760 B); with the tier off these stay unused and the load-time identity upload stands
-    PackedW h_step_gu[cf::TOPK] = {};  // the per-step composed gate|up table (host)
-    PackedW h_step_dn[cf::TOPK] = {};  // the per-step composed down table (host)
+    // cf-m6 r6e (the single-GPU fused uploads, the r6d lever extended to the non-split
+    // paths): the greedy's TIERED branch paid 3 H2Ds/layer (wt_gu + wt_dn + we, all
+    // TOPK-sized - the bytes are identical fused); the same pinned CfIqtpTab form fuses
+    // them to ONE fixed-size H2D. The OFF/UVA paths keep their forms (the identity table
+    // uploads once at load; the raw/eid staging + the we upload ride the G1-captured or
+    // direct forms - the we upload stays in the shared tail guarded by !tabbed). The
+    // dead h_step_* fields (never referenced - the tiered compose reused the identity
+    // host arrays above) fall away with the landing.
+    CfIqtpTab* gtab_d = nullptr;   // the tiered branch's fused device plane
+    CfIqtpTab* gtab_h = nullptr;   // the pinned host staging
+    PackedW *gft_gu = nullptr, *gft_dn = nullptr;  // the interiors, fixed at alloc
+    float* gft_we = nullptr;
     bool tiered = false;              // a hot-set file was loaded (the resident tier is ON)
     // cf-m6 r4 (CF_REQUANT.md section 6, stage 1): the iq1_s requant resident tier.
     // T4Q_CF_IQSLAB=<dir> loads the cfreq pack's per-layer slabs for the FIRST iqs_n

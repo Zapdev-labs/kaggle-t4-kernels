@@ -606,7 +606,66 @@ STILL L4-BLOCKED: the
 launch-count win's runtime measure (the TP tax line before/after) - the Saturday
 battery's phases carry it. NEXT: the Saturday window (cfreqa + cfreqb, their outputs,
 cfbat, the battery), then the L4-informed kernel rounds (the launch wall's remainder:
-the per-layer launches themselves, then the graph question). THE
+the per-layer launches themselves, then the graph question).
+
+r6e [LANDED, host- and build-gated; the r6d lever extended to the NON-split paths,
+local-provable]: THE EXTENSION - the same fused-per-side-upload form on the SINGLE-GPU
+paths: the greedy's TIERED branch paid THREE H2Ds per layer (wt_gu + wt_dn + we, all
+TOPK-sized - the bytes are identical fused), the draft's resident branch the same
+three, the verify's r5 branch FOUR per layer per window (the nu-prefix uv_gu + uv_dn +
+rowmap + the emission-head we), the verify's OFF branch the two nr*TOPK tables + the
+head we (three). THE FORM - the SAME structs + the SAME pinned/fixed/interior
+discipline: the greedy's CfCtx gains gtab_d/gtab_h/gft_gu/gft_dn/gft_we (the tiered
+branch's ONE fixed-size H2D); CfDraft gains dtab_d/dtab_h/dft_gu/dft_dn/dft_we (the
+draft's we rides its OWN tab now - the old form wrote the trunk's c->we behind the
+serial-use discipline); CfVerify gains vtab_d/vtab_h/fuv_gu/fuv_dn/frowmap/fwe_v (BOTH
+verify branches reuse the r6d CfIqtpVTab: the uv sections carry the r5 union views OR
+the OFF per-row tables at the flat [r*TOPK + k] slots - the same [MAXR*TOPK] shape; the
+ks section is the SPLIT's own, unused by the non-split); the old fields (the greedy's
+h_step_* - never referenced, the tiered compose had reused the identity host arrays;
+the draft's h_wt_*/wt_gu/wt_dn; the verify's we_dev/h_wt_*/wt_gu/wt_dn/uv_gu/uv_dn/
+h_uv_*/rowmap_dev/h_rowmap) fall away. THE SITES - host_router's tiered compose writes
+gtab_h (the hgu/hdn locals + the we memcpy after the loop); emit_moe_rest takes the
+branch-local wgu/wdn/wwe args (the tiered branch: ONE fused upload + the interior
+pointers; the UVA/OFF branches keep the identity table + their OWN we upload moved INTO
+each branch - the shared-tail upload is gone; the stream ORDER per branch is unchanged:
+the repacks, then the we, then the quantize/gemvs); cf_draft_step's resident compose ->
+dtab (the we memcpy'd from c->we_h); vfy_window's r5 branch composes vtab_h (the union
+views at [u], the rowmap FLAT u*8+r - the same element as the old [u][r], the split's
+own form) + the we memcpy from we_h's [nr*TOPK] prefix + ONE fused upload; vfy_window's
+OFF branch composes the per-row tables into vtab_h's uv sections at [r*TOPK + k] + the
+we + ONE fused upload; vfy_moe_em's head we_dev upload REMOVED (both non-split paths'
+we rides the fused vtab, uploaded at the window - BEFORE the emission's dots on the same
+stream); the loader's allocs (gtab under if(tiered), dtab, vtab); cf_free frees the
+three PINNED stagings (gtab_h/dtab_h/vtab_h). THE HONEST NOTES - (1) the greedy/draft
+BYTES ARE UNCHANGED (all TOPK-sized before and after); (2) the verify pays the full
+MAXR-sized sections (the stale tails past nu/nr NEVER READ - the [0,nu) dots, the
+moe_out's we reads exactly [0,nr*TOPK), the count-guarded argument the r6c/r6d records
+pinned); (3) the PINNED-OVERWRITE hazard closes the same way (every compose site runs
+behind the cudaStreamSynchronize(st) - the r6d record's chain: host_router :328,
+cf_draft_step :1271, vfy_window :753 - so the prior upload has completed before the next
+compose overwrites the staging; the three planes are DISJOINT (gtab/dtab/vtab) so no
+cross-site interference); (4) THE GRAPHS: the tiered branch never captures (tiered
+forces gmode=0); the OFF greedy's G1 segments (the opt-in graph form) capture the
+branch-LOCAL we node - the same pinned we_h source, the same stream position, one node
+per layer as before; the OFF verify's V1 segments read the FIXED vtab interiors,
+refreshed by the window's DIRECT (uncaptured) upload before each segment launch - the
+same values, one less captured node (the old head's we_dev upload was a captured node).
+GATED: the host twins all 10 lines green (the twin file does not include the header -
+the struct move cannot affect it; the r6e math is the same compose, only the landing);
+the nvcc full podman build clean (MAKE_EXIT 0, ZERO ptxas warnings, the warning set
+exactly the pre-existing 41+36 front-end #128-D + the one host-gcc truncation at 406);
+the static_asserts compile = the layout pins hold. THE SATURDAY CURRENCY (all three
+kernels regenerated against the r6e tree): the cfbat 713 kB (the driver diff
+payload-ONLY, the payload verified to carry the r6e forms + the old forms gone) + the
+cfreqa/cfreqb pair 713 kB each (the ranges 0/24 + 24/49, CPU-only metadata, distinct,
+the r6e forms carried). STILL L4-BLOCKED: the call-count win's runtime measure (the
+launch numbers before/after - the Saturday battery's phases carry them). NEXT: the
+Saturday window (cfreqa + cfreqb, their outputs, cfbat, the battery with the IQTP
+probes + the agreement, the r19w-r19aa kernels), then the L4-informed kernel rounds
+(the launch wall's remainder: the per-layer launches themselves, then the graph
+question - the r6d/r6e fixed-size pinned memcpys are the graph-ready shape).
+THE
 OWNER MAP: owner(e) = e >> 8 (NE = 512, the halves 256: GPU0 [0,256), GPU1 [256,512)),
 the local index le = e & 255. THE SPLIT PLANES: the slab planes are EXPERT-MAJOR, so the
 owner's half is ONE CONTIGUOUS BYTE RANGE per plane (the codes/hi/d of the experts
