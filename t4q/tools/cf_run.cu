@@ -60,8 +60,9 @@ static int argmax(const float* x, int n) {
 
 int main(int argc, char** argv) {
     setbuf(stdout, nullptr);
-    if (argc < 4) {
-        fprintf(stderr, "usage: %s seq|gen|time|census|draft|verify|spec <model> <ids.i32> [args]\n", argv[0]);
+    // every mode reads argv[4] (oracle path for seq, n for the rest); census also reads argv[5]
+    if (argc < 5 || (std::string(argv[1]) == "census" && argc < 6)) {
+        fprintf(stderr, "usage: %s seq|gen|time|census|draft|verify|spec <model> <ids.i32> <oracle|n> [args]\n", argv[0]);
         return 2;
     }
     const std::string mode = argv[1];
