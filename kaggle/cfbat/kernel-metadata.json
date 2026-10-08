@@ -1,0 +1,22 @@
+{
+  "id": "otdoges/otdoges-t4q-cfbat",
+  "title": "otdoges/t4q-cfbat",
+  "code_file": "t4q-cfbat.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": [],
+  "dataset_sources": [],
+  "kernel_sources": [
+    "otdoges/t4-qwen38-baseline",
+    "otdoges/otdoges-t4q-cfreqa",
+    "otdoges/otdoges-t4q-cfreqb"
+  ],
+  "competition_sources": [],
+  "model_sources": [],
+  "docker_image": "gcr.io/kaggle-private-byod/python@sha256:37c64f7dd9c54116ecd1bcc88817c5469b88387388fade02bfa8bf3fc647d461",
+  "machine_shape": "NvidiaTeslaT4"
+}

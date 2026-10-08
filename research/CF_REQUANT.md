@@ -381,4 +381,34 @@ pool every layer is resident and the amortized path covers everything). THE VALU
 ~4 ms class at full overlap, measured not assumed).
 r6: the stage-2 TP split (the by-ID residency, the replicated core, the per-layer
 combine) + the full L4 battery.
-The L4-blocked r19w-r19aa battery (the MTP graphs/prefetch A/Bs) rides the same sessions.
+
+THE L4 BATTERY DRIVER (designed + gated locally, ready for the Saturday window): the
+kaggle/cfbat GPU kernel (t4q/tools/stage_cfbat.py -> mkkernel, the sources = the baseline
+kernel's libllama + BOTH cfreq pack outputs). THE FORM: the cf1 helpers verbatim (the v7
+no-stat downloader, the r19b/r19f watchdog pair, the pre-download static writes) + the
+SLAB MERGE (both kernels' layer_*.bin symlinked into ONE dir - the loader reads
+layer_%03d.bin contiguous; a 24 GB copy is too slow, symlinks are instant - plus the
+manifest validation + the REAL per-layer RMSE stats off the pack's own verify lines) +
+the tokenizer (the oracle chatw on the baked prompt, the raw-id fallback if no libllama)
++ THE FIVE PHASES in priority order (a deadline cut loses the least): (1) the resident
+smoke + the VRAM ceiling (the IQN=28 probe - the loader's throw carries the free-GiB
+number, ceiling = floor(free/0.4641); a SUCCESS extends the sweep); (2) the trunk
+baseline time (the Q2_K_S reference tok/s); (3) the IQN sweep time {8,16,24} (+
+28 if it fits - the requant-mix rate curve); (4) the QUALITY A/B: gen 64 tokens at
+IQN=0 vs IQN=16, the CF_GEN streams compared by the driver (the greedy agreement - the
+honest requant-quality gate, no oracle needed); (5) the MTP battery (k=3): the draft
+alpha1 smoke (IQN=0), the verify BYTE-MATCH at IQN=16 (THE r4 MTP-consistency bar), the
+spec round timers at IQN=0 vs 16 - THE r5 WALL MEASURE: verify_ms before/after the
+amortized dots + mean_union (the real pick overlap). THE cf_run EXTENSIONS the battery's
+eyes needed (both build-gated): the gen mode ALWAYS prints the CF_GEN stream without an
+oracle (the A/B's input), and verify/spec print mean_union (CfVerify's nu_sum/nu_cnt,
+accumulated in vfy_window's both paths). THE mkkernel --sources FLAG (the docstring
+promised it, the parser never had it - the battery needs the 3-source list). THE LOCAL
+GATES: the generated driver ast-parses with the defines verified + the driver's own
+parsing logic functionally gated (ceiling_from on the loader's REAL throw form ->
+floor(11.62/0.4641) = 25; parse_gen_stream on the r5 CF_GEN form; the CF-json parse; the
+manifest RMSE regex on the packer's real verify line); the nvcc build clean (the cf_run/
+model changes); test_iq1s unchanged-green. THE SATURDAY SEQUENCE (the window is the
+bottleneck): push cfreqa + cfreqb first (the pack runs, ~2.5 h each CPU) -> their
+outputs complete -> push cfbat (the sources resolve) -> the battery (~2.5-3 h GPU,
+~11 loads) -> the r19w-r19aa kernels ride the rest of the window.

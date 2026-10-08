@@ -171,6 +171,9 @@ struct CfVerify {
     int uidx[cf::NE];                 // the union slot map (expert -> slot, -1 = absent; host, recomposed per layer)
     int uids[cf::MAXR * cf::TOPK];    // the union's expert ids in slot order (the staging order)
     int nu = 0;                        // this layer's union count
+    // cf-m6 r5: the union-size accumulator (the mean over the verify's layers) - the
+    // amortization's REAL overlap number (nu vs nr*TOPK; the L4 battery's eye)
+    long nu_sum = 0, nu_cnt = 0;
     // cf-m6 r5 (the spec's frozen amortized M=nr verify): the iq1_s-covered layer's verify
     // dots decode each UNION pick's W once and dot it against every draft row that picked
     // it (the drop-in _b re-decodes per (row, pick)). The union views + the row map replace

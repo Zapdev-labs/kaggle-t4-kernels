@@ -51,6 +51,9 @@ def main():
         a = args[i]
         if a == "--no-sources":
             sources = []
+        elif a == "--sources":
+            i += 1
+            sources = [s for s in args[i].split(",") if s]
         elif a == "--cpu":
             cpu = True
         elif a == "--template":

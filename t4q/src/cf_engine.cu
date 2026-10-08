@@ -698,6 +698,8 @@ void vfy_window(CfCtx* c, CfLayer& L, int nr) {
         CK(cudaMemcpyAsync(v->uv_gu, v->h_uv_gu, (size_t)v->nu * sizeof(PackedW), cudaMemcpyHostToDevice, st));
         CK(cudaMemcpyAsync(v->uv_dn, v->h_uv_dn, (size_t)v->nu * sizeof(PackedW), cudaMemcpyHostToDevice, st));
         CK(cudaMemcpyAsync(v->rowmap_dev, v->h_rowmap, (size_t)v->nu * T4Q_VFY_MAXR * 4, cudaMemcpyHostToDevice, st));
+        v->nu_sum += v->nu;  // r5: the overlap stat (the mean union vs nr*TOPK)
+        v->nu_cnt++;
         return;
     }
     for (int r = 0; r < nr; r++)
@@ -759,6 +761,8 @@ void vfy_window(CfCtx* c, CfLayer& L, int nr) {
             wd.d = v->uni_dn.d + (size_t)sl * D * (EE / 32);
         }
     for (int i = 0; i < v->nu; i++) v->uidx[v->uids[i]] = -1;
+    v->nu_sum += v->nu;  // r5: the overlap stat (both verify paths)
+    v->nu_cnt++;
     CK(cudaMemcpyAsync(v->wt_gu, v->h_wt_gu, (size_t)nr * TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
     CK(cudaMemcpyAsync(v->wt_dn, v->h_wt_dn, (size_t)nr * TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
 }

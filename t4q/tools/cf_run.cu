@@ -142,6 +142,12 @@ int main(int argc, char** argv) {
             for (size_t i = 0; i < std::min(oracle.size(), (size_t)32); i++) printf(" %d", oracle[i]);
             printf("\n");
         }
+        if (oracle.empty()) {  // cf-m6 r5 battery: the stream ALWAYS printed without an oracle - the driver's
+            // A/B (the requant-mix vs the trunk) compares the two runs' CF_GEN streams
+            printf("CF_GEN t4q:");
+            for (size_t i = 0; i < gen.size(); i++) printf(" %d", gen[i]);
+            printf("\n");
+        }
         cf_free(c);
         return pass ? 0 : 3;
     }
@@ -305,9 +311,10 @@ int main(int argc, char** argv) {
         const bool pass = bytematch == rows;
         printf("CF {\"mode\":\"verify\",\"n\":%d,\"nr\":%d,\"rows\":%d,\"byte_match\":%d,\"top1_agree\":%d,"
                "\"first_diff\":%d,\"worst_rel\":%.3e,\"seq_ms\":%.2f,\"verify_ms\":%.2f,"
-               "\"verify_ms_per_tok\":%.2f,\"pass\":%s}\n",
+               "\"verify_ms_per_tok\":%.2f,\"mean_union\":%.1f,\"pass\":%s}\n",
                n, nr, rows, bytematch, top1, first_diff, worst_rel, seq_ms, v_s * 1000,
-               v_s * 1000 / std::max(1, rows), pass ? "true" : "false");
+               v_s * 1000 / std::max(1, rows),
+               (double)c->verify->nu_sum / std::max(1L, c->verify->nu_cnt), pass ? "true" : "false");
         cf_free(c);
         return pass ? 0 : 3;
     }
@@ -372,12 +379,13 @@ int main(int argc, char** argv) {
         printf("CF {\"mode\":\"spec\",\"n\":%d,\"k\":%d,\"rounds\":%d,\"emitted\":%ld,\"match\":%d,"
                "\"first_diff\":%d,\"tok_per_round\":%.3f,\"hist\":[%s],\"seq_ms\":%.2f,"
                "\"spec_ms_per_tok\":%.2f,\"draft_ms\":%.2f,\"verify_ms\":%.2f,\"catch_ms\":%.2f,"
-               "\"load_s\":%.1f,\"pass\":%s}\n",
+               "\"mean_union\":%.1f,\"load_s\":%.1f,\"pass\":%s}\n",
                n, k, rounds, emitted, match, first_diff, (double)emitted / std::max(1, rounds), hist_s, seq_ms,
                spec_s * 1000 / std::max(1L, emitted),
                c->verify->draft_s * 1000 / std::max(1, (int)c->verify->rounds),
                c->verify->verify_s * 1000 / std::max(1, (int)c->verify->rounds),
-               c->verify->catch_s * 1000 / std::max(1, (int)c->verify->rounds), load_s, pass ? "true" : "false");
+               c->verify->catch_s * 1000 / std::max(1, (int)c->verify->rounds),
+               (double)c->verify->nu_sum / std::max(1L, c->verify->nu_cnt), load_s, pass ? "true" : "false");
         cf_free(c);
         return pass ? 0 : 3;
     }
