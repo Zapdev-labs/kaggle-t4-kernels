@@ -488,8 +488,61 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
             c->iqs_n = n;
             c->tiered = true;
             c->iqtp = iqtp;
+            // cf-m6 r6b: the split-moe side planes (the AMENDED freeze: GPU1 = the pure MoE
+            // accelerator - the core + the rolling states stay GPU0's own, the per-layer
+            // mixed ships 0->1). The trivial scratch (<1 MB) on GPU1 + the stream + the
+            // cross-device sync pair (the events created on device 0, the record/wait
+            // pairs bridge the sides - the canonical inter-device form).
+            if (iqtp) {
+                CfIqtp* q = new CfIqtp();
+                c->iqp = q;
+                // best-effort PCIe P2P both ways (the T4 pair on one root complex): the
+                // cross-device D2Ds (the mixed 0->1 on st1, the partial 1->0 on st) fall
+                // back to the runtime's host-staged form either way - correct, only the
+                // direct path is faster; a failed enable is ignored (the error swept, the
+                // L4 battery measures whichever form the platform gives). The enable is
+                // one-directional on the CURRENT device: device 0 enables peer 1 (the
+                // partial ship's direction), device 1 enables peer 0 (the mixed ship's).
+                {
+                    int can = 0;
+                    if (cudaDeviceCanAccessPeer(&can, 0, 1) == cudaSuccess && can) {
+                        (void)cudaDeviceEnablePeerAccess(1, 0);
+                        (void)cudaGetLastError();
+                    }
+                }
+                CK(cudaSetDevice(1));
+                {
+                    int can = 0;
+                    if (cudaDeviceCanAccessPeer(&can, 1, 0) == cudaSuccess && can) {
+                        (void)cudaDeviceEnablePeerAccess(0, 0);
+                        (void)cudaGetLastError();
+                    }
+                }
+                CK(cudaStreamCreate(&q->st1));
+                q->mixed = dalloc<float>(D, false);
+                q->logits = dalloc<float>((size_t)TOPK * 2 * EE, false);
+                q->ffa = dalloc<float>((size_t)TOPK * EE, false);
+                q->ye = dalloc<float>((size_t)TOPK * D, false);
+                q->partial = dalloc<float>(D, false);
+                q->xqk = dalloc<int8_t>(HCD, false);
+                q->xqk_b = dalloc<int16_t>(HCD / 16, false);
+                q->xqk_d = dalloc<float>(HCD / 256, false);
+                q->xq0 = dalloc<int8_t>(HCD, false);
+                q->xd0 = dalloc<float>(HCD / 32, false);
+                q->xs0 = dalloc<int>(HCD / 32, false);
+                CK(cudaMalloc(&q->wt_gu[1], (size_t)TOPK * sizeof(PackedW)));
+                CK(cudaMalloc(&q->wt_dn[1], (size_t)TOPK * sizeof(PackedW)));
+                CK(cudaMalloc(&q->we_c[1], (size_t)TOPK * 4));
+                CK(cudaSetDevice(0));
+                CK(cudaEventCreate(&q->ev0));
+                CK(cudaEventCreate(&q->ev1));
+                q->partial0 = dalloc<float>(2 * D, false);  // [D] p0 | the shipped p1 at +D (the 2-slot plane)
+                CK(cudaMalloc(&q->wt_gu[0], (size_t)TOPK * sizeof(PackedW)));
+                CK(cudaMalloc(&q->wt_dn[0], (size_t)TOPK * sizeof(PackedW)));
+                CK(cudaMalloc(&q->we_c[0], (size_t)TOPK * 4));
+            }
             fprintf(stderr, "[cf] iq1_s resident tier: %d/%d layers, %.2f GiB%s\n", n, NL, per_gib * n,
-                    iqtp ? " (SPLIT by id across 2 GPUs - the r6b emission is not landed, the engine throws)"
+                    iqtp ? " (SPLIT by id across 2 GPUs - the r6b greedy emission rides the scatter form)"
                          : "");
         }
         // the resident tier (cf-m3): T4Q_CF_HOTSET=<path>, produced by cf_census.py --hotset

@@ -342,6 +342,43 @@ void host_router(CfCtx* c, CfLayer& L) {
         // the UVA path stages NOTHING on the host (the picks' raw slabs stay in the
         // registered pages; the next segment's captured eid H2D node carries the fresh ids)
     } else if (c->tiered) {
+        if (c->iqtp && L.res_gu.fmt == FMT_IQ1S) {
+            // cf-m6 r6b (the split-moe compose): the covered layer's picks are ALL hits on
+            // the per-side resident pair - the owner split (owner(e) = e >> 8, le = e & 255)
+            // assigns each pick to its side's COMPACT slot, and the view math is the tiered
+            // branch's own (the expert's rows at le*rows*plane-units into the SIDE's plane):
+            // GPU0's picks view res_gu/res_dn (GPU0's own - every landed r4/r5 read site
+            // untouched), GPU1's picks view res_gu1/res_dn1 (the r6a per-side pair). The
+            // compact we rides the side too (the partial weights the side's own rows). The
+            // event pair's chain closes the host-staging overwrite hazard: the next layer's
+            // compose runs behind the router sync on st, which is behind the prior combine,
+            // which waited ev1 (st1's full tail, the H2D reads included).
+            CfIqtp* q = c->iqp;
+            int nside[2] = {0, 0};
+            for (int k = 0; k < TOPK; k++) {
+                const int e = (int)c->eid[k];
+                const int g = e >> 8, le = e & 255;
+                const int kk = nside[g]++;
+                PackedW& v = q->h_wt_gu[g][kk];
+                PackedW& w = q->h_wt_dn[g][kk];
+                q->h_we_c[g][kk] = c->we_h[k];
+                const PackedW& rg = g ? L.res_gu1 : L.res_gu;
+                const PackedW& rd = g ? L.res_dn1 : L.res_dn;
+                v = rg;
+                v.rows = 2 * EE;
+                v.codes = rg.codes + (size_t)le * 2 * EE * (size_t)(D / 256) * 32;
+                v.hi = rg.hi + (size_t)le * 2 * EE * (size_t)(D / 256) * 16;
+                v.d = rg.d + (size_t)le * 2 * EE * (size_t)(D / 256);
+                w = rd;
+                w.rows = D;
+                w.codes = rd.codes + (size_t)le * D * (size_t)(EE / 128) * 16;
+                w.hi = rd.hi + (size_t)le * D * (size_t)(EE / 128) * 8;
+                w.d = rd.d + (size_t)le * D * (size_t)(EE / 128);
+            }
+            q->n[0] = nside[0];
+            q->n[1] = nside[1];
+            c->tier_nmiss = 0;  // all hits - the emission's split branch stages nothing
+        } else {
         // the dual-path moe (cf-m3, r19l part 2): a HIT pick reads its resident slab with ZERO
         // staging (the load-time repack already made it byte-identical to what the staging would
         // produce); only the MISS picks pay the MMAP->pinned->H2D path, each for its OWN rows,
@@ -400,6 +437,7 @@ void host_router(CfCtx* c, CfLayer& L) {
             }
         }
         c->tier_nmiss = nmiss;  // r19v: the emission's tiered branch reads it (never captured)
+        }
     } else {
         // OFF (no hot-set file): the verbatim full-staging host memcpys over the load-time identity table
         for (int k = 0; k < TOPK; k++) {
@@ -422,6 +460,66 @@ void emit_moe_rest(CfCtx* c, CfLayer& L) {
     const size_t gu_row = L.t_gate_exps->row_bytes;   // 840
     const size_t dn_row = L.t_down_exps->row_bytes;   // 360
     const size_t up_bytes = (size_t)TOPK * 2 * EE * gu_row;
+    const bool iqs = c->tiered && L.res_gu.fmt == FMT_IQ1S;
+    if (c->iqtp && iqs) {
+        // cf-m6 r6b (the split-moe emission, the AMENDED freeze - the ACTIVATION SCATTER):
+        // GPU0 keeps the core (the rolling states, the router, the shared expert) and runs
+        // ITS picks' moe on st; the mixed [D] ships 0->1 and GPU1 runs ITS picks' moe on st1
+        // as a PURE ACCELERATOR (the quantizes, the dots, the partial); the partial ships
+        // 1->0 and the final combine (p0 + p1 + sigmoid(gate)*ysh - the moe_out's own
+        // arithmetic, the add order split across the sides, the ~1e-6 reassociation class
+        // honestly noted; the requant's own error dwarfs it) lands on GPU0's block. The
+        // event pair closes every per-layer reuse hazard BOTH ways (the mixed's overwrite
+        // on st is behind the combine's ev1 wait; the host tables' overwrite is behind the
+        // router sync which is behind the prior combine - the 27B tp_engine's own chain).
+        // The uncovered layers (the miss path) stay on the trunk's staged form below -
+        // GPU0 only, nothing to split.
+        CfIqtp* q = c->iqp;
+        const int n0 = q->n[0], n1 = q->n[1];
+        // GPU1's side first so the peer work overlaps GPU0's own: the ship rides st1 behind
+        // ev0 (the mixed + everything before it on st), then the compact table + we uploads
+        // (the host reads are closed by the ev1 chain), the quantizes + the dots + the partial
+        CK(cudaEventRecord(q->ev0, st));
+        CK(cudaStreamWaitEvent(q->st1, q->ev0));
+        CK(cudaMemcpyAsync(q->wt_gu[1], q->h_wt_gu[1], (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice,
+                           q->st1));
+        CK(cudaMemcpyAsync(q->wt_dn[1], q->h_wt_dn[1], (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice,
+                           q->st1));
+        CK(cudaMemcpyAsync(q->we_c[1], q->h_we_c[1], (size_t)TOPK * 4, cudaMemcpyHostToDevice, q->st1));
+        CK(cudaMemcpyAsync(q->mixed, s.mixed, (size_t)D * 4, cudaMemcpyDeviceToDevice, q->st1));
+        launch_quantize_q8_K(q->mixed, D, q->xqk, q->xqk_b, q->xqk_d, q->st1);
+        launch_gemv_q8k_b(q->wt_gu[1], FMT_IQ1S, 2 * EE, q->xqk, q->xqk_b, q->xqk_d, q->logits, 0, 0, 0,
+                          (int64_t)2 * EE, n1, q->st1);
+        launch_cf_silu_mul_b(q->logits, q->ffa, EE, n1, q->st1);
+        launch_quantize_q8_0(q->ffa, (size_t)n1 * EE, q->xq0, q->xd0, q->xs0, q->st1);
+        launch_gemv_iq1sh_b(q->wt_dn[1], D, q->xq0, q->xd0, q->xs0, q->ye, EE, D, EE / 32, n1, q->st1);
+        launch_cf_moe_partial(q->ye, q->we_c[1], n1, q->partial, q->st1);
+        CK(cudaEventRecord(q->ev1, q->st1));
+        // GPU0's side: the compact dots (the same batched launches, the count = n0) + the
+        // partial + the shared expert (GPU0's own weights, the trunk's scratch verbatim)
+        CK(cudaMemcpyAsync(q->wt_gu[0], q->h_wt_gu[0], (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(q->wt_dn[0], q->h_wt_dn[0], (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(q->we_c[0], q->h_we_c[0], (size_t)TOPK * 4, cudaMemcpyHostToDevice, st));
+        launch_quantize_q8_K(s.mixed, D, s.xqk, s.xqk_b, s.xqk_d, st);
+        launch_gemv_q8k_b(q->wt_gu[0], FMT_IQ1S, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0, (int64_t)2 * EE,
+                          n0, st);
+        launch_cf_silu_mul_b(s.logits, s.ffa, EE, n0, st);
+        launch_quantize_q8_0(s.ffa, (size_t)n0 * EE, s.xq0, s.xd0, s.xs0, st);
+        launch_gemv_iq1sh_b(q->wt_dn[0], D, s.xq0, s.xd0, s.xs0, c->ye, EE, D, EE / 32, n0, st);
+        launch_cf_moe_partial(c->ye, q->we_c[0], n0, q->partial0, st);
+        gemv(s, L.sh_gate, s.mixed, s.ffg, st);
+        gemv(s, L.sh_up, s.mixed, s.ffu, st);
+        launch_silu_mul(s.ffg, s.ffu, s.ffa, EE, st);
+        gemv(s, L.sh_down, s.ffa, c->ysh, st);
+        gemv(s, L.sh_ginp, s.mixed, c->sh_gate_raw, st);
+        // the combine: wait GPU1's partial (the ev1 record = st1's full tail), ship it
+        // 1->0, then p0 + p1 + sigmoid(gate)*ysh into the block
+        CK(cudaStreamWaitEvent(st, q->ev1));
+        CK(cudaMemcpyAsync(q->partial0 + D, q->partial, (size_t)D * 4, cudaMemcpyDeviceToDevice, st));
+        launch_cf_moe_final(q->partial0, q->partial0 + D, c->ysh, c->sh_gate_raw, s.block, st);
+        check_launch("moe");
+        return;
+    }
     if (c->uva && L.il >= c->uva_lo && L.il < c->uva_n) {  // cf-m6 r4: [uva_lo, uva_n) - the iq1_s prefix excluded
         // cf-m3 (r19u) the UVA pointer-swap path: the picks' raw slabs are read from the
         // REGISTERED mmap'd expert pages through the device aliases - NO host memcpys,
@@ -464,7 +562,6 @@ void emit_moe_rest(CfCtx* c, CfLayer& L) {
     // resident planes - the SAME quantizes (the pairings coincide: the gu rides q8_K, the
     // dn rides q8_0) with the r4 batched IQ1S/IQ1SH dots; no within-layer format mix
     // exists (whole-layer residency), so ONE branch per layer, not per pick.
-    const bool iqs = c->tiered && L.res_gu.fmt == FMT_IQ1S;
     launch_quantize_q8_K(s.mixed, D, s.xqk, s.xqk_b, s.xqk_d, st);
     if (iqs)
         launch_gemv_q8k_b(c->wt_gu, FMT_IQ1S, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0, (int64_t)2 * EE,
@@ -860,13 +957,6 @@ bool cf_step(CfCtx* c, int token) {
     try {
         if (token < 0 || token >= V) throw std::runtime_error("token id out of range");
         if (c->pos >= c->max_ctx) throw std::runtime_error("context full");
-        // cf-m6 r6a: the split tier is loaded (the loader's half-plane reads are gated) but
-        // the emission support (the per-side forward, the owner dispatch, the both-ways
-        // combine) is r6b - the frozen design is CF_REQUANT.md section 6. Until it lands,
-        // the engine entry points throw under the flag.
-        if (c->iqtp)
-            throw std::runtime_error("T4Q_CF_IQTP: the r6b emission is not landed yet (the loader's split tier is; "
-                                     "the design is frozen in CF_REQUANT.md section 6)");
         auto t0 = std::chrono::steady_clock::now();
         cudaStream_t st = c->st;
         CK(cudaSetDevice(c->gpu));
@@ -995,8 +1085,8 @@ bool cf_draft_step(CfCtx* c, int token, const float* h) {
     try {
         if (!c->draft) throw std::runtime_error("cf_draft_step: no draft block (T4Q_CF_MTP=1 at load)");
         if (token < 0 || token >= V) throw std::runtime_error("draft token id out of range");
-        if (c->iqtp)  // cf-m6 r6a: the emission support is r6b (the section 6 freeze)
-            throw std::runtime_error("T4Q_CF_IQTP: the r6b emission is not landed yet");
+        if (c->iqtp)  // cf-m6 r6b: the greedy split-moe landed; the draft/verify TP forms are r6c
+            throw std::runtime_error("T4Q_CF_IQTP: the draft/verify split forms are r6c (the greedy path is landed)");
         CfDraft* d = c->draft;
         CfLayer& L = d->L;
         CfScratch& s = d->sc;
@@ -1111,8 +1201,8 @@ bool cf_verify(CfCtx* c, const int* toks, int nr) {
     try {
         if (!c->verify) throw std::runtime_error("cf_verify: no verify block (T4Q_CF_MTP=1 at load)");
         if (nr < 1 || nr > c->verify->nr) throw std::runtime_error("cf_verify: nr out of range");
-        if (c->iqtp)  // cf-m6 r6a: the emission support is r6b (the section 6 freeze)
-            throw std::runtime_error("T4Q_CF_IQTP: the r6b emission is not landed yet");
+        if (c->iqtp)  // cf-m6 r6b: the greedy split-moe landed; the draft/verify TP forms are r6c
+            throw std::runtime_error("T4Q_CF_IQTP: the draft/verify split forms are r6c (the greedy path is landed)");
         if (c->pos + nr > c->max_ctx) throw std::runtime_error("context full");
         CfVerify* v = c->verify;
         cudaStream_t st = c->st;
@@ -1381,6 +1471,16 @@ void cf_free(CfCtx* c) {
     if (c->h_ple) cudaFreeHost(c->h_ple);
     if (c->h_logits) cudaFreeHost(c->h_logits);
     if (c->eid) cudaFreeHost(c->eid);  // r19v: pinned (the captured eid H2D reads it)
+    if (c->iqp) {  // cf-m6 r6b: the split-moe side planes (the stream/event pair first -
+        // the device buffers fall to the cudaDeviceReset below, the trunk's own form)
+        if (c->iqp->st1) {
+            cudaStreamSynchronize(c->iqp->st1);
+            cudaStreamDestroy(c->iqp->st1);
+        }
+        if (c->iqp->ev0) cudaEventDestroy(c->iqp->ev0);
+        if (c->iqp->ev1) cudaEventDestroy(c->iqp->ev1);
+        delete c->iqp;
+    }
     if (c->draft) {  // cf-m4 (r19w): the draft's pinned host rows (the device buffers fall to
         // the cudaDeviceReset below, the same as the trunk's scratch)
         cudaFreeHost(c->draft->h_e);

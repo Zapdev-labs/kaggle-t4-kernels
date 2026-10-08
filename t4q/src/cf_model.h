@@ -237,6 +237,37 @@ struct CfVerify {
     std::vector<cudaGraph_t> vggraph;      // the captured sources (destroyed at free)
 };
 
+// cf-m6 r6b (the section 6 freeze, the AMENDED form): the split-moe side planes + the sync
+// pair. THE AMENDMENT over the frozen sketch: the core REPLICATION is replaced by the
+// ACTIVATION SCATTER - the core (the attention/deltanet family, the hc mixers, the shared
+// expert, the router, the rolling states) runs on GPU0 ONLY, the per-layer mixed [D] ships
+// 0->1, and GPU1 is a PURE MoE ACCELERATOR (its owned picks' quantize + dots + partial).
+// The critical path is the SAME as the replicated core's (the core wall + the split moe -
+// the replication ran the same core work in lockstep, buying nothing on the path), and the
+// scatter form SAVES the ~2.6 GB core twin, HALVES the launch wall, and removes the
+// lockstep-state determinism risk (the rolling states stay GPU0's own - the single source
+// of truth). GPU1's VRAM is the half pool + this trivial scratch (<1 MB).
+struct CfIqtp {
+    cudaStream_t st1 = nullptr;                 // GPU1's moe stream (the events bridge the sides)
+    cudaEvent_t ev0 = nullptr, ev1 = nullptr;    // the per-layer sync pair (the mixed 0->1, the partial 1->0)
+    float* mixed = nullptr;                     // [D] the shipped mixed (the scatter's landing)
+    float *logits = nullptr, *ffa = nullptr;    // [TOPK*2*EE] / [TOPK*EE] the side-1 gu y + the silu out
+    float* ye = nullptr;                        // [TOPK*D] the side-1 dn y (the compact k' slots)
+    float *partial = nullptr, *partial0 = nullptr;  // [D] side-1's (the 1->0 ship) / [2D] p0 + the shipped p1 at +D
+    int8_t* xqk = nullptr;                      // the side-1 q8_K planes (the trunk's own sizes)
+    int16_t* xqk_b = nullptr;
+    float* xqk_d = nullptr;
+    int8_t* xq0 = nullptr;
+    float* xd0 = nullptr;
+    int* xs0 = nullptr;
+    float* we_c[2] = {nullptr, nullptr};        // device [TOPK] the per-side compact we
+    float h_we_c[2][cf::TOPK] = {};             // the host staging
+    PackedW* wt_gu[2] = {nullptr, nullptr};    // device [TOPK] the per-side W tables
+    PackedW* wt_dn[2] = {nullptr, nullptr};
+    PackedW h_wt_gu[2][cf::TOPK] = {}, h_wt_dn[2][cf::TOPK] = {};
+    int n[2] = {0, 0};                          // the layer's per-side pick counts
+};
+
 struct CfCtx {
     GgufFile f;
     std::vector<CfLayer> layers;
@@ -266,6 +297,10 @@ struct CfCtx {
     // gemvs against the union slabs). INERT until cf_verify is called (the gate mode
     // now; the speculative driver later).
     CfVerify* verify = nullptr;
+    // cf-m6 r6b: the split-moe side planes (T4Q_CF_IQTP at load). The greedy emission
+    // reads it (the owner dispatch + the scatter + the per-side moe + the combine); the
+    // verify/draft TP forms are r6c (those entry points still throw under the iqtp flag).
+    CfIqtp* iqp = nullptr;
     // staging (raw GGUF slabs -> repack on device)
     uint8_t *raw_stage = nullptr;     // pinned: one layer's 10 experts (gate+up Q2_K, down Q4_0)
     uint8_t *raw_dev = nullptr;       // device mirror
@@ -372,6 +407,12 @@ void launch_cf_ple_gated(const float* value, const float* gate, float* gated, cu
 void launch_cf_ple_conv(const float* gnorm, float* hist, const float* w, float* out, cudaStream_t s);
 void launch_cf_moe_out(const float* ye, const float* we, const float* ysh, const float* sh_gate_raw, float* out,
                         cudaStream_t s);
+// cf-m6 r6b (the split-moe combine pair): the owner-side partial over the side's compact
+// slots, then the final (p0 + p1 + sigmoid(gate)*ysh) on GPU0 - together the moe_out's own
+// arithmetic with the add order split across the sides
+void launch_cf_moe_partial(const float* ye, const float* we, int n, float* out, cudaStream_t s);
+void launch_cf_moe_final(const float* p0, const float* p1, const float* ysh, const float* sh_gate_raw, float* out,
+                         cudaStream_t s);
 void launch_cf_silu_mul_b(const float* gu, float* out, int n_per, int batch, cudaStream_t s);
 // cf-m4 (r19w): the MTP draft's eh_proj input gather - out[s][0:2560] = e_norm (shared),
 // out[s][2560:5120] = h_norm[s*2560:(s+1)*2560] (the per-stream half), out flat [4][5120]

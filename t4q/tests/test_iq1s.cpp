@@ -712,6 +712,68 @@ int main() {
     }
     printf("iq1s split-plane (owner 1 of 2, expert 3, 640) dot twin: sumi-int %s (%d)  dot %s (%d rows over)\n",
            spl_sumi ? "MISMATCH" : "EXACT", spl_sumi, spl_bad ? "FAIL" : "OK", spl_bad);
+    // ---- r6b gates: the SPLIT-MOE COMBINE (the owner dispatch + the compact partials +
+    // the both-ways final vs the moe_out's own single-loop form) ----
+    // The REAL id space (e in [0,512), owner = e>>8, le = e&255) - the same dispatch math
+    // host_router's split compose runs: each pick lands in its side's COMPACT slot with
+    // its compact we, the per-side partial sums the side's OWN rows in slot order, and
+    // the final (p0 + p1 + sigmoid(gate)*ysh) re-expresses the moe_out's arithmetic.
+    // The ONLY difference vs the direct form is the ADD ORDER (the ~1e-6 fp32
+    // reassociation class - bounded honestly below, the requant's own error dwarfs it);
+    // a lost/doubled pick or a compact-slot slip lands ~0.1-1, far outside the bound.
+    int tp_bad = 0, tp_n0 = 0, tp_n1 = 0;
+    double tp_maxd = 0;
+    {
+        const int D7 = 64;
+        const int TK7 = 10;  // the engine's pick count (10) is not in this TU's includes
+        int eid7[TK7], n7[2] = {0, 0};
+        float we7[TK7];
+        for (int k = 0; k < TK7; k++) {  // 10 distinct picks, BOTH owners forced (a mixed
+            // split - a pure-lcg draw can land all 10 on one side and leave side 1 unexercised)
+            eid7[k] = ((k & 1) ? 256 : 0) + (int)(lcg() >> 16) % 256;
+            for (int j = 0; j < k; j++)
+                if (eid7[j] == eid7[k]) eid7[k] = (eid7[k] + 1) % 512;
+            we7[k] = 0.05f + 0.9f * (lcg() % 1000) / 1000.f;
+        }
+        int side7[TK7], slot7[TK7];  // the split dispatch (host_router's compose loop)
+        for (int k = 0; k < TK7; k++) {
+            const int g = eid7[k] >> 8;
+            side7[k] = g;
+            slot7[k] = n7[g]++;
+        }
+        tp_n0 = n7[0];
+        tp_n1 = n7[1];
+        if (n7[0] + n7[1] != TK7) tp_bad++;  // the dispatch's structure: no pick lost or doubled
+        // the pick rows (the k-th pick's dn output): the full plane + the per-side COMPACT
+        // planes carry the SAME values at the dispatch's mapping
+        std::vector<float> ye_full((size_t)TK7 * D7), ye0((size_t)TK7 * D7), ye1((size_t)TK7 * D7);
+        float wec0[TK7], wec1[TK7];
+        for (int k = 0; k < TK7; k++)
+            for (int c = 0; c < D7; c++)
+                ye_full[(size_t)k * D7 + c] = (float)((int)(lcg() >> 8) - 32768) / 32768.f * 0.7f;
+        for (int k = 0; k < TK7; k++) {
+            const int g = side7[k], kk = slot7[k];
+            for (int c = 0; c < D7; c++) (g ? ye1 : ye0)[(size_t)kk * D7 + c] = ye_full[(size_t)k * D7 + c];
+            (g ? wec1 : wec0)[kk] = we7[k];
+        }
+        std::vector<float> ysh7(D7);  // the shared expert's tail + its sigmoid gate
+        for (int c = 0; c < D7; c++) ysh7[c] = (float)((int)(lcg() >> 8) - 32768) / 32768.f * 0.4f;
+        const float gg7 = (float)((int)(lcg() >> 8) - 32768) / 32768.f;
+        const float sig7 = 1.0f / (1.0f + expf(-gg7));
+        for (int c = 0; c < D7; c++) {  // the kernels' own op order on both forms
+            float p0v = 0, p1v = 0, direct = 0;
+            for (int k = 0; k < n7[0]; k++) p0v += wec0[k] * ye0[(size_t)k * D7 + c];
+            for (int k = 0; k < n7[1]; k++) p1v += wec1[k] * ye1[(size_t)k * D7 + c];
+            for (int k = 0; k < TK7; k++) direct += we7[k] * ye_full[(size_t)k * D7 + c];
+            const float splitv = p0v + p1v + sig7 * ysh7[c];
+            const float moeoutv = direct + sig7 * ysh7[c];
+            const double dd = fabs((double)splitv - moeoutv);
+            if (dd > tp_maxd) tp_maxd = dd;
+            if (dd > 1e-4) tp_bad++;
+        }
+    }
+    printf("iq1s split-moe combine (owner %d/%d of 512, 10 picks, D 64) vs moe_out: %s (max |d| %.3e)\n", tp_n0,
+           tp_n1, tp_bad ? "FAIL" : "OK", tp_maxd);
     return (bad || sumi_bad || dot_bad || bad2 || sumi_bad2 || dot_bad2 || view_bad || view_sumi || am_bit ||
-            am_sumi || am_rel || am_cov || spl_bad || spl_sumi) != 0;
+            am_sumi || am_rel || am_cov || spl_bad || spl_sumi || tp_bad) != 0;
 }

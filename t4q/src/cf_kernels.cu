@@ -306,6 +306,40 @@ void launch_cf_moe_out(const float* ye, const float* we, const float* ysh, const
     k_cf_moe_out<<<(D + 255) / 256, 256, 0, s>>>(ye, we, ysh, sh_gate_raw, out);
 }
 
+// cf-m6 r6b (the section 6 freeze, the per-side partials): the OWNER-side partial sum over
+// the side's COMPACT slots (out[c] = sum_{k<n} we[k]*ye[k*D+c], n = the side's pick count -
+// the unowned picks are simply absent from the side's table). The same loop expression as
+// k_cf_moe_out's, only the bound is the side's n instead of TOPK, so the per-element
+// arithmetic is the combine's own (the split changes only the ADD ORDER across sides - the
+// ~1e-6 class, honestly noted in the r6b record; the requant's own error dwarfs it).
+__global__ void k_cf_moe_partial(const float* ye, const float* we, int n, float* out) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= D) return;
+    float acc = 0.f;
+    for (int k = 0; k < n; k++) acc += we[k] * ye[(size_t)k * D + c];
+    out[c] = acc;
+}
+
+void launch_cf_moe_partial(const float* ye, const float* we, int n, float* out, cudaStream_t s) {
+    k_cf_moe_partial<<<(D + 255) / 256, 256, 0, s>>>(ye, we, n, out);
+}
+
+// the r6b final combine: block = p0 + p1 + sigmoid(gate)*ysh (the shared expert ran on
+// GPU0 with the core; only side 0's partial could have summed it, but the shared's own
+// contribution lands here once - the moe_out's own tail form, p0/p1 in place of the Σ)
+__global__ void k_cf_moe_final(const float* p0, const float* p1, const float* ysh, const float* sh_gate_raw,
+                               float* out) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= D) return;
+    const float gg = *sh_gate_raw;
+    out[c] = p0[c] + p1[c] + (1.0f / (1.0f + expf(-gg))) * ysh[c];
+}
+
+void launch_cf_moe_final(const float* p0, const float* p1, const float* ysh, const float* sh_gate_raw, float* out,
+                         cudaStream_t s) {
+    k_cf_moe_final<<<(D + 255) / 256, 256, 0, s>>>(p0, p1, ysh, sh_gate_raw, out);
+}
+
 // the 10-expert batched silu(g)*u over the stacked [gate n | up n] staging (stride 2n per expert).
 // Same expression as k_silu_mul, so bit-identical per element; one launch instead of 10 x 3-block
 // underfilled ones (the r18 verdict: the batched launch is mandatory at the measured 112->144 GB/s).

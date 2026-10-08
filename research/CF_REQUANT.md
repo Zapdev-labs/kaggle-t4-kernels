@@ -402,6 +402,55 @@ OK. THE BUILD: clean, zero ptxas warnings in the rebuilt TUs. THE REST IS r6b (t
 per-side emission + the dispatch + the combine kernels + the sync pairs + the scratch/
 rolling-state replication + the core replication) + r6c (the draft/verify TP forms + the
 battery extension), per the freeze below. THE
+r6b [LANDED, host- and build-gated; the draft/verify TP forms are r6c]: THE FREEZE
+AMENDED FIRST (the design re-check at the emission head): the REPLICATED CORE is
+replaced by the ACTIVATION SCATTER - the core (the attention/deltanet family, the hc
+mixers, the shared expert, the router, the rolling states, the KV, the PLE ring) runs
+on GPU0 ONLY, the per-layer mixed [D] ships 0->1, and GPU1 is a PURE MoE ACCELERATOR
+(its owned picks' quantize + dots + partial). THE VERDICT: the replication bought
+NOTHING on the critical path (the core wall is the same - the same core work ran in
+lockstep on both, and the moe split dominates either way) while costing the ~2.6 GB
+core twin + the double launch wall + the lockstep-determinism hazard (the rolling
+states divergent across the pair - a byte-level correctness risk the scatter removes:
+the states stay GPU0's own, the single source of truth). THE AMENDED FORM: the loader's
+GPU1 scratch is the CfIqtp plane set (<1 MB: the mixed/logits/ffa/ye/partial/partial0/
+xq* planes + the per-side W tables + the we_c pair) + the stream + the cross-device
+event pair + the best-effort PCIe P2P both directions (the D2Ds fall back to the
+runtime's host-staged form either way - correct, the L4 measures which); NO CfScratch
+twin, NO rolling-state twins, NO block peer-copy (GPU1's only per-layer input is the
+mixed). THE COMPOSE (host_router): the covered layer's picks are ALL hits on the
+per-side pair - the owner dispatch (owner(e) = e >> 8, le = e & 255) lands each pick
+in its side's COMPACT slot with its compact we, the view math the tiered branch's own
+(le*rows*plane-units into the SIDE's plane: GPU0 res_gu/res_dn, GPU1 res_gu1/res_dn1),
+n[0]+n[1] = TOPK, tier_nmiss = 0. THE EMISSION (emit_moe_rest): GPU1's side FIRST (so
+the peer work overlaps GPU0's own): ev0 (st's tail - the mixed + everything before it)
+waited on st1, the W-table + we_c[1] H2Ds + the mixed [D] D2D 0->1, the q8_K quantize
++ the FMT_IQ1S gu dot + the silu + the q8_0 + the FMT_IQ1SH dn dot + the partial (the
+count = n1, the compact slots), ev1; then GPU0's side: the W-table + we_c[0] H2Ds, the
+SAME quantize/dot/silu/quantize/dot chain over n0 (the trunk's own scratch), the
+partial into partial0, THE SHARED EXPERT verbatim (GPU0's own weights + scratch), then
+the combine: st waits ev1, the partial [D] D2D 1->0 into partial0+D, the final
+(p0 + p1 + sigmoid(gate)*ysh - the moe_out's own arithmetic, the add order split
+across the sides, the reassociation class measured 2.4e-07 in the gate) into the
+block. ONE event pair + 2 [D] D2Ds per layer (vs the freeze's ~2 pairs + the block
+copy) - the TP tax class the L4 measures. THE SYNC DISCIPLINE (the reuse hazards
+closed BOTH ways by the same pair): the mixed's overwrite on st is behind the
+combine's ev1 wait; the host tables' overwrite at the next compose is behind the
+router's st sync, which is behind the prior combine, which waited ev1 = st1's full
+tail (the H2D reads included); the partial's overwrite on st1 is behind the next ev0
+chain. THE KERNELS: k_cf_moe_partial (43 regs, 0 spills) + k_cf_moe_final (15 regs, 0
+spills). cf_step's THROW LIFTED (the greedy path is landed); cf_verify/cf_draft_step
+still THROW (r6c). THE GATE: the split-moe combine twin (the REAL id space e in
+[0,512), owner = e>>8, BOTH owners forced - a pure-lcg draw once landed 10/0 and left
+side 1 unexercised; the forced 5/5): the dispatch + the compact slots + the per-side
+partials + the final vs the moe_out's own single-loop form over the same values - max
+|d| 2.384e-07 (the fp32 add-order class, bounded 1e-4), the structure checks (no pick
+lost/doubled, n0+n1 = 10) OK; the r1-r6a lines UNCHANGED-green. THE BUILD: clean, ZERO
+ptxas warnings; the 77 pre-existing nvcc front-end warnings (#128-D, unreachable
+loops) unchanged in the untouched tp_* TUs (41 tp_prefill + 36 tp_spec), the one
+host-gcc -Wformat-truncation at cf_loader.cu:405 verified IDENTICAL at HEAD (the r4
+tier's own layer_%03d snprintf - provably safe, il < n <= 48; not introduced by r6b).
+THE REST IS r6c (the draft/verify TP forms + the battery's IQTP phases). THE
 OWNER MAP: owner(e) = e >> 8 (NE = 512, the halves 256: GPU0 [0,256), GPU1 [256,512)),
 the local index le = e & 255. THE SPLIT PLANES: the slab planes are EXPERT-MAJOR, so the
 owner's half is ONE CONTIGUOUS BYTE RANGE per plane (the codes/hi/d of the experts
@@ -415,7 +464,11 @@ read the pair; the "arrays" sketch was the idea, the pair is the landed compat f
 the hot maps the OWNER form (hn = NE -
 every pick a hit ACROSS the two GPUs; hot_ids[e] = e, hot_idx[e] = the packed
 (owner<<8 | le)... or the engine derives owner(e) inline - the simpler form, the
-identity map keeps hn=NE). THE ENGINE (r6b, the greedy emission): (1) THE REPLICATED
+identity map keeps hn=NE). THE ENGINE (r6b, the greedy emission): (1) [AMENDED at
+r6b - the r6b record above: the REPLICATED CORE is replaced by the ACTIVATION SCATTER
+(the core on GPU0 only, the mixed ships 0->1, GPU1 a pure MoE accelerator) - the
+replication bought nothing on the critical path while costing the ~2.6 GB twin + the
+double launch wall + the lockstep-determinism hazard] THE REPLICATED
 CORE - every core op (the attention family, the hc mixers, the shared expert, the
 router gemv, the rolling states - the KV cells, the GDN S/conv, the PLE ring) runs on
 BOTH GPUs on the SAME inputs - deterministic identical states, NO all-reduce for the
@@ -433,7 +486,9 @@ GPU1's stream event waited on GPU0's stream before the copy node), the final
 combine on GPU0 (p0 + p1 + ysh*gate - the shared ran on BOTH but only GPU0's partial
 sums it), then the block [D] peer-copied 0->1 (the second event pair - GPU1's forward
 needs the block for the next layer's mixed); ~2 event pairs + 2 D2Ds per layer = the
-spec's ~0.2-1 ms TP tax, measured at the L4. (5) THE GRAPH NOTE: the tier already
+spec's ~0.2-1 ms TP tax, measured at the L4. [AMENDED at r6b - the r6b record above:
+the scatter form needs NO block copy - GPU1's only per-layer input is the mixed; ONE
+event pair + 2 [D] D2Ds per layer.] (5) THE GRAPH NOTE: the tier already
 kills the graphs (the gmode&&tiered check) - the TP form rides the direct launches,
 the launch-wall question is the L4's (the r19z segment-graph form would need the
 per-side captures + the inter-side waits, a later round if the wall shows). THE DRAFT
