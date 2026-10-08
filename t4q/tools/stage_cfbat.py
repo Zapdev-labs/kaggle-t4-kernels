@@ -22,8 +22,10 @@ the manifest validation + the real-RMSE stats) -> the tokenizer (oracle chatw on
       greedy + draft + verify split forms, the r6a/r6b/r6c rounds): the split SMOKE +
       the greedy rate at IQN=__IQN_AB__ (the TP tax vs the same-IQN single-GPU run in
       the sweep), the full-48 SPLIT-CEILING probe (the loader's per-side throw carries
-      the free-GiB number; a success = the whole 24.41 GB pool fits the split), and the
-      IQTP verify round (the r6c wall: verify_ms + mean_union at the split).
+      the free-GiB number; a success = the whole 24.41 GB pool fits the split), the
+      IQTP verify round (the r6c wall: verify_ms + mean_union at the split), and the
+      split's token-level agreement vs the same-IQN single-GPU stream (the ~1e-6
+      add-order class vs the requant's own error - the honest TP quality note).
 -> RESULTS.
 """
 import base64
@@ -432,6 +434,22 @@ def main():
                                  "ceiling_split": ceil48 if ceil48 is not None else ("fits" if rc == 0 else None)})
         rc, o, cf = cfrun("spec", [ids, 24], f"spec_iqtp_iqn{IQN_AB}.log", iqn=IQN_AB, mtp=True, iqtp=True)
         result("spec_iqtp", {"iqn": IQN_AB, "rc": rc, "cf": cf})  # the r6c wall at the split
+        # the split's token-level agreement vs the same-IQN single-GPU stream (the honest
+        # quality note for the TP: the add-order split + the P2P form's effect on the
+        # tokens - the ~1e-6 reassociation class is noise below the requant's own 0.4-rel
+        # error, so the streams should agree at the requant's own level)
+        rc, o, cf = cfrun("gen", [ids, N_GEN], f"gen_iqtp_iqn{IQN_AB}.log", iqn=IQN_AB, iqtp=True)
+        result("gen_iqtp", {"iqn": IQN_AB, "rc": rc, "cf": cf})
+        a = parse_gen_stream(f"gen_iqn{IQN_AB}.log")
+        b = parse_gen_stream(f"gen_iqtp_iqn{IQN_AB}.log")
+        if a and b:
+            m = min(len(a), len(b))
+            agree = sum(x == y for x, y in zip(a[:m], b[:m]))
+            first = next((i for i in range(m) if a[i] != b[i]), -1)
+            result("iqtp_agreement", {"n": m, "agree": agree, "first_diff": first,
+                                      "tok_per": round(agree / m, 4), "same": first < 0})
+        else:
+            result("iqtp_agreement", {"error": "no CF_GEN stream", "a": bool(a), "b": bool(b)})
         tp = {}
         d = RESULTS.get("iqtp_smoke", {}).get("cf") or {}
         if d:

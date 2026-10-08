@@ -529,7 +529,23 @@ split vs the spec_ab run) - all in the priority order AFTER the r5 phases (a dea
 cut loses the newest first). THE GATES: the regenerated driver ast-parses with the
 defines verified; the split-ceiling arithmetic functionally gated on the loader's
 REAL per-side throw form (floor(11.62/0.232) = 50 vs the single-GPU 25, the
-no-match None); the phase order gated (the IQTP phases after the r5 phases). THE
+no-match None); the phase order gated (the IQTP phases after the r5 phases).
+r6c part 4 [LANDED, gated; the L4-debug observability + the TP quality bar]: (a)
+THE PER-DEVICE LAUNCH CHECKS - the three split branches (greedy/draft/verify) now
+check GPU1's kernel-launch errors after each GPU1-side sequence (cudaSetDevice(1) +
+CK(cudaGetLastError()) + back - the 27B tp_engine's own CK-after-the-launches form,
+adopted): the per-device error state is INVISIBLE to the device-0 check_launch, so a
+failed GPU1 launch (the config/OOM class) would surface only as garbage or a hang
+at the L4 - now it surfaces as a clean per-layer throw. (b) THE BATTERY'S IQTP
+AGREEMENT - the phase-6 gen at IQN=IQN_AB + IQTP with the CF_GEN stream compared vs
+the same-IQN single-GPU stream (the phase-4 gen_ab): the honest TP quality note -
+the split's add-order reassociation (~1e-6, measured 2.4e-07) is noise below the
+requant's own 0.4-rel error, so the streams should agree at the requant's own level;
+the disagreement would flag a real split bug (a wrong-plane read at the ~0.1-1
+class). The order within phase 6: the smoke -> the ceiling48 -> the spec_iqtp (the
+r6c wall) -> the gen agreement (the most cuttable). GATED: the driver ast-parses
+with the phase order + the A/B pair verified; the host gate unchanged-green; the
+build clean. THE
 SATURDAY KERNEL CURRENCY: the cfreqa + cfreqb payloads REGENERATED against the
 current tree (the r3-era payloads predated the r4+ packed.h/requant changes - each
 payload is self-consistent, but the regenerated ones carry the current sources so

@@ -495,6 +495,9 @@ void emit_moe_rest(CfCtx* c, CfLayer& L) {
         launch_gemv_iq1sh_b(q->wt_dn[1], D, q->xq0, q->xd0, q->xs0, q->ye, EE, D, EE / 32, n1, q->st1);
         launch_cf_moe_partial(q->ye, q->we_c[1], n1, q->partial, q->st1);
         CK(cudaEventRecord(q->ev1, q->st1));
+        CK(cudaSetDevice(1));
+        CK(cudaGetLastError());  // GPU1's launch errors (the per-device state - the device-0
+        CK(cudaSetDevice(0));    // check_launch cannot see them; the 27B tp_engine's own form)
         // GPU0's side: the compact dots (the same batched launches, the count = n0) + the
         // partial + the shared expert (GPU0's own weights, the trunk's scratch verbatim)
         CK(cudaMemcpyAsync(q->wt_gu[0], q->h_wt_gu[0], (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
@@ -975,6 +978,9 @@ void vfy_moe_em(CfCtx* c, CfLayer& L, int nr) {
             launch_cf_moe_partial_k(q->v_ye[r], q->we_dev1 + (size_t)r * TOPK, q->ks_dev[1] + (size_t)r * TOPK,
                                     q->h_nk[1][r], q->v_partial + (size_t)r * D, q->st1);
         CK(cudaEventRecord(q->ev1, q->st1));
+        CK(cudaSetDevice(1));
+        CK(cudaGetLastError());  // GPU1's launch errors (the per-device state - the device-0
+        CK(cudaSetDevice(0));    // check_launch cannot see them; the 27B tp_engine's own form)
         // GPU0's side: the r5 phases verbatim over its sub-union + the gather partials
         for (int r = 0; r < nr; r++) {
             CfScratch& s = v->sc[r];
@@ -1312,6 +1318,9 @@ bool cf_draft_step(CfCtx* c, int token, const float* h) {
             launch_gemv_q8_0_b(q->wt_dn[1], D, q->xq0, q->xd0, q->xs0, q->ye, EE, D, EE / 32, n1, q->st1);
             launch_cf_moe_partial(q->ye, q->we_c[1], n1, q->partial, q->st1);
             CK(cudaEventRecord(q->ev1, q->st1));
+            CK(cudaSetDevice(1));
+            CK(cudaGetLastError());  // GPU1's launch errors (the per-device state - the device-0
+            CK(cudaSetDevice(0));     // check_launch cannot see them; the 27B tp_engine's own form)
             // GPU0's side: the same chain over n0 (the draft's own scratch) + the shared
             // expert + the combine
             CK(cudaMemcpyAsync(q->wt_gu[0], q->h_wt_gu[0], (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
