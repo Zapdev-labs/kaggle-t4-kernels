@@ -1,0 +1,26 @@
+t4q/tools/stage_cfbat.py
+  s_ac85989787ca8c::t_981130a0c5ace7 437-452
+  s_ac85989787ca8c::t_d8e823c8722783 25-28
+research/CF_REQUANT.md
+  s_ac85989787ca8c::t_2102a3ba58fd04 532-548
+t4q/src/cf_engine.cu
+  s_ac85989787ca8c::t_2e51227e202a05 981-983
+  s_ac85989787ca8c::t_cf1556a90d1ba7 1321-1323
+  s_ac85989787ca8c::t_9e12adab34c8f7 498-500
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e8f8471b1c925a1a8e9226ffa10b0116201dd4dc",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
