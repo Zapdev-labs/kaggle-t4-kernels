@@ -1,0 +1,51 @@
+t4q/src/cf_kernels.cu
+  s_ac85989787ca8c::t_aee1b1978617f0 309-342
+t4q/src/cf_loader.cu
+  s_ac85989787ca8c::t_28b87d4677a5ea 491-497,513,521-538,540-543,545
+  s_ac85989787ca8c::t_c1a602bdc9bd95 500-505,508-509,514,516-517
+  s_ac85989787ca8c::t_05dd1dba6ada51 498
+  s_ac85989787ca8c::t_8ea0f48a8c1d21 499,506-507,510-512,515,518-520
+  s_ac85989787ca8c::t_de27cd2d18e689 539
+t4q/src/cf_model.h
+  s_ac85989787ca8c::t_38c76ed079cda9 240-255,257-262,264,267-270
+  s_ac85989787ca8c::t_2fb3d7c1d7be37 256
+  s_ac85989787ca8c::t_0299f45059096e 263,265-266
+  s_ac85989787ca8c::t_d9b340a942ab6a 300-301
+  s_ac85989787ca8c::t_0581dcfbeba384 302-303
+  s_ac85989787ca8c::t_949d4bb36e62a2 410-415
+t4q/src/cf_engine.cu
+  s_ac85989787ca8c::t_fbbfbc9cd1344b 1088-1089
+  s_ac85989787ca8c::t_e873bbe0c3df81 345-355,357-381
+  s_ac85989787ca8c::t_3012cdd7ba8c17 440
+  s_ac85989787ca8c::t_fae815da2e0ed9 477
+  s_ac85989787ca8c::t_e9a011f808d085 1204-1205
+  s_ac85989787ca8c::t_a5135ad5170a2b 1474-1483
+  s_ac85989787ca8c::t_2efe32f8d4fd2c 463-476,478-522
+  s_ac85989787ca8c::t_6dc87e5deb96ed 356
+research/CF_REQUANT.md
+  s_ac85989787ca8c::t_1bd115b364184b 467-471
+  s_ac85989787ca8c::t_36c4e39f1c0c33 405-447,451-453
+  s_ac85989787ca8c::t_bc7a34f8f93dae 448-450
+  s_ac85989787ca8c::t_054a7149175600 489-491
+t4q/tests/test_iq1s.cpp
+  s_ac85989787ca8c::t_43e7709a28c107 728
+  s_ac85989787ca8c::t_1af60033fde292 715-727,734-737,740-745,747-748,752-753,755-766,768-776,778
+  s_ac85989787ca8c::t_5695039538651a 739,754
+  s_ac85989787ca8c::t_cbbea29ddc371f 731-733
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e6c42632b4c1db931b059199d6be4a278cd48a22",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
