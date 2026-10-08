@@ -1,0 +1,36 @@
+t4q/tests/test_iq1s.cpp
+  s_ac85989787ca8c::t_20ac4d94478d92 634-714
+  s_ac85989787ca8c::t_6c8c3316afb1bf 716
+t4q/src/cf_loader.cu
+  s_ac85989787ca8c::t_1f72625d070530 433-480
+  s_ac85989787ca8c::t_19a4f58e127a45 490-493
+  s_ac85989787ca8c::t_00b5bb04edc01c 423-432
+  s_ac85989787ca8c::t_e2355411c2726d 386-391,393,395-399
+t4q/src/cf_model.h
+  s_ac85989787ca8c::t_47e4ed3eb35f3f 75-81
+  s_ac85989787ca8c::t_9dca80e0587b5b 296-301
+t4q/src/cf_engine.cu
+  s_ac85989787ca8c::t_9ea658486823f4 863-869
+  s_ac85989787ca8c::t_abc7e726260bce 1114-1115
+  s_ac85989787ca8c::t_27fd3281622125 998-999
+research/CF_REQUANT.md
+  s_ac85989787ca8c::t_0bc07502ce01b3 382,405-411,416-462
+  s_ac85989787ca8c::t_b972da6c9e1713 383-404
+  s_ac85989787ca8c::t_165f6b77940e0a 412-415
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7f6982c6fd8b3e6ac4738621e68bb395247c2612",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
