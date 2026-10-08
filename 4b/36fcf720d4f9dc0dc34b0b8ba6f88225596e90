@@ -1,0 +1,35 @@
+research/CF_REQUANT.md
+  s_ac85989787ca8c::t_65ab735b35cc1a 384-414
+t4q/tools/mkkernel.py
+  s_ac85989787ca8c::t_4cbf80fac400ad 54-56
+t4q/src/cf_model.h
+  s_ac85989787ca8c::t_a4d57c8df0b43e 174-176
+t4q/src/cf_engine.cu
+  s_ac85989787ca8c::t_39ec5502db83a9 701-702
+  s_ac85989787ca8c::t_0b8b991d86b06f 764-765
+t4q/tools/stage_cfbat.py
+  s_ac85989787ca8c::t_4d10817e4c21b4 255-296
+  s_ac85989787ca8c::t_0c8d63c6de53de 1-254,297-327,333-363,365,368-415
+  s_ac85989787ca8c::t_2c4c341ddfa6e3 328-332
+  s_ac85989787ca8c::t_8e56fd68520545 364,366-367
+t4q/tools/cf_run.cu
+  s_ac85989787ca8c::t_0017a084610057 145-150
+  s_ac85989787ca8c::t_937324e111e484 314,316-317
+  s_ac85989787ca8c::t_9ad383bf4facb7 382,387-388
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4b36fcf720d4f9dc0dc34b0b8ba6f88225596e90",
+  "prompts": {},
+  "sessions": {
+    "s_ac85989787ca8c": {
+      "agent_id": {
+        "tool": "droid",
+        "id": "6c38e463-e094-44c0-ac78-8c8af173eb67",
+        "model": "glm-5.3"
+      },
+      "human_author": "Jackson57279 <jackson@email.zapdev.link>"
+    }
+  }
+}
