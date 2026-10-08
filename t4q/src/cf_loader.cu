@@ -764,20 +764,36 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
             ds.xq1 = dalloc<int8_t>(HCD, false); ds.xq1_d = dalloc<float>(HCD / 32, false);
             ds.xq1_s = dalloc<float>(HCD / 32, false);
             ds.logits = dalloc<float>(V, false);
-            // the ALL-512 resident slabs (the VRAM check first: ~2.67 GB packed)
+            // the ALL-512 resident slabs (the VRAM check first: ~2.67 GB packed);
+            // cf-m6 r6c: under T4Q_CF_IQTP the draft's pool splits BY ID too (the section 6
+            // freeze: ~1.33 GiB per side, the halves' owner form, the same e>>8/e&255 map) -
+            // the per-side free check (the r6a form), the per-side allocs, and the chunk
+            // loop never straddling the 256 boundary (each chunk stages + repacks on its
+            // OWN side's stream; GPU1's own raw staging plane, since a kernel cannot read
+            // a remote pointer without the P2P the loader only tries best-effort).
+            const bool diqtp = c->iqtp;
             {
                 const double need_gib =
-                    (NE * 2.0 * EE * D + (double)NE * D * EE) * 1.0625 / (1ull << 30) * 1.0;
-                size_t free_b = 0, total_b = 0;
-                CK(cudaMemGetInfo(&free_b, &total_b));
-                if ((double)free_b < need_gib * (1ull << 30) * 1.02)
-                    throw std::runtime_error("the draft block needs " + std::to_string(need_gib) +
-                                             " GiB resident, only " + std::to_string((double)free_b / (1ull << 30)) +
-                                             " GiB free");
-                fprintf(stderr, "[cf] draft block: resident tier %.2f GiB\n", need_gib);
+                    (NE * 2.0 * EE * D + (double)NE * D * EE) * 1.0625 / (1ull << 30) / (diqtp ? 2 : 1) * 1.0;
+                for (int g = 0; g < (diqtp ? 2 : 1); g++) {
+                    size_t free_b = 0, total_b = 0;
+                    CK(cudaSetDevice(g));
+                    CK(cudaMemGetInfo(&free_b, &total_b));
+                    if ((double)free_b < need_gib * (1ull << 30) * 1.02)
+                        throw std::runtime_error("the draft block needs " + std::to_string(need_gib) +
+                                                 " GiB resident on GPU" + std::to_string(g) + ", only " +
+                                                 std::to_string((double)free_b / (1ull << 30)) + " GiB free");
+                    CK(cudaSetDevice(0));
+                }
+                fprintf(stderr, "[cf] draft block: resident tier %.2f GiB%s\n", need_gib,
+                        diqtp ? " per side (split by id)" : "");
             }
-            alloc_packed(d->res_gu, 0, FMT_Q8, (int64_t)NE * 2 * EE, D);
-            alloc_packed(d->res_dn, 0, FMT_Q8, (int64_t)NE * D, EE);
+            alloc_packed(d->res_gu, 0, FMT_Q8, (int64_t)(diqtp ? NE / 2 : NE) * 2 * EE, D);
+            alloc_packed(d->res_dn, 0, FMT_Q8, (int64_t)(diqtp ? NE / 2 : NE) * D, EE);
+            if (diqtp) {
+                alloc_packed(d->res_gu1, 1, FMT_Q8, (int64_t)NE / 2 * 2 * EE, D);
+                alloc_packed(d->res_dn1, 1, FMT_Q8, (int64_t)NE / 2 * D, EE);
+            }
             CK(cudaMalloc(&d->wt_gu, (size_t)TOPK * sizeof(PackedW)));
             CK(cudaMalloc(&d->wt_dn, (size_t)TOPK * sizeof(PackedW)));
             {
@@ -788,9 +804,22 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                 const size_t dn_bytes = (size_t)TOPK * D * c->layers[0].t_down_exps->row_bytes;
                 const int ch = std::max(
                     1, (int)std::min(up_bytes / (2 * EE * gu_row_d), dn_bytes / ((size_t)D * dn_row_d)));
+                uint8_t* raw_dev1 = nullptr;  // GPU1's own staging (the load-only plane)
+                if (diqtp) {
+                    CK(cudaSetDevice(1));
+                    CK(cudaMalloc(&raw_dev1, up_bytes + dn_bytes));
+                    CK(cudaSetDevice(0));
+                }
                 for (int e0 = 0; e0 < NE; e0 += ch) {
-                    const int n = std::min(ch, NE - e0);
-                    CK(cudaStreamSynchronize(st));  // the previous pass's H2D must drain before the refill
+                    // a chunk never straddles the owner boundary (the per-side repack keeps
+                    // its ONE dst plane per chunk)
+                    const int lim = (diqtp && e0 < NE / 2) ? NE / 2 : NE;
+                    const int n = std::min(ch, lim - e0);
+                    const int g = diqtp ? e0 / (NE / 2) : 0;
+                    // the SHARED host staging's refill drains BOTH sides' prior H2Ds (the
+                    // load-time conservative form - two syncs per chunk, the one-time cost)
+                    CK(cudaStreamSynchronize(st));
+                    if (diqtp) CK(cudaStreamSynchronize(c->iqp->st1));
                     for (int j = 0; j < n; j++) {
                         const int64_t e = e0 + j;
                         uint8_t* dst = c->raw_stage + (size_t)j * 2 * EE * gu_row_d;
@@ -800,18 +829,38 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                         memcpy(c->raw_stage + up_bytes + (size_t)j * D * dn_row_d,
                                L.t_down_exps->data + (size_t)e * D * dn_row_d, (size_t)D * dn_row_d);
                     }
-                    CK(cudaMemcpyAsync(c->raw_dev, c->raw_stage, (size_t)n * 2 * EE * gu_row_d, cudaMemcpyHostToDevice,
-                                       st));
-                    CK(cudaMemcpyAsync(c->raw_dev + up_bytes, c->raw_stage + up_bytes, (size_t)n * D * dn_row_d,
-                                       cudaMemcpyHostToDevice, st));
-                    launch_repack(d->res_gu, GT_Q8_0, c->raw_dev, (int64_t)e0 * 2 * EE, (int64_t)n * 2 * EE, st);
-                    launch_repack(d->res_dn, GT_Q8_0, c->raw_dev + up_bytes, (int64_t)e0 * D, (int64_t)n * D, st);
+                    if (g == 0) {  // GPU0's half: the verbatim form (le = e0 for e < 256)
+                        CK(cudaMemcpyAsync(c->raw_dev, c->raw_stage, (size_t)n * 2 * EE * gu_row_d,
+                                           cudaMemcpyHostToDevice, st));
+                        CK(cudaMemcpyAsync(c->raw_dev + up_bytes, c->raw_stage + up_bytes, (size_t)n * D * dn_row_d,
+                                           cudaMemcpyHostToDevice, st));
+                        launch_repack(d->res_gu, GT_Q8_0, c->raw_dev, (int64_t)e0 * 2 * EE, (int64_t)n * 2 * EE, st);
+                        launch_repack(d->res_dn, GT_Q8_0, c->raw_dev + up_bytes, (int64_t)e0 * D, (int64_t)n * D,
+                                      st);
+                    } else {  // GPU1's half: the H2D into GPU1's own staging + the repack on st1
+                        cudaStream_t st1 = c->iqp->st1;
+                        CK(cudaMemcpyAsync(raw_dev1, c->raw_stage, (size_t)n * 2 * EE * gu_row_d,
+                                           cudaMemcpyHostToDevice, st1));
+                        CK(cudaMemcpyAsync(raw_dev1 + up_bytes, c->raw_stage + up_bytes, (size_t)n * D * dn_row_d,
+                                           cudaMemcpyHostToDevice, st1));
+                        launch_repack(d->res_gu1, GT_Q8_0, raw_dev1, (int64_t)(e0 - NE / 2) * 2 * EE,
+                                      (int64_t)n * 2 * EE, st1);
+                        launch_repack(d->res_dn1, GT_Q8_0, raw_dev1 + up_bytes, (int64_t)(e0 - NE / 2) * D,
+                                      (int64_t)n * D, st1);
+                    }
                     CK(cudaGetLastError());
                 }
                 CK(cudaStreamSynchronize(st));
+                if (diqtp) {
+                    CK(cudaStreamSynchronize(c->iqp->st1));
+                    CK(cudaSetDevice(1));
+                    CK(cudaFree(raw_dev1));
+                    CK(cudaSetDevice(0));
+                }
             }
             const double d_dur = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-            fprintf(stderr, "[cf] draft block loaded (all-512 resident) %.1f s\n", d_dur);
+            fprintf(stderr, "[cf] draft block loaded (all-512 resident%s) %.1f s\n",
+                    diqtp ? ", split by id across 2 GPUs" : "", d_dur);
             // cf-m4 (r19x): the MTP verify's per-row planes + the union staging (the same
             // T4Q_CF_MTP gate; k rides T4Q_CF_K, default 3 -> nr = k+1 rows, the MAXR=8
             // bound). The per-row scratch = the trunk's plane list verbatim (the rolling

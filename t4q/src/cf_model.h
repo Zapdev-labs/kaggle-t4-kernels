@@ -147,6 +147,10 @@ struct CfDraft {
     float *ysh = nullptr, *sh_gate_raw = nullptr;  // device [D]/[1] the shared expert out + its sigmoid gate
     CfScratch sc;                     // the draft's OWN scratch (the trunk's is never touched)
     PackedW res_gu, res_dn;            // the ALL-512 resident slabs: [512*2*EE, D] / [512*D, EE] Q8_0
+    // cf-m6 r6c: under T4Q_CF_IQTP the draft's pool splits BY ID (the section 6 freeze,
+    // ~1.33 GiB per side): res_gu/res_dn shrink to GPU0's [0,256) half, res_gu1/res_dn1
+    // are GPU1's [256,512) half (the same e>>8/e&255 owner map, the local row offsets)
+    PackedW res_gu1, res_dn1;
     PackedW h_wt_gu[cf::TOPK] = {}, h_wt_dn[cf::TOPK] = {};  // the per-step composed host tables
     PackedW *wt_gu = nullptr, *wt_dn = nullptr;             // the device W tables [TOPK]
     int pos = 0;                      // the draft's own KV position

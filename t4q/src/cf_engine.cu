@@ -1085,8 +1085,6 @@ bool cf_draft_step(CfCtx* c, int token, const float* h) {
     try {
         if (!c->draft) throw std::runtime_error("cf_draft_step: no draft block (T4Q_CF_MTP=1 at load)");
         if (token < 0 || token >= V) throw std::runtime_error("draft token id out of range");
-        if (c->iqtp)  // cf-m6 r6b: the greedy split-moe landed; the draft/verify TP forms are r6c
-            throw std::runtime_error("T4Q_CF_IQTP: the draft/verify split forms are r6c (the greedy path is landed)");
         CfDraft* d = c->draft;
         CfLayer& L = d->L;
         CfScratch& s = d->sc;
@@ -1134,6 +1132,74 @@ bool cf_draft_step(CfCtx* c, int token, const float* h) {
         CK(cudaMemcpyAsync(c->h_router, s.logits, (size_t)NE * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
         host_top10(c);  // the SAME order-exact loops as the trunk's host window
+        if (c->iqtp) {
+            // cf-m6 r6c (the draft's split-moe, the section 6 freeze): the draft's pool is
+            // split BY ID (the loader's per-side halves), and the greedy r6b's discipline
+            // is reused VERBATIM - the CfIqtp planes + the event pair + the per-side dots
+            // + the partial/combine - only the W-table views differ (the draft's Q8_0
+            // slabs, the local row offsets le*2*EE*D / le*D*EE into the SIDE's half). The
+            // serial-use discipline holds: the draft runs between greedy steps, and the
+            // streams' own order serializes every plane's reuse (the greedy's combine
+            // waited ev1 = st1's tail before st moved on; the host arrays' overwrite is
+            // behind the draft's router sync, behind that combine, behind ev1).
+            CfIqtp* q = c->iqp;
+            int nside[2] = {0, 0};
+            for (int k = 0; k < TOPK; k++) {
+                const int e = (int)c->eid[k];
+                const int g = e >> 8, le = e & 255;
+                const int kk = nside[g]++;
+                PackedW& v = q->h_wt_gu[g][kk];
+                PackedW& w = q->h_wt_dn[g][kk];
+                q->h_we_c[g][kk] = c->we_h[k];
+                const PackedW& rg = g ? d->res_gu1 : d->res_gu;
+                const PackedW& rd = g ? d->res_dn1 : d->res_dn;
+                v = rg;
+                v.rows = 2 * EE;
+                v.codes = rg.codes + (size_t)le * 2 * EE * D;
+                v.d = rg.d + (size_t)le * 2 * EE * (D / 32);
+                w = rd;
+                w.rows = D;
+                w.codes = rd.codes + (size_t)le * D * EE;
+                w.d = rd.d + (size_t)le * D * (EE / 32);
+            }
+            const int n0 = nside[0], n1 = nside[1];
+            // GPU1's side first (the greedy r6b's own order)
+            CK(cudaEventRecord(q->ev0, st));
+            CK(cudaStreamWaitEvent(q->st1, q->ev0));
+            CK(cudaMemcpyAsync(q->wt_gu[1], q->h_wt_gu[1], (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice,
+                               q->st1));
+            CK(cudaMemcpyAsync(q->wt_dn[1], q->h_wt_dn[1], (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice,
+                               q->st1));
+            CK(cudaMemcpyAsync(q->we_c[1], q->h_we_c[1], (size_t)TOPK * 4, cudaMemcpyHostToDevice, q->st1));
+            CK(cudaMemcpyAsync(q->mixed, s.mixed, (size_t)D * 4, cudaMemcpyDeviceToDevice, q->st1));
+            launch_quantize_q8_0(q->mixed, D, q->xq0, q->xd0, q->xs0, q->st1);
+            launch_gemv_q8_0_b(q->wt_gu[1], 2 * EE, q->xq0, q->xd0, q->xs0, q->logits, 0, 2 * EE, 0, n1, q->st1);
+            launch_cf_silu_mul_b(q->logits, q->ffa, EE, n1, q->st1);
+            launch_quantize_q8_0(q->ffa, (size_t)n1 * EE, q->xq0, q->xd0, q->xs0, q->st1);
+            launch_gemv_q8_0_b(q->wt_dn[1], D, q->xq0, q->xd0, q->xs0, q->ye, EE, D, EE / 32, n1, q->st1);
+            launch_cf_moe_partial(q->ye, q->we_c[1], n1, q->partial, q->st1);
+            CK(cudaEventRecord(q->ev1, q->st1));
+            // GPU0's side: the same chain over n0 (the draft's own scratch) + the shared
+            // expert + the combine
+            CK(cudaMemcpyAsync(q->wt_gu[0], q->h_wt_gu[0], (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(q->wt_dn[0], q->h_wt_dn[0], (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(q->we_c[0], q->h_we_c[0], (size_t)TOPK * 4, cudaMemcpyHostToDevice, st));
+            launch_quantize_q8_0(s.mixed, D, s.xq0, s.xd0, s.xs0, st);
+            launch_gemv_q8_0_b(q->wt_gu[0], 2 * EE, s.xq0, s.xd0, s.xs0, d->ygu, 0, 2 * EE, 0, n0, st);
+            launch_cf_silu_mul_b(d->ygu, s.ffa, EE, n0, st);
+            launch_quantize_q8_0(s.ffa, (size_t)n0 * EE, s.xq0, s.xd0, s.xs0, st);
+            launch_gemv_q8_0_b(q->wt_dn[0], D, s.xq0, s.xd0, s.xs0, d->ye, EE, D, EE / 32, n0, st);
+            launch_cf_moe_partial(d->ye, q->we_c[0], n0, q->partial0, st);
+            gemv(s, L.sh_gate, s.mixed, s.ffg, st);
+            gemv(s, L.sh_up, s.mixed, s.ffu, st);
+            launch_silu_mul(s.ffg, s.ffu, s.ffa, EE, st);
+            gemv(s, L.sh_down, s.ffa, d->ysh, st);
+            gemv(s, L.sh_ginp, s.mixed, d->sh_gate_raw, st);
+            CK(cudaStreamWaitEvent(st, q->ev1));
+            CK(cudaMemcpyAsync(q->partial0 + D, q->partial, (size_t)D * 4, cudaMemcpyDeviceToDevice, st));
+            launch_cf_moe_final(q->partial0, q->partial0 + D, d->ysh, d->sh_gate_raw, s.block, st);
+            check_launch("draft moe");
+        } else {
         // the W table: the 10 picks' ALL-RESIDENT views (the tiering's mechanism, all hits;
         // the Q8_0 packed plane strides: codes D/EE bytes per row, d D/32 per row)
         for (int k = 0; k < TOPK; k++) {
@@ -1167,6 +1233,7 @@ bool cf_draft_step(CfCtx* c, int token, const float* h) {
         gemv(s, L.sh_ginp, s.mixed, d->sh_gate_raw, st);
         launch_cf_moe_out(d->ye, c->we, d->ysh, d->sh_gate_raw, s.block, st);
         check_launch("draft moe");
+        }
         hc_combine(c, d->hres, s.block, s.inj);
         // the draft's own final mixer (hc_head), then the SHARED lm_head (full vocab)
         hc_mix(c, d->hres, d->hh_norm, d->hh_down, d->hh_up, nullptr, s);
@@ -1201,8 +1268,8 @@ bool cf_verify(CfCtx* c, const int* toks, int nr) {
     try {
         if (!c->verify) throw std::runtime_error("cf_verify: no verify block (T4Q_CF_MTP=1 at load)");
         if (nr < 1 || nr > c->verify->nr) throw std::runtime_error("cf_verify: nr out of range");
-        if (c->iqtp)  // cf-m6 r6b: the greedy split-moe landed; the draft/verify TP forms are r6c
-            throw std::runtime_error("T4Q_CF_IQTP: the draft/verify split forms are r6c (the greedy path is landed)");
+        if (c->iqtp)  // cf-m6 r6c: the greedy + draft split forms landed; the verify TP form is r6c's rest
+            throw std::runtime_error("T4Q_CF_IQTP: the verify split form is r6c's remaining piece");
         if (c->pos + nr > c->max_ctx) throw std::runtime_error("context full");
         CfVerify* v = c->verify;
         cudaStream_t st = c->st;
@@ -1510,5 +1577,10 @@ void cf_free(CfCtx* c) {
     }
     CK(cudaSetDevice(c->gpu));
     CK(cudaDeviceReset());
+    if (c->iqtp) {  // cf-m6 r6c: GPU1's planes (the r6a split halves + the CfIqtp scratch +
+        // the draft's split slabs) - the device-0 reset above does not touch them
+        CK(cudaSetDevice(1));
+        CK(cudaDeviceReset());
+    }
     delete c;
 }

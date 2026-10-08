@@ -774,6 +774,75 @@ int main() {
     }
     printf("iq1s split-moe combine (owner %d/%d of 512, 10 picks, D 64) vs moe_out: %s (max |d| %.3e)\n", tp_n0,
            tp_n1, tp_bad ? "FAIL" : "OK", tp_maxd);
+    // ---- r6c gates: the draft's Q8_0 SPLIT VIEWS (the owner halves at the packed-Q8_0
+    // strides, gated) ----
+    // A 4-expert Q8_0 pair; the owner-1 half held at the LOCAL row offsets (the loader's
+    // split repack: (e0 - NE/2)*rows into the side's own plane), then expert 3's view
+    // INTO the half at le = 1 (the emission's compose math: gu codes le*2*EE*D / d
+    // le*2*EE*(D/32); dn codes le*D*EE / d le*D*(EE/32)) vs the FULL plane's expert-3
+    // rows - BYTE-IDENTICAL (a memcpy twin; an offset slip reads the symmetric neighbor
+    // expert 1 and the compare fails on every row).
+    int dvp_bad = 0;
+    {
+        const int HEX8 = 4, EE8 = 32, D8 = 64;  // small twins of EE=640 / D=2560
+        const int GROWS = 2 * EE8, DROWS = D8;  // the gu / dn rows per expert
+        PackedW F8;                              // the FULL plane (the trunk's form: e*rows offsets)
+        F8.fmt = FMT_Q8;
+        F8.rows = HEX8 * GROWS;
+        F8.cols = D8;
+        std::vector<uint8_t> c8((size_t)F8.rows * D8);
+        std::vector<uint16_t> d8((size_t)F8.rows * (D8 / 32));  // the fp16-scale words
+        for (size_t i = 0; i < c8.size(); i++) c8[i] = (uint8_t)(lcg() >> 24);
+        for (size_t i = 0; i < d8.size(); i++) d8[i] = (uint16_t)(lcg() >> 16);
+        F8.codes = c8.data();
+        F8.d = d8.data();
+        // the owner-1 HALF (the loader's split repack form: the local row offsets)
+        PackedW H8 = F8;
+        H8.rows = (HEX8 / 2) * GROWS;
+        const size_t hoff = (size_t)(HEX8 / 2) * GROWS;  // the half's first row in the full plane
+        H8.codes = F8.codes + hoff * D8;
+        H8.d = F8.d + hoff * (D8 / 32);
+        // expert 3's view INTO the half (le = 1, the emission's compose math)
+        PackedW V8 = H8;
+        V8.rows = GROWS;
+        V8.codes = H8.codes + (size_t)1 * GROWS * D8;
+        V8.d = H8.d + (size_t)1 * GROWS * (D8 / 32);
+        for (int rr = 0; rr < GROWS; rr++) {  // byte-identity vs the full plane's expert 3
+            if (memcmp(V8.codes + (size_t)rr * D8, F8.codes + ((size_t)3 * GROWS + rr) * D8, D8) != 0) dvp_bad++;
+            if (memcmp(V8.d + (size_t)rr * (D8 / 32), F8.d + ((size_t)3 * GROWS + rr) * (D8 / 32), (D8 / 32) * 2) !=
+                       0)
+                dvp_bad++;
+        }
+        // the dn pair at its own strides (rows D, cols EE)
+        PackedW FD;
+        FD.fmt = FMT_Q8;
+        FD.rows = HEX8 * DROWS;
+        FD.cols = EE8;
+        std::vector<uint8_t> cd((size_t)FD.rows * EE8);
+        std::vector<uint16_t> dd((size_t)FD.rows * (EE8 / 32));
+        for (size_t i = 0; i < cd.size(); i++) cd[i] = (uint8_t)(lcg() >> 16);
+        for (size_t i = 0; i < dd.size(); i++) dd[i] = (uint16_t)(lcg() >> 8);
+        FD.codes = cd.data();
+        FD.d = dd.data();
+        PackedW HD = FD;  // the owner-1 half + expert 3's view (le = 1)
+        HD.rows = (HEX8 / 2) * DROWS;
+        const size_t doff = (size_t)(HEX8 / 2) * DROWS;
+        HD.codes = FD.codes + doff * EE8;
+        HD.d = FD.d + doff * (EE8 / 32);
+        PackedW VD = HD;
+        VD.rows = DROWS;
+        VD.codes = HD.codes + (size_t)1 * DROWS * EE8;
+        VD.d = HD.d + (size_t)1 * DROWS * (EE8 / 32);
+        for (int rr = 0; rr < DROWS; rr++) {
+            if (memcmp(VD.codes + (size_t)rr * EE8, FD.codes + ((size_t)3 * DROWS + rr) * EE8, EE8) != 0)
+                dvp_bad++;
+            if (memcmp(VD.d + (size_t)rr * (EE8 / 32), FD.d + ((size_t)3 * DROWS + rr) * (EE8 / 32),
+                       (EE8 / 32) * 2) != 0)
+                dvp_bad++;
+        }
+    }
+    printf("draft q8_0 split-views (owner 1 of 2, expert 3, gu+dn): %s (byte-twin %d rows)\n",
+           dvp_bad ? "FAIL" : "OK", 2 * (2 * 32 + 64));
     return (bad || sumi_bad || dot_bad || bad2 || sumi_bad2 || dot_bad2 || view_bad || view_sumi || am_bit ||
-            am_sumi || am_rel || am_cov || spl_bad || spl_sumi || tp_bad) != 0;
+            am_sumi || am_rel || am_cov || spl_bad || spl_sumi || tp_bad || dvp_bad) != 0;
 }

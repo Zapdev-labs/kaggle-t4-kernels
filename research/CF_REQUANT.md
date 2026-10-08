@@ -450,7 +450,36 @@ ptxas warnings; the 77 pre-existing nvcc front-end warnings (#128-D, unreachable
 loops) unchanged in the untouched tp_* TUs (41 tp_prefill + 36 tp_spec), the one
 host-gcc -Wformat-truncation at cf_loader.cu:405 verified IDENTICAL at HEAD (the r4
 tier's own layer_%03d snprintf - provably safe, il < n <= 48; not introduced by r6b).
-THE REST IS r6c (the draft/verify TP forms + the battery's IQTP phases). THE
+THE REST IS r6c (the draft/verify TP forms + the battery's IQTP phases).
+r6c part 1 [LANDED, host- and build-gated; the verify TP form is part 2]: THE DRAFT
+SPLIT - the draft's 512 Q8_0 experts split BY ID too (the freeze's ~1.33 GiB/side
+arithmetic): the loader's draft block under iqtp takes the per-side free checks (the
+r6a form), the per-side allocs (res_gu/res_dn shrink to GPU0's [0,256) half at
+[256*2*EE, D]/[256*D, EE], res_gu1/res_dn1 join on GPU1), and the chunk loop NEVER
+STRADDLING the 256 boundary (each chunk stages + repacks on its OWN side's stream; GPU1
+gets its OWN raw staging plane - a kernel cannot read a remote pointer without the P2P
+the loader only tries best-effort; the SHARED host staging's refill syncs BOTH streams
+per chunk, the load-time conservative form; the local row offsets (e0 - NE/2)*rows);
+the draft's VRAM print carries the split. THE EMISSION (cf_draft_step): the greedy r6b
+discipline REUSED VERBATIM - the CfIqtp planes (every draft plane fits: the gu y
+[TOPK*2*EE], the ffa [TOPK*EE], the ye [TOPK*D], the q8_0 planes [HCD >= TOPK*EE]), the
+event pair, the owner dispatch (the compact slots + the compact we), the per-side dots
+(ONLY the W-table views differ: the draft's Q8_0 slabs at the local row offsets
+le*2*EE*D / le*2*EE*(D/32) and le*D*EE / le*D*(EE/32) into the SIDE's half), the
+partial/combine pair, and the serial-use discipline (the draft runs between greedy
+steps; the streams' own order serializes every plane reuse, the same ev1 chain closes
+the host arrays). cf_draft_step's THROW LIFTED (the greedy + draft paths are landed);
+cf_verify still throws (part 2). cf_free: GPU1's planes now torn down (the device-1
+reset under iqtp - the r6a halves + the CfIqtp + the draft's halves all fall to it).
+THE GATE: the NEW draft q8_0 split-view twin (a 4-expert Q8_0 pair, the owner-1 half at
+the local row offsets, expert 3's view INTO the half at le = 1 with the EMISSION'S OWN
+compose offsets, byte-identity vs the FULL plane's expert-3 rows - gu and dn at their
+own strides, the fp16-scale d plane as raw 2-B words): BYTE-IDENTICAL (256 rows); the
+r1-r6b lines UNCHANGED-green; the build clean (MAKE_EXIT 0, zero new warnings - the 77
+#128-D + the one HEAD-identical host-gcc truncation both unchanged). THE REST IS r6c
+part 2 (the verify TP: the per-side sub-unions + the per-side VfyMoeTab + the amortized
+dots per side + the per-row gather-partial + the per-row ships/finals) + the battery's
+IQTP phases. THE
 OWNER MAP: owner(e) = e >> 8 (NE = 512, the halves 256: GPU0 [0,256), GPU1 [256,512)),
 the local index le = e & 255. THE SPLIT PLANES: the slab planes are EXPERT-MAJOR, so the
 owner's half is ONE CONTIGUOUS BYTE RANGE per plane (the codes/hi/d of the experts
