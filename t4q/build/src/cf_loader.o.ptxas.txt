@@ -1,7 +1,7 @@
 ptxas info    : 0 bytes gmem
 src/cf_loader.cu: In function 'CfCtx* cf_load(const char*, int, std::string*)':
-src/cf_loader.cu:398:25: warning: '.bin' directive output may be truncated writing 4 bytes into a region of size between 0 and 7 [-Wformat-truncation=]
-  398 |                 snprintf(sn, sizeof(sn), "layer_%03d.bin", il);
+src/cf_loader.cu:405:25: warning: '.bin' directive output may be truncated writing 4 bytes into a region of size between 0 and 7 [-Wformat-truncation=]
+  405 |                 snprintf(sn, sizeof(sn), "layer_%03d.bin", il);
       |                         ^~~~~~~~~~~~~~~~
 /usr/include/x86_64-linux-gnu/bits/stdio2.h:71:32: note: '__builtin___snprintf_chk' output between 14 and 21 bytes into a destination of size 16
    71 |   return __builtin___snprintf_chk (__s, __n, __USE_FORTIFY_LEVEL - 1,

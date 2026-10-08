@@ -379,8 +379,87 @@ extends there only if the L4 shows the uncovered verify cost matters (at stage 2
 pool every layer is resident and the amortized path covers everything). THE VALUE GATE
 (L4): the verify-round wall before/after at the covered layers (the spec's ~28 ms ->
 ~4 ms class at full overlap, measured not assumed).
-r6: the stage-2 TP split (the by-ID residency, the replicated core, the per-layer
-combine) + the full L4 battery.
+r6 [THE DESIGN FREEZE - the implementation arc's spec; cf-m6 stage 2, the full-pool
+by-ID TP split]: the exact forms, frozen for the implementation rounds (r6a/b/c).
+r6a [LANDED, host- and build-gated; the emission is r6b]: the SPLIT TIER. LANDED AS:
+T4Q_CF_IQTP=1 alongside the IQSLAB pair - the loader's block forks: the per-GPU
+free-VRAM checks (the half need per side, the ~2.6 GB core replication charged at r6b,
+noted), and per covered layer each side reads its OWN half's planes as ONE CONTIGUOUS
+byte range per plane (the planes are expert-major: the experts [g*NE/2, (g+1)*NE/2) are
+one range - one fseek+fread per plane per GPU, the offsets = the header's plane bases +
+o*rows_per_half*plane-units with o = g*NE/2) into the per-side pair (res_gu/res_dn =
+GPU0's own - every landed r4/r5 read site untouched - plus the NEW res_gu1/res_dn1 =
+GPU1's, the allocs at [NE/2*2*EE, D] / [NE/2*D, EE] on each device with the
+alloc-vs-slab half cross-check); the identity owner map stands (hn = NE, every pick a
+hit across the two GPUs, the engine derives owner(e) = e >> 8 inline at r6b). THE
+ENGINE GATES: cf_step/cf_verify/cf_draft_step THROW under iqtp until r6b lands (the
+load succeeds + the tier's prints + the step-time throw = the r6a form's own L4 probe).
+THE GATE: the split-plane view twin (a 4-expert SH plane, the owner-1 half copied as the
+loader's one-range read verbatim, expert 3's view INTO the half at le = 1, the dot twin
+vs the deq32 decode of expert 3's OWN rows from the FULL plane - a half-offset slip
+reads the symmetric neighbor and the dot lands far outside the bound): sumi EXACT, dot
+OK. THE BUILD: clean, zero ptxas warnings in the rebuilt TUs. THE REST IS r6b (the
+per-side emission + the dispatch + the combine kernels + the sync pairs + the scratch/
+rolling-state replication + the core replication) + r6c (the draft/verify TP forms + the
+battery extension), per the freeze below. THE
+OWNER MAP: owner(e) = e >> 8 (NE = 512, the halves 256: GPU0 [0,256), GPU1 [256,512)),
+the local index le = e & 255. THE SPLIT PLANES: the slab planes are EXPERT-MAJOR, so the
+owner's half is ONE CONTIGUOUS BYTE RANGE per plane (the codes/hi/d of the experts
+[g*256, (g+1)*256)) - ONE fseek+fread per plane per GPU (no per-expert seeks), the
+alloc_packed(gpu=g, FMT_IQ1S, 256*2*EE, D) + (gpu=g, FMT_IQ1SH, 256*D, EE) on EACH
+device, the free-VRAM check per GPU (the per-GPU need: the core ~2.6 GB replicated +
+the half-pool 0.232 GiB/layer + the per-GPU scratch + the KV; the spec's 14.9-15.1 GB,
+the L4 inventory confirms). THE RESIDENT FIELDS: the per-GPU pair (res_gu1/res_dn1 JOIN the existing res_gu/res_dn -
+GPU0's own - so every landed r4/r5 read site stays UNTOUCHED and r6b's per-side loops
+read the pair; the "arrays" sketch was the idea, the pair is the landed compat form),
+the hot maps the OWNER form (hn = NE -
+every pick a hit ACROSS the two GPUs; hot_ids[e] = e, hot_idx[e] = the packed
+(owner<<8 | le)... or the engine derives owner(e) inline - the simpler form, the
+identity map keeps hn=NE). THE ENGINE (r6b, the greedy emission): (1) THE REPLICATED
+CORE - every core op (the attention family, the hc mixers, the shared expert, the
+router gemv, the rolling states - the KV cells, the GDN S/conv, the PLE ring) runs on
+BOTH GPUs on the SAME inputs - deterministic identical states, NO all-reduce for the
+core; the per-GPU scratch (the CfScratch per device) + the per-GPU rolling states at
+load. (2) THE ROUTER - the gemv on both, the D2H from GPU0 only (the same values). (3)
+THE MoE DISPATCH - the picks split by owner: per side g the owned picks' W views (the
+local row base le*2*EE / le*D on the side's res_gu/res_dn), the q8_K quantize of the
+SIDE'S mixed (already there - the replicated forward produced it), the batched gu dot
+(launch_gemv_q8k_b FMT_IQ1S on the side's stream) over the OWNED picks' views, the
+silu_mul + the q8_0 quantize per side, the dn dot writing the COMPACT per-side slots
+(the W-table's y_stride does it - no gather kernel), the per-side PARTIAL
+(Σ_{owned} we_k*ye_k, no shared - a small new launch_cf_moe_partial), then (4) THE
+BOTH-WAYS COMBINE per layer: GPU1's partial [D] peer-copied 1->0 (the event pair:
+GPU1's stream event waited on GPU0's stream before the copy node), the final
+combine on GPU0 (p0 + p1 + ysh*gate - the shared ran on BOTH but only GPU0's partial
+sums it), then the block [D] peer-copied 0->1 (the second event pair - GPU1's forward
+needs the block for the next layer's mixed); ~2 event pairs + 2 D2Ds per layer = the
+spec's ~0.2-1 ms TP tax, measured at the L4. (5) THE GRAPH NOTE: the tier already
+kills the graphs (the gmode&&tiered check) - the TP form rides the direct launches,
+the launch-wall question is the L4's (the r19z segment-graph form would need the
+per-side captures + the inter-side waits, a later round if the wall shows). THE DRAFT
+BLOCK (r6c): the draft's 512 Q8_0 experts split by ID too (1.25 GB/GPU - the VRAM has
+no room for the 2.5 GB replication; the same owner math at the Q8_0 format, the same
+dispatch + compact slots + partial/combine in cf_draft_step). THE VERIFY BLOCK (r6c,
+the hardest piece): the per-row scratch per side (the verify's forward runs per side -
+the replicated rolling states), the union views split by owner (the per-side
+sub-unions + the per-side rowmaps over the SAME plane table - the VfyMoeTab per side),
+the amortized dots per side (launch_gemv_iq1s_vfy / iq1sh_vfy on the side's stream
+over the side's sub-union), the per-row per-side partial ye combines + the both-ways
+block combines per layer (the same event-pair discipline). THE GATES (each round):
+the host twins (the owner math, the split-plane offset math - the r4 view-gate class,
+the compact-slot math), the build + the registers (the family budgets: 64/0 spills),
+the L4 battery extension (the cfbat phases at T4Q_CF_IQTP: the smoke, the sweep, the
+A/B, the spec wall - the full-pool rate vs the stage-1 prefix, the TP tax measured).
+THE COMMIT PLAN: r6a the loader (the split tier + the per-GPU scratch/rolling states +
+the core replication + the draft split + the twins; the emission gates T4Q_CF_IQTP
+with a THROW until r6b), r6b the greedy emission (the dispatch + the partial/combine
+kernels + the sync pairs + the twins), r6c the draft/verify TP forms + the battery
+extension. THE HONEST RISK NOTE: the cross-device discipline (the event pairs, the
+peer-copy ordering) is L4-only verifiable - the local gates pin the MATH (the owner
+arithmetic, the offsets, the compact slots), the L4 battery pins the SYNC (the
+byte-match gates at both sides, the intermittent-hang class the 27B's tp_engine
+patterns already solved - the ar-mailbox + the event pairs are that engine's own
+forms, adopted not invented).
 
 THE L4 BATTERY DRIVER (designed + gated locally, ready for the Saturday window): the
 kaggle/cfbat GPU kernel (t4q/tools/stage_cfbat.py -> mkkernel, the sources = the baseline

@@ -72,6 +72,13 @@ struct CfLayer {
     // dual-path moe's hit picks read them through the W table with zero staging. hn = 0
     // (absent file) = OFF = the verbatim full-staging path.
     PackedW res_gu, res_dn;
+    // cf-m6 r6a (the stage-2 TP split, CF_REQUANT.md section 6's freeze): the GPU1 twin of
+    // the requant resident pair - T4Q_CF_IQTP splits the covered layers' pools BY ID
+    // (GPU0 owns the experts [0,256), GPU1 [256,512)), each side holding its half's
+    // planes. The PAIR form (not an array) keeps every landed r4/r5 read site on res_gu
+    // (= GPU0's own) untouched; the r6b emission's per-side loops read both. INERT until
+    // the r6b emission lands (cf_step/verify/draft throw under iqtp).
+    PackedW res_gu1, res_dn1;
     int hn = 0;
     int* hot_ids = nullptr;   // [hn] the resident expert ids, the load-time packing order
     int* hot_idx = nullptr;  // [NE] the expert id -> the resident index h, or -1 (a miss)
@@ -286,6 +293,12 @@ struct CfCtx {
     // taking the r4 batched IQ1S/IQ1SH dots. The covered prefix is excluded from the UVA
     // registration (uva_lo): the resident tier wins the branch order.
     int iqs_n = 0;                    // the covered layer count (0 = off)
+    // cf-m6 r6a: the by-ID split flag (T4Q_CF_IQTP=1 + the IQSLAB pair): the covered
+    // layers' pools are split by owner (GPU0 [0,256), GPU1 [256,512)) - the full 24.41 GB
+    // pool across the two T4s. The emission support (the per-side forward, the dispatch,
+    // the both-ways combine) is r6b: the engine entry points THROW under this flag until
+    // then (the loader's split tier + its gates land first - the staged-round form).
+    bool iqtp = false;
     bool uva = false;                 // cf-m3 (r19u): T4Q_CF_UVA_LAYERS registered (the alias path is ON for il < uva_n)
     int uva_n = 0;                    // the first uva_n layers read their experts through the aliases
     int uva_lo = 0;                   // cf-m6 r4: the alias path is ON for [uva_lo, uva_n) - the resident prefix excluded

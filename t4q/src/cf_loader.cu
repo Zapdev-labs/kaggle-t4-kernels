@@ -383,13 +383,20 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
             if (n <= 0 || n > NL) throw std::runtime_error("T4Q_CF_IQN must be in 1..48");
             const double per_gib =
                 ((double)NE * 2 * EE * D * 50.0 / 256 + (double)NE * D * EE * 26.0 / 128) / (1ull << 30);
-            {
+            // cf-m6 r6a: T4Q_CF_IQTP=1 splits the covered layers' pools BY ID across the two
+            // T4s (the section 6 freeze) - each side holds its half's planes (the full
+            // 24.41 GB pool this way). The per-GPU free check (the half need; the r6b core
+            // replication adds the ~2.6 GB core per side - noted there, not charged here).
+            const bool iqtp = getenv("T4Q_CF_IQTP") && atoi(getenv("T4Q_CF_IQTP"));
+            for (int g = 0; g < (iqtp ? 2 : 1); g++) {
                 size_t free_b = 0, total_b = 0;
+                CK(cudaSetDevice(g));
                 CK(cudaMemGetInfo(&free_b, &total_b));
-                if ((double)free_b < per_gib * n * (1ull << 30) * 1.02)
-                    throw std::runtime_error("the iq1_s tier needs " + std::to_string(per_gib * n) +
-                                             " GiB resident, only " + std::to_string((double)free_b / (1ull << 30)) +
-                                             " GiB free");
+                if ((double)free_b < per_gib * n / (iqtp ? 2 : 1) * (1ull << 30) * 1.02)
+                    throw std::runtime_error("the iq1_s tier needs " + std::to_string(per_gib * n / (iqtp ? 2 : 1)) +
+                                             " GiB resident on GPU" + std::to_string(g) + ", only " +
+                                             std::to_string((double)free_b / (1ull << 30)) + " GiB free");
+                CK(cudaSetDevice(0));
             }
             std::vector<uint8_t> buf;
             for (int il = 0; il < n; il++) {
@@ -412,26 +419,65 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                     h.dn_codes != h.gu_d + gd || h.dn_hi != h.dn_codes + dc || h.dn_d != h.dn_hi + dh ||
                     h.file_bytes != h.dn_d + dd)
                     throw std::runtime_error("bad slab plane offsets: " + sp);
-                alloc_packed(L.res_gu, 0, FMT_IQ1S, (int64_t)NE * 2 * EE, D);
-                alloc_packed(L.res_dn, 0, FMT_IQ1SH, (int64_t)NE * D, EE);
-                // the alloc-vs-slab cross-check (the missing-alloc_packed-case trap: a
-                // silent 0-B plane would take the uploads nowhere; this catches it AT LOAD)
-                if (L.res_gu.bytes < gc + gh + gd || L.res_dn.bytes < dc + dh + dd ||
-                    !L.res_gu.codes || !L.res_gu.hi || !L.res_gu.d || !L.res_dn.codes || !L.res_dn.hi ||
-                    !L.res_dn.d)
-                    throw std::runtime_error("resident plane alloc short for " + sp);
                 struct PlaneRd { uint64_t off, bytes; void* dst; const char* nm; };
-                const PlaneRd pl[6] = {{h.gu_codes, gc, L.res_gu.codes, "gu.codes"},
-                                       {h.gu_hi, gh, L.res_gu.hi, "gu.hi"},
-                                       {h.gu_d, gd, L.res_gu.d, "gu.d"},
-                                       {h.dn_codes, dc, L.res_dn.codes, "dn.codes"},
-                                       {h.dn_hi, dh, L.res_dn.hi, "dn.hi"},
-                                       {h.dn_d, dd, L.res_dn.d, "dn.d"}};
-                for (const PlaneRd& p : pl) {  // the one-time pageable upload (~0.5 GB/layer)
-                    buf.resize((size_t)p.bytes);
-                    if (fseeko(sf, (off_t)p.off, SEEK_SET) || fread(buf.data(), 1, (size_t)p.bytes, sf) != (size_t)p.bytes)
-                        throw std::runtime_error(std::string("slab plane read failed: ") + sp + " " + p.nm);
-                    CK(cudaMemcpy(p.dst, buf.data(), (size_t)p.bytes, cudaMemcpyHostToDevice));
+                if (!iqtp) {
+                    alloc_packed(L.res_gu, 0, FMT_IQ1S, (int64_t)NE * 2 * EE, D);
+                    alloc_packed(L.res_dn, 0, FMT_IQ1SH, (int64_t)NE * D, EE);
+                    // the alloc-vs-slab cross-check (the missing-alloc_packed-case trap: a
+                    // silent 0-B plane would take the uploads nowhere; this catches it AT LOAD)
+                    if (L.res_gu.bytes < gc + gh + gd || L.res_dn.bytes < dc + dh + dd ||
+                        !L.res_gu.codes || !L.res_gu.hi || !L.res_gu.d || !L.res_dn.codes || !L.res_dn.hi ||
+                        !L.res_dn.d)
+                        throw std::runtime_error("resident plane alloc short for " + sp);
+                }
+                if (iqtp) {
+                    // cf-m6 r6a (the stage-2 split, the section 6 freeze): the planes are
+                    // EXPERT-MAJOR, so each side's half (the experts [g*NE/2, (g+1)*NE/2))
+                    // is ONE contiguous byte range per plane - one fseek+fread per plane
+                    // per GPU, no per-expert seeks. The per-side allocs (the pair form:
+                    // res_gu = GPU0's own, res_gu1 = GPU1's) + the identity owner map
+                    // (the ENGINE derives owner(e) = e >> 8 inline; hn = NE, every pick a
+                    // hit ACROSS the two GPUs). The emission support is r6b: the engine
+                    // entry points throw under iqtp until it lands.
+                    const int NEH = NE / 2;  // 256 per side (NE = 512, even - the ranges halve exactly)
+                    PackedW *rg[2] = {&L.res_gu, &L.res_gu1}, *rd[2] = {&L.res_dn, &L.res_dn1};
+                    for (int g = 0; g < 2; g++) {
+                        alloc_packed(*rg[g], g, FMT_IQ1S, (int64_t)NEH * 2 * EE, D);
+                        alloc_packed(*rd[g], g, FMT_IQ1SH, (int64_t)NEH * D, EE);
+                        if ((*rg[g]).bytes < gc / 2 + gh / 2 + gd / 2 || (*rd[g]).bytes < dc / 2 + dh / 2 + dd / 2 ||
+                            !(*rg[g]).codes || !(*rg[g]).hi || !(*rg[g]).d || !(*rd[g]).codes || !(*rd[g]).hi ||
+                            !(*rd[g]).d)
+                            throw std::runtime_error("split plane alloc short for " + sp);
+                        const uint64_t o = (uint64_t)g * (NE / 2);
+                        const PlaneRd pl[6] = {{h.gu_codes + o * 2 * EE * (D / 256) * 32, gc / 2, (*rg[g]).codes, "gu.codes"},
+                                              {h.gu_hi + o * 2 * EE * (D / 256) * 16, gh / 2, (*rg[g]).hi, "gu.hi"},
+                                              {h.gu_d + o * 2 * EE * (D / 256), gd / 2, (*rg[g]).d, "gu.d"},
+                                              {h.dn_codes + o * D * (EE / 128) * 16, dc / 2, (*rd[g]).codes, "dn.codes"},
+                                              {h.dn_hi + o * D * (EE / 128) * 8, dh / 2, (*rd[g]).hi, "dn.hi"},
+                                              {h.dn_d + o * D * (EE / 128), dd / 2, (*rd[g]).d, "dn.d"}};
+                        for (const PlaneRd& p : pl) {
+                            buf.resize((size_t)p.bytes);
+                            if (fseeko(sf, (off_t)p.off, SEEK_SET) ||
+                                fread(buf.data(), 1, (size_t)p.bytes, sf) != (size_t)p.bytes)
+                                throw std::runtime_error(std::string("split plane read failed: ") + sp + " " + p.nm);
+                            CK(cudaSetDevice(g));
+                            CK(cudaMemcpy(p.dst, buf.data(), (size_t)p.bytes, cudaMemcpyHostToDevice));
+                        }
+                    }
+                    CK(cudaSetDevice(0));
+                } else {
+                    const PlaneRd pl[6] = {{h.gu_codes, gc, L.res_gu.codes, "gu.codes"},
+                                           {h.gu_hi, gh, L.res_gu.hi, "gu.hi"},
+                                           {h.gu_d, gd, L.res_gu.d, "gu.d"},
+                                           {h.dn_codes, dc, L.res_dn.codes, "dn.codes"},
+                                           {h.dn_hi, dh, L.res_dn.hi, "dn.hi"},
+                                           {h.dn_d, dd, L.res_dn.d, "dn.d"}};
+                    for (const PlaneRd& p : pl) {  // the one-time pageable upload (~0.5 GB/layer)
+                        buf.resize((size_t)p.bytes);
+                        if (fseeko(sf, (off_t)p.off, SEEK_SET) || fread(buf.data(), 1, (size_t)p.bytes, sf) != (size_t)p.bytes)
+                            throw std::runtime_error(std::string("slab plane read failed: ") + sp + " " + p.nm);
+                        CK(cudaMemcpy(p.dst, buf.data(), (size_t)p.bytes, cudaMemcpyHostToDevice));
+                    }
                 }
                 fclose(sf);
                 L.hn = NE;  // the identity hot map: every expert a resident hit
@@ -441,7 +487,10 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
             }
             c->iqs_n = n;
             c->tiered = true;
-            fprintf(stderr, "[cf] iq1_s resident tier: %d/%d layers, %.2f GiB\n", n, NL, per_gib * n);
+            c->iqtp = iqtp;
+            fprintf(stderr, "[cf] iq1_s resident tier: %d/%d layers, %.2f GiB%s\n", n, NL, per_gib * n,
+                    iqtp ? " (SPLIT by id across 2 GPUs - the r6b emission is not landed, the engine throws)"
+                         : "");
         }
         // the resident tier (cf-m3): T4Q_CF_HOTSET=<path>, produced by cf_census.py --hotset
         // from the round's census.bin. ABSENT = OFF = the verbatim full-staging path (the

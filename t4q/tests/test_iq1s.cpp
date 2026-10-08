@@ -631,6 +631,87 @@ int main() {
                nu, am_bit ? "MISMATCH" : "IDENTICAL", am_bit, am_sumi ? "MISMATCH" : "EXACT", am_sumi,
                am_rel ? "FAIL" : "OK", am_rel, am_l1 > 0 ? am_err / am_l1 : 0.0, am_cov ? "FAIL" : "OK", am_cov);
     }
+
+    // ---- r6a gates: the SPLIT-PLANE offsets (the loader's by-ID half reads, gated) ----
+    // A 4-expert SH plane; the owner-1 half (the experts [2,4)) read as ONE contiguous
+    // byte range per plane - the loader's split form VERBATIM (base + o*HROWS*(K/128)*16
+    // with o = NE/2 = 2, the expert-major halves) - then expert 3's view INTO the half
+    // (le = 1, the r4 view math), the dot twin on the view vs the deq32 decode of expert
+    // 3's OWN rows from the FULL plane. A half-offset slip reads expert 1's rows (the
+    // symmetric neighbor) and the dot lands far outside the bound.
+    int spl_bad = 0, spl_sumi = 0;
+    {
+        const int HEX6 = 4, HROWS6 = 2, K6 = 640;
+        PackedW F6;
+        F6.fmt = FMT_IQ1SH;
+        F6.rows = HEX6 * HROWS6;
+        F6.cols = K6;
+        std::vector<uint8_t> c6((size_t)F6.rows * (K6 / 128) * 16), h6((size_t)F6.rows * (K6 / 128) * 8);
+        std::vector<uint16_t> d6((size_t)F6.rows * (K6 / 128));
+        F6.codes = c6.data();
+        F6.hi = h6.data();
+        F6.d = d6.data();
+        std::vector<float> x6(K6);
+        std::vector<t4q_iq1s::BlockT<4>> b6((size_t)F6.rows * (K6 / 128));
+        for (int r = 0; r < (int)F6.rows; r++) {
+            for (int i = 0; i < K6; i++) {
+                float u = (float)((int)(lcg() >> 8) - 32768) / 32768.f;
+                x6[i] = u * (0.02f + 0.15f * (r % 97) / 97.f);
+            }
+            t4q_iq1s::quant_row_t<4>(T, x6.data(), K6, b6.data() + (size_t)r * (K6 / 128));
+        }
+        for (int64_t b = 0; b < (int64_t)F6.rows * (K6 / 128); b++) {
+            memcpy(F6.codes + b * 16, b6[b].qs, 16);
+            memcpy(F6.hi + b * 8, b6[b].qh, 8);
+            F6.d[b] = b6[b].d;
+        }
+        // the owner-1 HALF plane: the contiguous ranges at the split offsets (the loader's
+        // split read arithmetic verbatim - o = NE/2 = 2)
+        PackedW Hf;
+        Hf.fmt = FMT_IQ1SH;
+        Hf.rows = (HEX6 / 2) * HROWS6;
+        Hf.cols = K6;
+        const int o6 = HEX6 / 2;  // the half offset in experts (the loader's o = g * NE/2, g = 1)
+        const size_t HC = (size_t)o6 * HROWS6 * (K6 / 128) * 16, HH = (size_t)o6 * HROWS6 * (K6 / 128) * 8,
+                     HD = (size_t)o6 * HROWS6 * (K6 / 128);
+        std::vector<uint8_t> hc6((size_t)Hf.rows * (K6 / 128) * 16), hh6((size_t)Hf.rows * (K6 / 128) * 8);
+        std::vector<uint16_t> hd6((size_t)Hf.rows * (K6 / 128));
+        memcpy(hc6.data(), F6.codes + HC, hc6.size());  // the one-range copy (the loader's fseek+fread)
+        memcpy(hh6.data(), F6.hi + HH, hh6.size());
+        memcpy(hd6.data(), F6.d + HD, hd6.size() * 2);
+        Hf.codes = hc6.data();
+        Hf.hi = hh6.data();
+        Hf.d = hd6.data();
+        // expert 3's view INTO the half (le = 1, the r4 view math)
+        PackedW V6 = Hf;
+        V6.rows = HROWS6;
+        V6.codes = Hf.codes + (size_t)1 * HROWS6 * (K6 / 128) * 16;
+        V6.hi = Hf.hi + (size_t)1 * HROWS6 * (K6 / 128) * 8;
+        V6.d = Hf.d + (size_t)1 * HROWS6 * (K6 / 128);
+        std::vector<float> xv6(K6), av6(K6);
+        std::vector<int8_t> xqv6(K6);
+        std::vector<float> xdv6(K6 / 32);
+        std::vector<int> xsv6(K6 / 32);
+        for (int rr = 0; rr < HROWS6; rr++) {
+            for (int i = 0; i < K6; i++) {
+                float u = (float)((int)(lcg() >> 8) - 32768) / 32768.f;
+                xv6[i] = u * (0.05f + 0.1f * (rr % 7) / 7.f);
+            }
+            quant_q8_0_row(xv6.data(), K6, xqv6.data(), xdv6.data(), xsv6.data());
+            double dkin = 0, dref = 0, l1 = 0;
+            for (int g = 0; g < K6 / 32; g++)
+                dkin += dot_iq1sh_sim(V6, rr, g, xqv6.data() + g * 32, xdv6[g], xsv6[g], spl_sumi);
+            // the reference: expert 3's OWN rows decoded from the FULL plane
+            for (int g = 0; g < K6 / 32; g++) deq32<FMT_IQ1SH>(F6, (size_t)3 * HROWS6 + rr, g, av6.data() + g * 32);
+            for (int i = 0; i < K6; i++) {
+                dref += (double)av6[i] * xv6[i];
+                l1 += fabs((double)av6[i] * xv6[i]);
+            }
+            if (l1 <= 0 || fabs(dkin - dref) > 0.02 * l1) spl_bad++;
+        }
+    }
+    printf("iq1s split-plane (owner 1 of 2, expert 3, 640) dot twin: sumi-int %s (%d)  dot %s (%d rows over)\n",
+           spl_sumi ? "MISMATCH" : "EXACT", spl_sumi, spl_bad ? "FAIL" : "OK", spl_bad);
     return (bad || sumi_bad || dot_bad || bad2 || sumi_bad2 || dot_bad2 || view_bad || view_sumi || am_bit ||
-            am_sumi || am_rel || am_cov) != 0;
+            am_sumi || am_rel || am_cov || spl_bad || spl_sumi) != 0;
 }

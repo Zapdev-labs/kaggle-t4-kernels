@@ -860,6 +860,13 @@ bool cf_step(CfCtx* c, int token) {
     try {
         if (token < 0 || token >= V) throw std::runtime_error("token id out of range");
         if (c->pos >= c->max_ctx) throw std::runtime_error("context full");
+        // cf-m6 r6a: the split tier is loaded (the loader's half-plane reads are gated) but
+        // the emission support (the per-side forward, the owner dispatch, the both-ways
+        // combine) is r6b - the frozen design is CF_REQUANT.md section 6. Until it lands,
+        // the engine entry points throw under the flag.
+        if (c->iqtp)
+            throw std::runtime_error("T4Q_CF_IQTP: the r6b emission is not landed yet (the loader's split tier is; "
+                                     "the design is frozen in CF_REQUANT.md section 6)");
         auto t0 = std::chrono::steady_clock::now();
         cudaStream_t st = c->st;
         CK(cudaSetDevice(c->gpu));
@@ -988,6 +995,8 @@ bool cf_draft_step(CfCtx* c, int token, const float* h) {
     try {
         if (!c->draft) throw std::runtime_error("cf_draft_step: no draft block (T4Q_CF_MTP=1 at load)");
         if (token < 0 || token >= V) throw std::runtime_error("draft token id out of range");
+        if (c->iqtp)  // cf-m6 r6a: the emission support is r6b (the section 6 freeze)
+            throw std::runtime_error("T4Q_CF_IQTP: the r6b emission is not landed yet");
         CfDraft* d = c->draft;
         CfLayer& L = d->L;
         CfScratch& s = d->sc;
@@ -1102,6 +1111,8 @@ bool cf_verify(CfCtx* c, const int* toks, int nr) {
     try {
         if (!c->verify) throw std::runtime_error("cf_verify: no verify block (T4Q_CF_MTP=1 at load)");
         if (nr < 1 || nr > c->verify->nr) throw std::runtime_error("cf_verify: nr out of range");
+        if (c->iqtp)  // cf-m6 r6a: the emission support is r6b (the section 6 freeze)
+            throw std::runtime_error("T4Q_CF_IQTP: the r6b emission is not landed yet");
         if (c->pos + nr > c->max_ctx) throw std::runtime_error("context full");
         CfVerify* v = c->verify;
         cudaStream_t st = c->st;
