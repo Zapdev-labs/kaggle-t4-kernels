@@ -54,15 +54,20 @@ def result(key, val):
 
 def sh(cmd, timeout=None, env=None, logname=None, cwd=None):
     t = time.time()
+    p = subprocess.Popen(cmd, shell=isinstance(cmd, str), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, env=env, cwd=cwd)
     try:
-        r = subprocess.run(cmd, shell=isinstance(cmd, str), capture_output=True, text=True, timeout=timeout, env=env,
-                           cwd=cwd)
-        out, rc = r.stdout + r.stderr, r.returncode
-    except subprocess.TimeoutExpired as e:
-        def dec(x):
-            return x.decode(errors="replace") if isinstance(x, bytes) else (x or "")
-        out = dec(e.stdout) + dec(e.stderr) + f"\n<<TIMEOUT after {timeout}s>>"
-        rc = -9
+        out, _ = p.communicate(timeout=timeout)
+        rc = p.returncode
+    except subprocess.TimeoutExpired:
+        p.kill()
+        try:
+            # a killed-but-D-state child never exits (the cf1 v7 lesson): never wait forever
+            out = (p.communicate(timeout=30)[0] or "")
+            rc = p.returncode
+        except subprocess.TimeoutExpired:
+            out, rc = "", -9
+        out += f"\n<<TIMEOUT after {timeout}s>>"
     if logname:
         (LOGS / logname).write_text(f"$ {cmd if isinstance(cmd, str) else ' '.join(map(str, cmd))}\n"
                                     f"rc={rc} secs={time.time() - t:.1f}\n{out}")
@@ -87,7 +92,12 @@ def stream(cmd, logname, timeout, env=None, cwd=None):
                     lines.append(f"<<TIMEOUT after {timeout}s>>\n")
                     break
         finally:
-            rc = p.wait()
+            try:
+                rc = p.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                # r19m (the v7 lesson): a killed-but-D-state child never exits - never wait
+                # forever; abandon it (the session teardown reaps it) and report -9
+                rc = -9
     return rc, "".join(lines)
 
 
