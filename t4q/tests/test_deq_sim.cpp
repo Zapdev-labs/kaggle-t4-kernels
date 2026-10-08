@@ -19,7 +19,10 @@ int main(int argc, char** argv) {
     std::string err;
     if (argc < 4 || !f.open(argv[1], err)) { fprintf(stderr, "open: %s\n", err.c_str()); return 1; }
     const GgufTensor* t = f.find(argv[2]);
-    const int64_t nr = atoi(argv[3]), K = t->ne[0], n = nr * K;
+    if (!t) { fprintf(stderr, "no tensor\n"); return 1; }
+    int64_t nr = atoi(argv[3]);
+    if (nr > t->nrows()) nr = t->nrows();  // reading past the tensor is UB on the tail page
+    const int64_t K = t->ne[0], n = nr * K;
     PackedW W;
     W.rows = nr; W.cols = K;
     std::vector<uint8_t> codes(n * 4), hi(n), meta(n), dd(n), mm(n);
