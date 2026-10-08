@@ -772,6 +772,73 @@ void vfy_window(CfCtx* c, CfLayer& L, int nr) {
                 const int e = v->eid[(size_t)r * TOPK + k];
                 if (v->uidx[e] < 0) { v->uidx[e] = v->nu; v->uids[v->nu++] = e; }
             }
+        if (c->iqtp) {
+            // cf-m6 r6c part 2 (the verify's split-moe, the freeze's hardest piece): the
+            // union SPLIT BY OWNER - each union pick lands in its side's sub-union (the
+            // side's compact slot ug), the W views point into the SIDE's resident planes
+            // (the r5 view math verbatim with le + the side's pair), the rowmap splits
+            // per side (rowmap_g[ug*8+r] = k), and the per-row OWNED k-lists are built
+            // for the gather partials (the per-row ye plane is the pick-slot layout, so
+            // a side's partial needs the row's own k-list). Side 0 rides the EXISTING
+            // uv/rowmap buffers; side 1 rides the CfIqtp pair on st1 (+ the we copy).
+            // The host-staging overwrite hazard is closed by the same ev1 chain as the
+            // greedy's (the next window's st sync is behind the prior emission's
+            // combine, which waited ev1 = st1's full tail, the H2D reads included).
+            CfIqtp* q = c->iqp;
+            int ulocal[MAXR * TOPK];  // the union pick u -> its side's compact slot
+            int nus[2] = {0, 0};
+            for (int u = 0; u < v->nu; u++) {
+                const int e = v->uids[u];
+                const int g = e >> 8, le = e & 255;
+                const int ug = nus[g]++;
+                ulocal[u] = ug;
+                const PackedW& rg = g ? L.res_gu1 : L.res_gu;
+                const PackedW& rd = g ? L.res_dn1 : L.res_dn;
+                PackedW& vg = g ? q->h_uv_gu1[ug] : v->h_uv_gu[ug];
+                PackedW& wd = g ? q->h_uv_dn1[ug] : v->h_uv_dn[ug];
+                vg = rg;  // fmt FMT_IQ1S rides the copy
+                vg.rows = 2 * EE;
+                vg.codes = rg.codes + (size_t)le * 2 * EE * (size_t)(D / 256) * 32;
+                vg.hi = rg.hi + (size_t)le * 2 * EE * (size_t)(D / 256) * 16;
+                vg.d = rg.d + (size_t)le * 2 * EE * (size_t)(D / 256);
+                wd = rd;  // fmt FMT_IQ1SH rides the copy
+                wd.rows = D;
+                wd.codes = rd.codes + (size_t)le * D * (size_t)(EE / 128) * 16;
+                wd.hi = rd.hi + (size_t)le * D * (size_t)(EE / 128) * 8;
+                wd.d = rd.d + (size_t)le * D * (size_t)(EE / 128);
+            }
+            q->nu0 = nus[0];
+            q->nu1 = nus[1];
+            memset(v->h_rowmap, -1, sizeof(v->h_rowmap));
+            memset(q->h_rowmap1, -1, sizeof(q->h_rowmap1));
+            for (int g = 0; g < 2; g++) memset(q->h_nk[g], 0, sizeof(q->h_nk[g]));
+            for (int r = 0; r < nr; r++)
+                for (int k = 0; k < TOPK; k++) {
+                    const int e = v->eid[(size_t)r * TOPK + k];
+                    const int g = e >> 8;
+                    const int ug = ulocal[v->uidx[e]];
+                    int* rm = g ? q->h_rowmap1[0] : v->h_rowmap[0];
+                    rm[ug * T4Q_VFY_MAXR + r] = k;
+                    q->h_ks[g][(size_t)r * TOPK + q->h_nk[g][r]++] = k;
+                }
+            for (int i = 0; i < v->nu; i++) v->uidx[v->uids[i]] = -1;  // the map sweep
+            CK(cudaMemcpyAsync(v->uv_gu, v->h_uv_gu, (size_t)nus[0] * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(v->uv_dn, v->h_uv_dn, (size_t)nus[0] * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(v->rowmap_dev, v->h_rowmap, (size_t)nus[0] * T4Q_VFY_MAXR * 4,
+                               cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(q->ks_dev[0], q->h_ks[0], (size_t)nr * TOPK * 4, cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(q->uv_gu1, q->h_uv_gu1, (size_t)nus[1] * sizeof(PackedW), cudaMemcpyHostToDevice,
+                               q->st1));
+            CK(cudaMemcpyAsync(q->uv_dn1, q->h_uv_dn1, (size_t)nus[1] * sizeof(PackedW), cudaMemcpyHostToDevice,
+                               q->st1));
+            CK(cudaMemcpyAsync(q->rowmap1_dev, q->h_rowmap1, (size_t)nus[1] * T4Q_VFY_MAXR * 4,
+                               cudaMemcpyHostToDevice, q->st1));
+            CK(cudaMemcpyAsync(q->ks_dev[1], q->h_ks[1], (size_t)nr * TOPK * 4, cudaMemcpyHostToDevice, q->st1));
+            CK(cudaMemcpyAsync(q->we_dev1, v->we_h, (size_t)nr * TOPK * 4, cudaMemcpyHostToDevice, q->st1));
+            v->nu_sum += v->nu;  // the overlap stat (the WHOLE union, both paths)
+            v->nu_cnt++;
+            return;
+        }
         for (int u = 0; u < v->nu; u++) {
             const int e = v->uids[u];
             PackedW& vg = v->h_uv_gu[u];
@@ -880,6 +947,72 @@ void vfy_moe_em(CfCtx* c, CfLayer& L, int nr) {
     // expert), the per-row silu + q8_0 quantizes, the dn dot, then the per-row tail
     // verbatim (the shared expert, the moe_out on the row's we slice, the combine).
     const bool iqs = c->tiered && L.res_gu.fmt == FMT_IQ1S;
+    if (iqs && c->iqtp) {
+        // cf-m6 r6c part 2 (the verify's split-moe): the r5 phased form PER SIDE - GPU1
+        // (st1, behind ev0 = the rows' mixed + everything before) runs its sub-union's
+        // amortized dots over its OWN per-row planes (the shipped mixed, the q8_K/q8_0
+        // activations, the pick-slot y planes) + the per-row GATHER partials (the pick-slot
+        // layout needs the row's own k-list, the compact form would sum stale slots);
+        // GPU0 runs the r5 form verbatim over its sub-union + its gather partials; then
+        // the per-row shared experts (GPU0's own, launched BEFORE the ev1 wait so they
+        // overlap GPU1's dots), the ev1 wait, the ONE [nr*D] partial ship, and the
+        // per-row finals (p0_r + p1_r + sigmoid(gate_r)*ysh_r - the per-row moe_out's
+        // own arithmetic, the add order split across the sides).
+        CfIqtp* q = c->iqp;
+        CK(cudaEventRecord(q->ev0, st));
+        CK(cudaStreamWaitEvent(q->st1, q->ev0));
+        for (int r = 0; r < nr; r++)  // the per-row mixed ships + the q8_K quantizes
+            CK(cudaMemcpyAsync(q->v_mixed[r], v->sc[r].mixed, (size_t)D * 4, cudaMemcpyDeviceToDevice, q->st1));
+        for (int r = 0; r < nr; r++)
+            launch_quantize_q8_K(q->v_mixed[r], D, q->v_xqk[r], q->v_xqk_b[r], q->v_xqk_d[r], q->st1);
+        launch_gemv_iq1s_vfy(q->uv_gu1, q->rowmap1_dev, q->vtab1_dev, 2 * EE, q->nu1, q->st1);
+        for (int r = 0; r < nr; r++) {
+            launch_cf_silu_mul_b(q->v_logits[r], q->v_ffa[r], EE, TOPK, q->st1);
+            launch_quantize_q8_0(q->v_ffa[r], TOPK * EE, q->v_xq0[r], q->v_xd0[r], q->v_xs0[r], q->st1);
+        }
+        launch_gemv_iq1sh_vfy(q->uv_dn1, q->rowmap1_dev, q->vtab1_dev, D, q->nu1, q->st1);
+        for (int r = 0; r < nr; r++)
+            launch_cf_moe_partial_k(q->v_ye[r], q->we_dev1 + (size_t)r * TOPK, q->ks_dev[1] + (size_t)r * TOPK,
+                                    q->h_nk[1][r], q->v_partial + (size_t)r * D, q->st1);
+        CK(cudaEventRecord(q->ev1, q->st1));
+        // GPU0's side: the r5 phases verbatim over its sub-union + the gather partials
+        for (int r = 0; r < nr; r++) {
+            CfScratch& s = v->sc[r];
+            launch_quantize_q8_K(s.mixed, D, s.xqk, s.xqk_b, s.xqk_d, st);
+        }
+        launch_gemv_iq1s_vfy(v->uv_gu, v->rowmap_dev, v->vtab_dev, 2 * EE, q->nu0, st);
+        for (int r = 0; r < nr; r++) {
+            CfScratch& s = v->sc[r];
+            launch_cf_silu_mul_b(s.logits, s.ffa, EE, TOPK, st);
+            launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, s.xs0, st);
+        }
+        launch_gemv_iq1sh_vfy(v->uv_dn, v->rowmap_dev, v->vtab_dev, D, q->nu0, st);
+        for (int r = 0; r < nr; r++)
+            launch_cf_moe_partial_k(v->ye + (size_t)r * TOPK * D, v->we_dev + (size_t)r * TOPK,
+                                    q->ks_dev[0] + (size_t)r * TOPK, q->h_nk[0][r],
+                                    q->v_partial0 + (size_t)r * D, st);
+        // the per-row shared experts BEFORE the ev1 wait (GPU0's own work, overlapping
+        // GPU1's dots), then the wait + the ONE partial ship + the per-row finals
+        for (int r = 0; r < nr; r++) {
+            CfScratch& s = v->sc[r];
+            gemv(s, L.sh_gate, s.mixed, s.ffg, st);
+            gemv(s, L.sh_up, s.mixed, s.ffu, st);
+            launch_silu_mul(s.ffg, s.ffu, s.ffa, EE, st);
+            gemv(s, L.sh_down, s.ffa, v->ysh + (size_t)r * D, st);
+            gemv(s, L.sh_ginp, s.mixed, v->sh_gate_raw + r, st);
+        }
+        CK(cudaStreamWaitEvent(st, q->ev1));
+        CK(cudaMemcpyAsync(q->v_partial0 + (size_t)MAXR * D, q->v_partial, (size_t)nr * D * 4,
+                           cudaMemcpyDeviceToDevice, st));
+        for (int r = 0; r < nr; r++) {
+            CfScratch& s = v->sc[r];
+            launch_cf_moe_final(q->v_partial0 + (size_t)r * D, q->v_partial0 + (size_t)(MAXR + r) * D,
+                                v->ysh + (size_t)r * D, v->sh_gate_raw + r, s.block, st);
+            check_launch("verify moe");
+            hc_combine(c, s.h, s.block, s.inj);
+        }
+        return;
+    }
     if (iqs) {
         for (int r = 0; r < nr; r++) {
             CfScratch& s = v->sc[r];
@@ -1268,8 +1401,6 @@ bool cf_verify(CfCtx* c, const int* toks, int nr) {
     try {
         if (!c->verify) throw std::runtime_error("cf_verify: no verify block (T4Q_CF_MTP=1 at load)");
         if (nr < 1 || nr > c->verify->nr) throw std::runtime_error("cf_verify: nr out of range");
-        if (c->iqtp)  // cf-m6 r6c: the greedy + draft split forms landed; the verify TP form is r6c's rest
-            throw std::runtime_error("T4Q_CF_IQTP: the verify split form is r6c's remaining piece");
         if (c->pos + nr > c->max_ctx) throw std::runtime_error("context full");
         CfVerify* v = c->verify;
         cudaStream_t st = c->st;

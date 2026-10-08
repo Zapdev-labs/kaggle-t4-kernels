@@ -941,6 +941,50 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                     CK(cudaMalloc(&v->vtab_dev, sizeof(VfyMoeTab)));
                     CK(cudaMemcpy(v->vtab_dev, &t, sizeof(VfyMoeTab), cudaMemcpyHostToDevice));
                 }
+                // cf-m6 r6c part 2 (the verify's split-moe): GPU1's own per-row planes +
+                // the sub-union structures (the section 6 freeze's hardest piece). The
+                // per-row scratch stays GPU0's; GPU1 gets its OWN per-row planes (the
+                // shipped mixed, the q8_K/q8_0 activations, the gu y + the silu out + the
+                // dn y at the PICK-SLOT layout) + the side's FIXED tab (one upload, the
+                // r5 form) + the sub-union W tables + the rowmap + the per-row owned
+                // k-lists + the we copy + the [2*MAXR*D] partial pair (p0 | the shipped
+                // p1 landing, the greedy's own 2-slot form). The trivial scratch (<1 MB).
+                if (c->iqtp) {
+                    CfIqtp* q = c->iqp;
+                    CK(cudaSetDevice(1));
+                    for (int r = 0; r < MAXR; r++) {
+                        q->v_mixed[r] = dalloc<float>(D, false);
+                        q->v_xqk[r] = dalloc<int8_t>(HCD, false);
+                        q->v_xqk_b[r] = dalloc<int16_t>(HCD / 16, false);
+                        q->v_xqk_d[r] = dalloc<float>(HCD / 256, false);
+                        q->v_logits[r] = dalloc<float>((size_t)TOPK * 2 * EE, false);
+                        q->v_ffa[r] = dalloc<float>((size_t)TOPK * EE, false);
+                        q->v_xq0[r] = dalloc<int8_t>(HCD, false);
+                        q->v_xd0[r] = dalloc<float>(HCD / 32, false);
+                        q->v_xs0[r] = dalloc<int>(HCD / 32, false);
+                        q->v_ye[r] = dalloc<float>((size_t)TOPK * D, false);
+                    }
+                    q->v_partial = dalloc<float>((size_t)MAXR * D, false);
+                    CK(cudaMalloc(&q->uv_gu1, (size_t)MAXR * TOPK * sizeof(PackedW)));
+                    CK(cudaMalloc(&q->uv_dn1, (size_t)MAXR * TOPK * sizeof(PackedW)));
+                    CK(cudaMalloc(&q->rowmap1_dev, (size_t)MAXR * TOPK * T4Q_VFY_MAXR * 4));
+                    CK(cudaMalloc(&q->ks_dev[1], (size_t)MAXR * TOPK * 4));
+                    CK(cudaMalloc(&q->we_dev1, (size_t)MAXR * TOPK * 4));
+                    {  // GPU1's FIXED tab (the per-row planes - ONE upload, the r5 form)
+                        VfyMoeTab t;
+                        for (int r = 0; r < MAXR; r++) {
+                            t.xq[r] = q->v_xqk[r]; t.bs[r] = q->v_xqk_b[r]; t.yd[r] = q->v_xqk_d[r];
+                            t.y[r] = q->v_logits[r];
+                            t.xq2[r] = q->v_xq0[r]; t.xd2[r] = q->v_xd0[r]; t.xs2[r] = q->v_xs0[r];
+                            t.y2[r] = q->v_ye[r];
+                        }
+                        CK(cudaMalloc(&q->vtab1_dev, sizeof(VfyMoeTab)));
+                        CK(cudaMemcpy(q->vtab1_dev, &t, sizeof(VfyMoeTab), cudaMemcpyHostToDevice));
+                    }
+                    CK(cudaSetDevice(0));
+                    q->v_partial0 = dalloc<float>(2 * (size_t)MAXR * D, false);
+                    CK(cudaMalloc(&q->ks_dev[0], (size_t)MAXR * TOPK * 4));
+                }
                 // cf-m4 (r19y): the speculative driver's snapshot planes (the 27B's tp_spec.cu
                 // rollback adapted to the CF rolling states - the GDN S/conv and the PLE ring
                 // are SHIFT REGISTERS, not position-indexed, so a partial accept restores the

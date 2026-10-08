@@ -324,6 +324,28 @@ void launch_cf_moe_partial(const float* ye, const float* we, int n, float* out, 
     k_cf_moe_partial<<<(D + 255) / 256, 256, 0, s>>>(ye, we, n, out);
 }
 
+// cf-m6 r6c part 2 (the verify's split-moe): the per-row GATHER partial over the row's
+// OWNED pick slots. The verify's per-row ye plane is the PICK-SLOT layout (the amortized
+// dn writes the row's picks at their k slots, the unowned slots are stale garbage), so
+// the side's partial sums the row's OWN k-list (we[ks[j]]*ye[ks[j]*D+c] - the row's we
+// slice + the window-built k-list) instead of the compact [0,n) slots the greedy's
+// partial rides. Together with the final it is the per-row moe_out's own arithmetic with
+// the add order split across the sides (the same reassociation class as the greedy's).
+__global__ void k_cf_moe_partial_k(const float* ye, const float* we, const int* ks, int nk, float* out) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= D) return;
+    float acc = 0.f;
+    for (int j = 0; j < nk; j++) {
+        const int k = ks[j];
+        acc += we[k] * ye[(size_t)k * D + c];
+    }
+    out[c] = acc;
+}
+
+void launch_cf_moe_partial_k(const float* ye, const float* we, const int* ks, int nk, float* out, cudaStream_t s) {
+    k_cf_moe_partial_k<<<(D + 255) / 256, 256, 0, s>>>(ye, we, ks, nk, out);
+}
+
 // the r6b final combine: block = p0 + p1 + sigmoid(gate)*ysh (the shared expert ran on
 // GPU0 with the core; only side 0's partial could have summed it, but the shared's own
 // contribution lands here once - the moe_out's own tail form, p0/p1 in place of the Σ)

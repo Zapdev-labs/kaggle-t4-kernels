@@ -270,6 +270,39 @@ struct CfIqtp {
     PackedW* wt_dn[2] = {nullptr, nullptr};
     PackedW h_wt_gu[2][cf::TOPK] = {}, h_wt_dn[2][cf::TOPK] = {};
     int n[2] = {0, 0};                          // the layer's per-side pick counts
+    // cf-m6 r6c part 2 (the verify's split-moe, the section 6 freeze's hardest piece):
+    // the per-row GPU1 planes + the per-side sub-union structures. The verify's per-row
+    // scratch (v->sc[r]) stays GPU0's own; GPU1 gets its OWN per-row planes (the shipped
+    // mixed, the q8_K/q8_0 activations, the gu y + the silu out at the PICK-SLOT layout,
+    // the dn y) + the side's FIXED tab (the r5 VfyMoeTab form pointing at GPU1's planes)
+    // + the sub-union W tables + the rowmap + the per-row owned k-lists + the we copy +
+    // the per-row partials (the [2*MAXR*D] pair: p0 at [0,nr*D), the shipped p1 at
+    // [nr*D, 2*nr*D) - the greedy's own 2-slot form). The amortized dots run per side
+    // over the side's sub-union (the r5 kernel's own walk, the nu0/nu1 counts).
+    float* v_mixed[cf::MAXR] = {};              // the per-row shipped mixed
+    int8_t* v_xqk[cf::MAXR] = {};
+    int16_t* v_xqk_b[cf::MAXR] = {};
+    float* v_xqk_d[cf::MAXR] = {};
+    float* v_logits[cf::MAXR] = {};            // the per-row gu y (the pick slots)
+    float* v_ffa[cf::MAXR] = {};               // the per-row silu out
+    int8_t* v_xq0[cf::MAXR] = {};
+    float* v_xd0[cf::MAXR] = {};
+    int* v_xs0[cf::MAXR] = {};
+    float* v_ye[cf::MAXR] = {};                // the per-row dn y (the pick slots)
+    float* v_partial = nullptr;                // [MAXR*D] side-1's per-row partials
+    float* v_partial0 = nullptr;               // [2*MAXR*D] side-0's + the shipped p1 landing
+    PackedW* uv_gu1 = nullptr;                 // GPU1's sub-union W tables [MAXR*TOPK]
+    PackedW* uv_dn1 = nullptr;
+    PackedW h_uv_gu1[cf::MAXR * cf::TOPK] = {}, h_uv_dn1[cf::MAXR * cf::TOPK] = {};
+    int* rowmap1_dev = nullptr;                // GPU1's rowmap [MAXR*TOPK][T4Q_VFY_MAXR]
+    int h_rowmap1[cf::MAXR * cf::TOPK][T4Q_VFY_MAXR] = {};
+    VfyMoeTab* vtab1_dev = nullptr;            // GPU1's FIXED tab (uploaded once at alloc)
+    VfyMoeTab h_vtab1 = {};
+    int* ks_dev[2] = {nullptr, nullptr};       // [MAXR*TOPK] the per-row owned-pick lists
+    int h_ks[2][cf::MAXR * cf::TOPK] = {};
+    int h_nk[2][cf::MAXR] = {};                // the per-row owned counts per side
+    float* we_dev1 = nullptr;                  // [MAXR*TOPK] GPU1's we copy
+    int nu0 = 0, nu1 = 0;                      // the layer's per-side sub-union counts
 };
 
 struct CfCtx {
@@ -415,6 +448,9 @@ void launch_cf_moe_out(const float* ye, const float* we, const float* ysh, const
 // slots, then the final (p0 + p1 + sigmoid(gate)*ysh) on GPU0 - together the moe_out's own
 // arithmetic with the add order split across the sides
 void launch_cf_moe_partial(const float* ye, const float* we, int n, float* out, cudaStream_t s);
+// cf-m6 r6c part 2 (the verify's split-moe): the per-row gather partial over the row's
+// owned pick slots (the pick-slot ye layout, the window-built k-lists)
+void launch_cf_moe_partial_k(const float* ye, const float* we, const int* ks, int nk, float* out, cudaStream_t s);
 void launch_cf_moe_final(const float* p0, const float* p1, const float* ysh, const float* sh_gate_raw, float* out,
                          cudaStream_t s);
 void launch_cf_silu_mul_b(const float* gu, float* out, int n_per, int batch, cudaStream_t s);

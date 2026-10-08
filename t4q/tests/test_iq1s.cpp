@@ -843,6 +843,103 @@ int main() {
     }
     printf("draft q8_0 split-views (owner 1 of 2, expert 3, gu+dn): %s (byte-twin %d rows)\n",
            dvp_bad ? "FAIL" : "OK", 2 * (2 * 32 + 64));
+    // ---- r6c part 2 gates: the VERIFY'S SPLIT-MOE (the sub-unions + the per-side
+    // rowmaps + the per-row owned k-lists + the gather partials + the both-ways finals
+    // vs the r5 single-side form) ----
+    // The REAL id space + the r5 rowmap semantics (rowmap[u][r] = the row's pick index
+    // k, -1 = not picked), 3 rows x 10 picks, BOTH owners forced. THE COVERAGE: every
+    // (row, pick k) lands in EXACTLY ONE side's rowmap slot + one ks entry; the two
+    // sub-unions together cover the WHOLE deduped union. THE ARITHMETIC: the per-row
+    // gather partials over the sides' k-lists + the final (p0 + p1 + sigmoid*ysh) vs
+    // the moe_out's own single-loop form over the same values (the add-order class).
+    int vsp_bad = 0, vsp_n0 = 0, vsp_n1 = 0, vsp_nu = 0;
+    double vsp_maxd = 0;
+    {
+        const int NRV = 3, TKV = 10, D9 = 64, MAXRV = 8;
+        int eid9[NRV][TKV];
+        float we9[NRV][TKV];
+        for (int r = 0; r < NRV; r++)
+            for (int k = 0; k < TKV; k++) {  // distinct picks per row, both owners
+                eid9[r][k] = ((k & 1) ? 256 : 0) + (int)(lcg() >> 16) % 256;
+                for (int j = 0; j < k; j++)
+                    if (eid9[r][j] == eid9[r][k]) eid9[r][k] = (eid9[r][k] + 1) % 512;
+                we9[r][k] = 0.05f + 0.9f * (lcg() % 1000) / 1000.f;
+            }
+        // the union dedup (the r5 form) -> uids[nu] + the union slot per expert
+        int uids9[64], nu9 = 0, uidx9[512];
+        memset(uidx9, -1, sizeof(uidx9));
+        for (int r = 0; r < NRV; r++)
+            for (int k = 0; k < TKV; k++) {
+                const int e = eid9[r][k];
+                if (uidx9[e] < 0) { uidx9[e] = nu9; uids9[nu9++] = e; }
+            }
+        // the split compose (vfy_window's split branch): the sub-unions + the per-side
+        // rowmaps + the per-row owned k-lists
+        int uloc[64], nus[2] = {0, 0};
+        int rm0[64][MAXRV], rm1[64][MAXRV];
+        memset(rm0, -1, sizeof(rm0));
+        memset(rm1, -1, sizeof(rm1));
+        int ks0[NRV][TKV], ks1[NRV][TKV], nk0[NRV] = {0}, nk1[NRV] = {0};
+        for (int u = 0; u < nu9; u++) uloc[u] = nus[uids9[u] >> 8]++;
+        for (int r = 0; r < NRV; r++)
+            for (int k = 0; k < TKV; k++) {
+                const int e = eid9[r][k], g = e >> 8, ug = uloc[uidx9[e]];
+                (g ? rm1 : rm0)[ug][r] = k;
+                (g ? ks1 : ks0)[r][(g ? nk1 : nk0)[r]++] = k;
+            }
+        vsp_n0 = nus[0];
+        vsp_n1 = nus[1];
+        vsp_nu = nu9;
+        // THE COVERAGE: each (row, k) in exactly one rowmap slot + one ks entry; the
+        // sub-unions cover the whole union; the counts add up
+        for (int r = 0; r < NRV; r++)
+            for (int k = 0; k < TKV; k++) {
+                int hits = 0;
+                for (int u = 0; u < nus[0]; u++)
+                    if (rm0[u][r] == k) hits++;
+                for (int u = 0; u < nus[1]; u++)
+                    if (rm1[u][r] == k) hits++;
+                if (hits != 1) vsp_bad++;  // a lost or doubled pick
+            }
+        for (int r = 0; r < NRV; r++)
+            if (nk0[r] + nk1[r] != TKV) vsp_bad++;
+        for (int r = 0; r < NRV; r++) {  // the ks entries are the row's OWN pick indices
+            int seen[TKV] = {0};
+            for (int j = 0; j < nk0[r]; j++) seen[ks0[r][j]]++;
+            for (int j = 0; j < nk1[r]; j++) seen[ks1[r][j]]++;
+            for (int k = 0; k < TKV; k++)
+                if (seen[k] != 1) vsp_bad++;
+        }
+        if (nus[0] + nus[1] != nu9) vsp_bad++;  // the sub-unions cover the union
+        // THE ARITHMETIC: the per-row ye planes (the pick-slot layout) + the shared tail
+        std::vector<float> ye9((size_t)NRV * TKV * D9), ysh9((size_t)NRV * D9);
+        for (size_t i = 0; i < ye9.size(); i++) ye9[i] = (float)((int)(lcg() >> 8) - 32768) / 32768.f * 0.7f;
+        for (size_t i = 0; i < ysh9.size(); i++) ysh9[i] = (float)((int)(lcg() >> 8) - 32768) / 32768.f * 0.4f;
+        for (int r = 0; r < NRV; r++) {
+            const float gg = (float)((int)(lcg() >> 8) - 32768) / 32768.f;
+            const float sig = 1.0f / (1.0f + expf(-gg));
+            for (int c = 0; c < D9; c++) {
+                const float* ye_r = ye9.data() + (size_t)r * TKV * D9;
+                float p0 = 0, p1 = 0, direct = 0;
+                for (int j = 0; j < nk0[r]; j++) {  // the gather partials (the k-lists)
+                    const int k = ks0[r][j];
+                    p0 += we9[r][k] * ye_r[(size_t)k * D9 + c];
+                }
+                for (int j = 0; j < nk1[r]; j++) {
+                    const int k = ks1[r][j];
+                    p1 += we9[r][k] * ye_r[(size_t)k * D9 + c];
+                }
+                for (int k = 0; k < TKV; k++) direct += we9[r][k] * ye_r[(size_t)k * D9 + c];
+                const float splitv = p0 + p1 + sig * ysh9[(size_t)r * D9 + c];
+                const float moeoutv = direct + sig * ysh9[(size_t)r * D9 + c];
+                const double dd = fabs((double)splitv - moeoutv);
+                if (dd > vsp_maxd) vsp_maxd = dd;
+                if (dd > 1e-4) vsp_bad++;
+            }
+        }
+    }
+    printf("verify split-moe (3 rows, sub-unions %d+%d of %d, gather partials): %s (coverage %d, max |d| %.3e)\n",
+           vsp_n0, vsp_n1, vsp_nu, vsp_bad ? "FAIL" : "OK", vsp_bad, vsp_maxd);
     return (bad || sumi_bad || dot_bad || bad2 || sumi_bad2 || dot_bad2 || view_bad || view_sumi || am_bit ||
-            am_sumi || am_rel || am_cov || spl_bad || spl_sumi || tp_bad || dvp_bad) != 0;
+            am_sumi || am_rel || am_cov || spl_bad || spl_sumi || tp_bad || dvp_bad || vsp_bad) != 0;
 }

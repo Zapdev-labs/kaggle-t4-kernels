@@ -479,7 +479,45 @@ r1-r6b lines UNCHANGED-green; the build clean (MAKE_EXIT 0, zero new warnings - 
 #128-D + the one HEAD-identical host-gcc truncation both unchanged). THE REST IS r6c
 part 2 (the verify TP: the per-side sub-unions + the per-side VfyMoeTab + the amortized
 dots per side + the per-row gather-partial + the per-row ships/finals) + the battery's
-IQTP phases. THE
+IQTP phases.
+r6c part 2 [LANDED, host- and build-gated; the TP arc is COMPLETE - the battery's IQTP
+phases remain]: THE VERIFY TP - the freeze's hardest piece. THE STRUCTURE: the loader's
+verify-alloc extension under iqtp (GPU1's OWN per-row planes - the shipped mixed, the
+q8_K/q8_0 activations, the gu y + the silu out + the dn y at the PICK-SLOT layout; the
+side's FIXED tab (one upload, the r5 form); the sub-union W tables [MAXR*TOPK]; the
+rowmap pair; the per-row owned k-lists; the we copy; the [2*MAXR*D] partial pair - p0
+at [0,MAXR*D), the shipped p1 landing at [MAXR*D, ...) - the greedy's own 2-slot form);
+all trivial scratch (<1 MB). vfy_window's split branch: the union dedup (the r5 form)
+then the SPLIT BY OWNER - each union pick lands in its side's sub-union (the compact
+slot ug) with the W views into the SIDE's resident planes (the r5 view math verbatim
+with le + the side's pair), the rowmaps split per side (rowmap_g[ug][r] = k), and the
+per-row OWNED k-lists built for the gather partials (the per-row ye plane is the
+PICK-SLOT layout - the amortized dn writes the row's picks at their k slots, the
+unowned slots are stale - so a side's partial needs the row's own k-list, the compact
+form would sum stale slots); side 0 rides the EXISTING uv/rowmap buffers, side 1 the
+CfIqtp pair on st1 (+ the we_dev1 H2D from the pinned we_h). vfy_moe_em's split branch:
+GPU1 (st1, behind ev0 = st's tail) runs the per-row mixed ships + the q8_K quantizes +
+its sub-union's AMORTIZED gu dot + the per-row silu/q8_0 (the full-plane batch, the
+stale slots never read - the rowmap-guarded dot, the r5 form's own class) + its
+amortized dn dot + the per-row GATHER partials; GPU0 runs the r5 phases verbatim over
+its sub-union + its gather partials; the per-row shared experts launch BEFORE the ev1
+wait (GPU0's own work overlapping GPU1's dots), then the ev1 wait + the ONE [nr*D]
+partial ship + the per-row finals (p0_r + p1_r + sigmoid(gate_r)*ysh_r - the per-row
+moe_out's own arithmetic, the add order split across the sides, the reassociation
+class measured 2.384e-07 in the gate). THE KERNEL: k_cf_moe_partial_k (56 registers, 0
+spills) - the moe_out's own per-element expression with the k-gather. cf_verify's
+THROW LIFTED (the greedy + draft + verify paths all landed). THE GATE: the verify
+split-moe twin (3 rows x 10 picks, BOTH owners forced, the REAL id space): the r5
+union dedup sim + the split compose sim (the sub-unions + the per-side rowmaps + the
+k-lists) with the COVERAGE checks (each (row, pick k) in EXACTLY ONE side's rowmap slot
++ one ks entry; nk0+nk1 = 10 per row; the ks entries are the row's own pick indices;
+nus0+nus1 = nu - the sub-unions cover the union) + the gather-partial/final arithmetic
+vs the moe_out's own single-loop form over the same values: OK (sub-unions 15+15 of
+30, coverage 0 bad, max |d| 2.384e-07); the r1-r6b-part-1 lines UNCHANGED-green; the
+build clean (the 77 #128-D + the one HEAD-identical host-gcc truncation both
+unchanged, zero ptxas warnings). THE REMAINING r6c: the battery's IQTP phases (the
+cfbat extension - the smoke + the sweep + the A/B + the spec wall at T4Q_CF_IQTP=1).
+THE
 OWNER MAP: owner(e) = e >> 8 (NE = 512, the halves 256: GPU0 [0,256), GPU1 [256,512)),
 the local index le = e & 255. THE SPLIT PLANES: the slab planes are EXPERT-MAJOR, so the
 owner's half is ONE CONTIGUOUS BYTE RANGE per plane (the codes/hi/d of the experts
