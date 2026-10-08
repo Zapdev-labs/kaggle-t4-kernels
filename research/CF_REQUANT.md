@@ -554,7 +554,59 @@ SlabHdr v2 layout never moved) - all three Saturday kernels (cfreqa, cfreqb, cfb
 now carry the r6c-era tree, gated (the ast-parse, the baked layer ranges, the
 CPU-only no-source metadata, the distinct payloads). THE
 SATURDAY SEQUENCE unchanged: cfreqa + cfreqb first, their outputs, then cfbat (the
-sources resolve), the battery, the r19w-r19aa kernels. THE
+sources resolve), the battery, the r19w-r19aa kernels.
+r6d [LANDED, host- and build-gated; the launch-wall lever, local-provable]: THE FUSED
+PER-SIDE UPLOADS - the split paths' per-layer VARYING upload content packed in ONE
+pinned, fixed-size struct per side, ONE H2D per side per layer where the greedy/draft
+split paid THREE per side (wt_gu + wt_dn + we_c) and the verify's window paid NINE per
+layer (4 side-0 + 5 side-1). THE LEVER is the CALL COUNT - PLAN_CF's named next wall
+after the tiering (~2600 launches/token at the measured ~22 us ~= 57 ms/token): the
+greedy drops 4 calls/layer (192/token), the draft the same per draft layer, the
+verify's window drops 7/layer. THE FORM - cf_model.h: CfIqtpTab {[TOPK]wt_gu |
+[TOPK]wt_dn | [TOPK]we} = 1800 B and CfIqtpVTab {[MAXR*TOPK]uv_gu | uv_dn | [..*8]rowmap
+| [MAXR*TOPK]ks | we} = 17280 B, both standard-layout, pinned host + device plane per
+side, the interiors fixed at alloc by PURE offsetof arithmetic (no lvalue dance on the
+device pointer), pinned by static_asserts (the sizes + the section offsets - the layout
+is part of the contract); the kernel args become the plane's fixed interior pointers
+(ft_gu/ft_dn/ft_we, fuv_gu/fuv_dn/frowmap/fks/fwe_v). THE GREEDY/DRAFT BYTES ARE
+UNCHANGED (the old uploads were already TOPK-sized - the count n guarded the READS,
+not the upload size; the fused upload is byte-identical, only the call count drops).
+THE VERIFY pays the full MAXR-sized sections (the stale tails past nu/nk never read -
+the [0,nu) dots, the [0,nk) gathers, the rowmap memset -1 whole; ~28 KB/layer extra vs
+the old prefix-sized uploads ~= 2 us at PCIe - noise against the 7 launches saved). THE
+COMPOSE SITES (the same math, only the landing moved): host_router's split compose +
+cf_draft_step's compose write tab_h[g] (the same slot math, the same view math);
+vfy_window's split writes the vtab_h[g] sections (the sub-union W pair, the rowmap, the
+per-row owned k-lists, the we memcpy'd from we_h's [nr*TOPK] prefix) + the TWO fused
+uploads (side 0 on st, side 1 on st1); vfy_moe_em's split branch moved ABOVE the
+non-split we_dev upload (side 0's we rides the fused vtab now - the non-split paths keep
+their own head upload). THE PINNED-OVERWRITE HAZARD (the one real correctness question
+the pageable->pinned move raises - the old host arrays were safe-by-driver-bounce, the
+pinned H2D reads the staging until the copy completes): closed by the EXISTING ev1
+chain on all three paths - every compose site runs behind a cudaStreamSynchronize(st)
+(host_router :328, cf_draft_step :1271, vfy_window :753) and the prior emission's
+combine/finals on st WAITED ev1 = st1's full tail (the side-1 H2D reads included), so
+the st sync covers BOTH sides' H2Ds before the next compose writes the pinned staging.
+THE GRAPHS: the split never meets capture (tiered forces gmode=0, iqtp implies tiered)
+- and the fixed-size pinned memcpy is exactly the shape the later graph round captures
+as ONE node. cf_free: the PINNED stagings (tab_h/vtab_h) free explicitly (they outlive
+the delete; the device planes fall to the device reset as before). GATED: the host
+twins all 10 lines UNCHANGED-green (r6d is a landing change - the math the twins pin is
+the math the fused form computes; the stale-tail safety is the same h_nk/nu-guarded
+argument the r6c twins pinned); the nvcc full build clean (MAKE_EXIT 0, the
+static_asserts compile = the layout pins hold, zero ptxas warnings, the warning set
+exactly the pre-existing 41+36 front-end #128-D + the one host-gcc truncation - the
+line moved 405->406 by the include, the kind identical). THE SATURDAY CURRENCY (all
+three kernels regenerated against the r6d tree): the cfbat (711 kB, the battery measures
+the launch counts - it must run the r6d forms; the driver diff is payload-ONLY so every
+r6c functional gate carries verbatim, the metadata byte-identical) + the cfreqa/cfreqb
+pair (711 kB each, the ranges 0/24 + 24/49 baked, CPU-only metadata, distinct payloads -
+their pack output is r6d-independent but the currency closes the staleness question).
+STILL L4-BLOCKED: the
+launch-count win's runtime measure (the TP tax line before/after) - the Saturday
+battery's phases carry it. NEXT: the Saturday window (cfreqa + cfreqb, their outputs,
+cfbat, the battery), then the L4-informed kernel rounds (the launch wall's remainder:
+the per-layer launches themselves, then the graph question). THE
 OWNER MAP: owner(e) = e >> 8 (NE = 512, the halves 256: GPU0 [0,256), GPU1 [256,512)),
 the local index le = e & 255. THE SPLIT PLANES: the slab planes are EXPERT-MAJOR, so the
 owner's half is ONE CONTIGUOUS BYTE RANGE per plane (the codes/hi/d of the experts

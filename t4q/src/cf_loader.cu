@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -530,16 +531,20 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                 q->xq0 = dalloc<int8_t>(HCD, false);
                 q->xd0 = dalloc<float>(HCD / 32, false);
                 q->xs0 = dalloc<int>(HCD / 32, false);
-                CK(cudaMalloc(&q->wt_gu[1], (size_t)TOPK * sizeof(PackedW)));
-                CK(cudaMalloc(&q->wt_dn[1], (size_t)TOPK * sizeof(PackedW)));
-                CK(cudaMalloc(&q->we_c[1], (size_t)TOPK * 4));
+                CK(cudaMalloc(&q->tab_d[1], sizeof(CfIqtpTab)));  // cf-m6 r6d: the fused per-side upload
+                CK(cudaMallocHost(&q->tab_h[1], sizeof(CfIqtpTab)));
+                q->ft_gu[1] = (PackedW*)q->tab_d[1];  // the plane interiors (pure address arithmetic)
+                q->ft_dn[1] = (PackedW*)((char*)q->tab_d[1] + offsetof(CfIqtpTab, wt_dn));
+                q->ft_we[1] = (float*)((char*)q->tab_d[1] + offsetof(CfIqtpTab, we));
                 CK(cudaSetDevice(0));
                 CK(cudaEventCreate(&q->ev0));
                 CK(cudaEventCreate(&q->ev1));
                 q->partial0 = dalloc<float>(2 * D, false);  // [D] p0 | the shipped p1 at +D (the 2-slot plane)
-                CK(cudaMalloc(&q->wt_gu[0], (size_t)TOPK * sizeof(PackedW)));
-                CK(cudaMalloc(&q->wt_dn[0], (size_t)TOPK * sizeof(PackedW)));
-                CK(cudaMalloc(&q->we_c[0], (size_t)TOPK * 4));
+                CK(cudaMalloc(&q->tab_d[0], sizeof(CfIqtpTab)));
+                CK(cudaMallocHost(&q->tab_h[0], sizeof(CfIqtpTab)));
+                q->ft_gu[0] = (PackedW*)q->tab_d[0];
+                q->ft_dn[0] = (PackedW*)((char*)q->tab_d[0] + offsetof(CfIqtpTab, wt_dn));
+                q->ft_we[0] = (float*)((char*)q->tab_d[0] + offsetof(CfIqtpTab, we));
             }
             fprintf(stderr, "[cf] iq1_s resident tier: %d/%d layers, %.2f GiB%s\n", n, NL, per_gib * n,
                     iqtp ? " (SPLIT by id across 2 GPUs - the r6b greedy emission rides the scatter form)"
@@ -965,11 +970,16 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                         q->v_ye[r] = dalloc<float>((size_t)TOPK * D, false);
                     }
                     q->v_partial = dalloc<float>((size_t)MAXR * D, false);
-                    CK(cudaMalloc(&q->uv_gu1, (size_t)MAXR * TOPK * sizeof(PackedW)));
-                    CK(cudaMalloc(&q->uv_dn1, (size_t)MAXR * TOPK * sizeof(PackedW)));
-                    CK(cudaMalloc(&q->rowmap1_dev, (size_t)MAXR * TOPK * T4Q_VFY_MAXR * 4));
-                    CK(cudaMalloc(&q->ks_dev[1], (size_t)MAXR * TOPK * 4));
-                    CK(cudaMalloc(&q->we_dev1, (size_t)MAXR * TOPK * 4));
+                    {  // cf-m6 r6d: the fused per-side upload (the sub-unions + the rowmap +
+                        // the k-lists + the we in ONE plane per side, the interiors fixed)
+                        CK(cudaMalloc(&q->vtab_d[1], sizeof(CfIqtpVTab)));
+                        CK(cudaMallocHost(&q->vtab_h[1], sizeof(CfIqtpVTab)));
+                        q->fuv_gu[1] = (PackedW*)q->vtab_d[1];
+                        q->fuv_dn[1] = (PackedW*)((char*)q->vtab_d[1] + offsetof(CfIqtpVTab, uv_dn));
+                        q->frowmap[1] = (int*)((char*)q->vtab_d[1] + offsetof(CfIqtpVTab, rowmap));
+                        q->fks[1] = (int*)((char*)q->vtab_d[1] + offsetof(CfIqtpVTab, ks));
+                        q->fwe_v[1] = (float*)((char*)q->vtab_d[1] + offsetof(CfIqtpVTab, we));
+                    }
                     {  // GPU1's FIXED tab (the per-row planes - ONE upload, the r5 form)
                         VfyMoeTab t;
                         for (int r = 0; r < MAXR; r++) {
@@ -983,7 +993,13 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                     }
                     CK(cudaSetDevice(0));
                     q->v_partial0 = dalloc<float>(2 * (size_t)MAXR * D, false);
-                    CK(cudaMalloc(&q->ks_dev[0], (size_t)MAXR * TOPK * 4));
+                    CK(cudaMalloc(&q->vtab_d[0], sizeof(CfIqtpVTab)));
+                    CK(cudaMallocHost(&q->vtab_h[0], sizeof(CfIqtpVTab)));
+                    q->fuv_gu[0] = (PackedW*)q->vtab_d[0];
+                    q->fuv_dn[0] = (PackedW*)((char*)q->vtab_d[0] + offsetof(CfIqtpVTab, uv_dn));
+                    q->frowmap[0] = (int*)((char*)q->vtab_d[0] + offsetof(CfIqtpVTab, rowmap));
+                    q->fks[0] = (int*)((char*)q->vtab_d[0] + offsetof(CfIqtpVTab, ks));
+                    q->fwe_v[0] = (float*)((char*)q->vtab_d[0] + offsetof(CfIqtpVTab, we));
                 }
                 // cf-m4 (r19y): the speculative driver's snapshot planes (the 27B's tp_spec.cu
                 // rollback adapted to the CF rolling states - the GDN S/conv and the PLE ring

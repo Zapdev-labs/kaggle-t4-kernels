@@ -2,6 +2,7 @@
 // llama.cpp qwen4exp.cpp graph are the spec; every constant below came off the real GGUF.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -251,6 +252,48 @@ struct CfVerify {
 // scatter form SAVES the ~2.6 GB core twin, HALVES the launch wall, and removes the
 // lockstep-state determinism risk (the rolling states stay GPU0's own - the single source
 // of truth). GPU1's VRAM is the half pool + this trivial scratch (<1 MB).
+// cf-m6 r6d (the fused per-side upload, the section 6 freeze's call-count lever): the
+// per-layer VARYING upload content packed in ONE pinned, fixed-size struct per side -
+// ONE H2D per side per layer where the greedy/draft split paths paid three per side
+// (wt_gu + wt_dn + we, ~22 us of launch overhead each) and the verify's split window
+// paid nine per layer. The lever is the CALL COUNT - PLAN_CF's named next wall once the
+// tiering drops the staging (~2600 launches/token at ~22 us ~= 57 ms/token): the greedy
+// drops 4 calls per layer (192/token), the draft the same per draft step, the verify's
+// window drops 7. The bytes are unchanged, the kernel args become the plane's fixed
+// interior pointers (fixed once at alloc), and the fixed size + the pinned host source
+// is exactly the shape the later graph round captures as ONE memcpy node. The stale
+// tails past n/nk/nu are never read (the count-guarded dots + the [0,nk) gathers), so
+// the full-size sections upload garbage-free-by-contract.
+struct CfIqtpTab {
+    PackedW wt_gu[cf::TOPK];
+    PackedW wt_dn[cf::TOPK];
+    float we[cf::TOPK];
+};
+// the verify's fused form (the r5 window's per-layer varying content): the sub-union W
+// pair + the rowmap + the per-row owned k-lists + the we in ONE pinned struct per side,
+// the FULL MAXR-sized sections (the [0,nu) dots, the [0,nk) gathers, the rowmap's
+// [ug*MAXR + r] slots only ever read for ug < nu).
+struct CfIqtpVTab {
+    PackedW uv_gu[cf::MAXR * cf::TOPK];
+    PackedW uv_dn[cf::MAXR * cf::TOPK];
+    int rowmap[cf::MAXR * cf::TOPK * T4Q_VFY_MAXR];
+    int ks[cf::MAXR * cf::TOPK];
+    float we[cf::MAXR * cf::TOPK];
+};
+// the layout pins (the fixed-size upload contract): the interiors are addressed by pure
+// pointer arithmetic at alloc (offsetof on these standard-layout structs), so the
+// section order and the exact sizes are part of the form.
+static_assert(sizeof(PackedW) == 88, "the PackedW stride the tabs assume");
+static_assert(sizeof(CfIqtpTab) == (size_t)cf::TOPK * (2 * sizeof(PackedW) + 4),
+              "the fused tab: the W pair then the we, no padding");
+static_assert(offsetof(CfIqtpTab, we) == 2 * (size_t)cf::TOPK * sizeof(PackedW),
+              "the fused tab: the we section follows the W pair");
+static_assert(sizeof(CfIqtpVTab) ==
+                  (size_t)cf::MAXR * cf::TOPK * (2 * sizeof(PackedW) + 4 * (T4Q_VFY_MAXR + 2)),
+              "the fused vtab: the W pair, the rowmap, the ks, the we, no padding");
+static_assert(offsetof(CfIqtpVTab, rowmap) == 2 * (size_t)cf::MAXR * cf::TOPK * sizeof(PackedW),
+              "the fused vtab: the rowmap section follows the W pair");
+
 struct CfIqtp {
     cudaStream_t st1 = nullptr;                 // GPU1's moe stream (the events bridge the sides)
     cudaEvent_t ev0 = nullptr, ev1 = nullptr;    // the per-layer sync pair (the mixed 0->1, the partial 1->0)
@@ -264,11 +307,15 @@ struct CfIqtp {
     int8_t* xq0 = nullptr;
     float* xd0 = nullptr;
     int* xs0 = nullptr;
-    float* we_c[2] = {nullptr, nullptr};        // device [TOPK] the per-side compact we
-    float h_we_c[2][cf::TOPK] = {};             // the host staging
-    PackedW* wt_gu[2] = {nullptr, nullptr};    // device [TOPK] the per-side W tables
-    PackedW* wt_dn[2] = {nullptr, nullptr};
-    PackedW h_wt_gu[2][cf::TOPK] = {}, h_wt_dn[2][cf::TOPK] = {};
+    // cf-m6 r6d (the fused per-side upload): the greedy/draft split paths' per-layer
+    // tables (the compact W pair + the we) in ONE pinned CfIqtpTab per side - the device
+    // plane + the interior pointers fixed at alloc (the kernel args) replace the three
+    // separate uploads per side per layer with ONE fixed-size H2D.
+    CfIqtpTab *tab_d[2] = {nullptr, nullptr};   // the device planes (each its own GPU)
+    CfIqtpTab* tab_h[2] = {nullptr, nullptr};   // the pinned host staging
+    PackedW *ft_gu[2] = {nullptr, nullptr};     // the tab interiors, fixed at alloc
+    PackedW* ft_dn[2] = {nullptr, nullptr};
+    float* ft_we[2] = {nullptr, nullptr};
     int n[2] = {0, 0};                          // the layer's per-side pick counts
     // cf-m6 r6c part 2 (the verify's split-moe, the section 6 freeze's hardest piece):
     // the per-row GPU1 planes + the per-side sub-union structures. The verify's per-row
@@ -291,17 +338,24 @@ struct CfIqtp {
     float* v_ye[cf::MAXR] = {};                // the per-row dn y (the pick slots)
     float* v_partial = nullptr;                // [MAXR*D] side-1's per-row partials
     float* v_partial0 = nullptr;               // [2*MAXR*D] side-0's + the shipped p1 landing
-    PackedW* uv_gu1 = nullptr;                 // GPU1's sub-union W tables [MAXR*TOPK]
-    PackedW* uv_dn1 = nullptr;
-    PackedW h_uv_gu1[cf::MAXR * cf::TOPK] = {}, h_uv_dn1[cf::MAXR * cf::TOPK] = {};
-    int* rowmap1_dev = nullptr;                // GPU1's rowmap [MAXR*TOPK][T4Q_VFY_MAXR]
-    int h_rowmap1[cf::MAXR * cf::TOPK][T4Q_VFY_MAXR] = {};
+    // cf-m6 r6d (the fused per-side upload, the verify's form): the sub-union W pair +
+    // the rowmap + the per-row owned k-lists + the we in ONE pinned CfIqtpVTab per side
+    // - the FULL MAXR-sized sections (the stale tails past nu/nk are never read, the
+    // count-guarded dots + the [0,nk) gathers) so the per-layer varying content rides
+    // ONE fixed-size H2D per side instead of the nine separate ones. The FIXED
+    // VfyMoeTab pair (vtab_dev/vtab1_dev, uploaded ONCE at alloc) stays the amortized
+    // dot's tab arg; only the per-LAYER varying content moved. h_nk/nu0/nu1 stay the
+    // host-side gather/dot bounds.
+    CfIqtpVTab *vtab_d[2] = {nullptr, nullptr};  // the device planes (each its own GPU)
+    CfIqtpVTab* vtab_h[2] = {nullptr, nullptr};  // the pinned host staging
+    PackedW *fuv_gu[2] = {nullptr, nullptr};     // the plane interiors, fixed at alloc
+    PackedW* fuv_dn[2] = {nullptr, nullptr};
+    int *frowmap[2] = {nullptr, nullptr};
+    int* fks[2] = {nullptr, nullptr};
+    float* fwe_v[2] = {nullptr, nullptr};
     VfyMoeTab* vtab1_dev = nullptr;            // GPU1's FIXED tab (uploaded once at alloc)
     VfyMoeTab h_vtab1 = {};
-    int* ks_dev[2] = {nullptr, nullptr};       // [MAXR*TOPK] the per-row owned-pick lists
-    int h_ks[2][cf::MAXR * cf::TOPK] = {};
     int h_nk[2][cf::MAXR] = {};                // the per-row owned counts per side
-    float* we_dev1 = nullptr;                  // [MAXR*TOPK] GPU1's we copy
     int nu0 = 0, nu1 = 0;                      // the layer's per-side sub-union counts
 };
 
