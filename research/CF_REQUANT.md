@@ -530,6 +530,13 @@ cut loses the newest first). THE GATES: the regenerated driver ast-parses with t
 defines verified; the split-ceiling arithmetic functionally gated on the loader's
 REAL per-side throw form (floor(11.62/0.232) = 50 vs the single-GPU 25, the
 no-match None); the phase order gated (the IQTP phases after the r5 phases). THE
+SATURDAY KERNEL CURRENCY: the cfreqa + cfreqb payloads REGENERATED against the
+current tree (the r3-era payloads predated the r4+ packed.h/requant changes - each
+payload is self-consistent, but the regenerated ones carry the current sources so
+the staleness question closes; the outputs are format-identical either way, the
+SlabHdr v2 layout never moved) - all three Saturday kernels (cfreqa, cfreqb, cfbat)
+now carry the r6c-era tree, gated (the ast-parse, the baked layer ranges, the
+CPU-only no-source metadata, the distinct payloads). THE
 SATURDAY SEQUENCE unchanged: cfreqa + cfreqb first, their outputs, then cfbat (the
 sources resolve), the battery, the r19w-r19aa kernels. THE
 OWNER MAP: owner(e) = e >> 8 (NE = 512, the halves 256: GPU0 [0,256), GPU1 [256,512)),
