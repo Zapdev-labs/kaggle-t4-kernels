@@ -1023,7 +1023,7 @@ void spec_enter(t4q_ctx* c, Spec* P) {
             k_ring_conv<<<20, 256, 0, G.s>>>(G.L[il].conv_ring, 4, B.ring + (size_t)li * CR * 5120, CR, &G.st->pos);
         }
         // spec fields of the step state
-        tp::StepState s2 = st;
+        tp::StepState s2;
         CK(cudaMemcpy(&s2, G.st, sizeof s2, cudaMemcpyDeviceToHost));
         s2.vpos = pos - 1;
         s2.nacc = 0;
@@ -1051,7 +1051,9 @@ void spec_enter(t4q_ctx* c, Spec* P) {
             if (!hrows) throw std::runtime_error("spec: no prefill rows");
             if (B.hpr_n < (size_t)nr + 1) {
                 if (B.hpr) CK(cudaFree(B.hpr));
-                B.hpr = dz<float>((size_t)(nr + 1) * DM);
+                // rows are all covered below (row 0 by the memsetAsync on G.s, rows 1.. by the ar norms), so a
+                // plain alloc: dz's default-stream memset is unordered vs the non-blocking G.s kernels
+                CK(cudaMalloc(&B.hpr, (size_t)(nr + 1) * DM * 4));
                 B.hpr_n = nr + 1;
             }
             // hpr row 0: h of position r0 - 1 (zero when r0 == 0, else unknown -> zero); rows 1..nr = output_norm(res)

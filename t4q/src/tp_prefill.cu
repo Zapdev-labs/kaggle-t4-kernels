@@ -1632,9 +1632,11 @@ Pf* pf_get(t4q_ctx* c) {
                 cudaFree(p);
             for (auto e : B.part_ev) cudaEventDestroy(e);
             for (auto& r : B.sent) for (auto e : r) cudaEventDestroy(e);
+            for (auto& r : B.ch_ev) for (auto e : r) if (e) cudaEventDestroy(e);
             cudaStreamDestroy(B.sc);
         }
         delete P;
+        S.pf = nullptr;  // a throw below must not leave S.pf dangling at the freed Pf
     }
     P = new Pf();
     P->cap = ub;

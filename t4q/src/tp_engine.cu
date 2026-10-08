@@ -1047,7 +1047,7 @@ void tp_load(t4q_ctx* c, const char* path) {
     c->tps = new tp::State();
     tp::State& S = *c->tps;
     S.max_ctx = c->max_ctx = c->params.max_ctx > 0 ? c->params.max_ctx : 4096;
-    if ((S.max_ctx + tp::NSPLIT - 1) / tp::NSPLIT > 128) throw std::runtime_error("max_ctx > 5120 not supported (attention split)");
+    if ((S.max_ctx + tp::NSPLIT - 1) / tp::NSPLIT > 128) throw std::runtime_error("max_ctx > 5081 not supported (attention split)");
     int ndev = 0;
     CK(cudaGetDeviceCount(&ndev));
     if (ndev < 2) throw std::runtime_error("need 2 GPUs");
