@@ -656,3 +656,168 @@ void launch_gemv_iq1sh_b(const PackedW* wt, int rows, const int8_t* xq, const fl
     const unsigned G = (unsigned)((rows + 7) / 8);
     k_gemv_iq1sh_b<<<dim3(G, batch), 256, 0, s>>>(wt, xq, xd, xs, y, x_stride, y_stride, xd_stride);
 }
+
+// ------------------------------------------------------------------------- cf-m6 r5: the AMORTIZED verify dots
+// The spec's frozen M=nr form (CF_REQUANT.md section 4): the drop-in _b launches re-decode
+// W per (row, pick) pair - at ~1.5 ops/elem-dot that is ~28 ms/verify round. Here the
+// decode happens ONCE per (union pick, 32-group) - the 8 grid quads held in registers -
+// and every draft row that picked the expert dots against the SHARED quads (2 dp4a per 8
+// elems per row + the per-row tail), the spec's ~0.22 ops/elem-dot class. The win is the
+// pick overlap across the verify's nr rows (the drafts are near-duplicates - their top-8s
+// overlap heavily; the L4 measures it); at ZERO overlap (nu = nr*TOPK) the cost is the _b
+// form's own + the rowmap overhead, so the form is win-neutral at worst.
+//
+// The walk is k_gemv_q8k_b's own (warp = the W row, lane strides the 32-groups, the xor
+// tree, lane 0 writes) with the row loop UNROLLED over the fixed 8 slots and GUARDED by
+// the pick mask - the mask is block-uniform (the whole warp walks the same row set), so
+// no intra-warp divergence, and the per-(row, pick) accumulation order over g is EXACTLY
+// the _b form's (the same g-sequence per lane, the same tree), so the numerics are
+// bit-identical to the per-row _b launches over the same views. rowmap[u*8 + r] = row r's
+// pick index k of union slot u (-1 = not picked); the outputs land at the per-row planes
+// (tab->y[r] + k*rows), the same buffers the _b form wrote. The early `return` on
+// row >= W.rows is warp-uniform (row is per-warp), so the full-mask shfl stays legal.
+__global__ void __launch_bounds__(256) k_gemv_iq1s_vfy(const PackedW* __restrict__ wt,
+                                                       const int* __restrict__ rowmap,
+                                                       const VfyMoeTab* __restrict__ tab) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int u = blockIdx.y;
+    const PackedW W = wt[u];
+    const int64_t row = (int64_t)blockIdx.x * 8 + warp;
+    if (row >= W.rows) return;
+    unsigned mask = 0;  // the rows that picked this union slot (block-uniform)
+    {
+        const int* rm = rowmap + u * 8;
+#pragma unroll
+        for (int r = 0; r < 8; r++)
+            if (rm[r] >= 0) mask |= 1u << r;
+    }
+    if (!mask) return;  // defensive: the host never emits an unpicked slot
+    const int64_t nb = W.cols / 256;
+    const int64_t ng = W.cols / 32;
+    float acc[8];
+#pragma unroll
+    for (int r = 0; r < 8; r++) acc[r] = 0.f;
+    for (int64_t g = lane; g < ng; g += 32) {
+        // the decode ONCE (dot_q8k<FMT_IQ1S>'s own ops, the quads held instead of consumed)
+        const int64_t blk = row * nb + (g >> 3);
+        const int ib = (int)(g & 7);
+        const int qs4 = *(const int*)(W.codes + blk * 32 + 4 * ib);
+        const uint8_t* qs = (const uint8_t*)&qs4;
+        const int qh = ((const uint16_t*)W.hi + blk * 8)[ib];
+        int q8[8];
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const int grid = t4q_iq1s_grid_gpu[qs[k] | (((qh >> (3 * k)) & 0x07) << 8)];
+            q8[2 * k] = (grid >> 0) & 0x0F0F0F0F;
+            q8[2 * k + 1] = (grid >> 4) & 0x0F0F0F0F;
+        }
+        const float d1q = h2f(W.d[blk]) * (float)(((qh >> 11) & 0x0E) + 1);
+        const float delta = -1.f + T4Q_IQ1S_DELTA - (float)(qh & 0x8000) * (2.f * T4Q_IQ1S_DELTA / 0x8000);
+        // the per-row dots against the shared decode (unrolled + mask-guarded)
+#pragma unroll
+        for (int r = 0; r < 8; r++) {
+            if (!((mask >> r) & 1)) continue;
+            const int8_t* xr = tab->xq[r] + g * 32;
+            int8_t xv[32];
+            *(int4*)xv = __ldg((const int4*)xr);
+            *(int4*)(xv + 16) = __ldg((const int4*)(xr + 16));
+            const int* xw = (const int*)xv;
+            int sumi = 0;
+#pragma unroll
+            for (int k = 0; k < 4; ++k) {
+                sumi = __dp4a(q8[2 * k], xw[2 * k], sumi);
+                sumi = __dp4a(q8[2 * k + 1], xw[2 * k + 1], sumi);
+            }
+            const int64_t sb = g >> 3;
+            const int sub = 2 * (int)(g & 7);
+            acc[r] += d1q * tab->yd[r][sb] *
+                      ((float)sumi + delta * (float)((int)tab->bs[r][sb * 16 + sub] + (int)tab->bs[r][sb * 16 + sub + 1]));
+        }
+    }
+#pragma unroll
+    for (int r = 0; r < 8; r++) {
+        if (!((mask >> r) & 1)) continue;
+        float a = acc[r];
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) a += __shfl_xor_sync(0xffffffffu, a, o);
+        if (lane == 0) tab->y[r][(int64_t)rowmap[u * 8 + r] * W.rows + row] = a;
+    }
+}
+
+// the dn twin at the q8_0 pairing (dot_q8_0_iq1sh's own decode + the per-row s32
+// correction); the outputs land at ye + r*TOPK*D + k*D - the same [TOPK, D] per-row planes
+// the _b form wrote
+__global__ void __launch_bounds__(256) k_gemv_iq1sh_vfy(const PackedW* __restrict__ wt,
+                                                        const int* __restrict__ rowmap,
+                                                        const VfyMoeTab* __restrict__ tab) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int u = blockIdx.y;
+    const PackedW W = wt[u];
+    const int64_t row = (int64_t)blockIdx.x * 8 + warp;
+    if (row >= W.rows) return;
+    unsigned mask = 0;
+    {
+        const int* rm = rowmap + u * 8;
+#pragma unroll
+        for (int r = 0; r < 8; r++)
+            if (rm[r] >= 0) mask |= 1u << r;
+    }
+    if (!mask) return;
+    const int64_t nb = W.cols / 128;
+    const int64_t ng = W.cols / 32;
+    float acc[8];
+#pragma unroll
+    for (int r = 0; r < 8; r++) acc[r] = 0.f;
+    for (int64_t g = lane; g < ng; g += 32) {
+        const int64_t blk = row * nb + (g >> 2);
+        const int ib = (int)(g & 3);
+        const int qs4 = *(const int*)(W.codes + blk * 16 + 4 * ib);
+        const uint8_t* qs = (const uint8_t*)&qs4;
+        const int qh = ((const uint16_t*)W.hi + blk * 4)[ib];
+        int q8[8];
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const int grid = t4q_iq1s_grid_gpu[qs[k] | (((qh >> (3 * k)) & 0x07) << 8)];
+            q8[2 * k] = (grid >> 0) & 0x0F0F0F0F;
+            q8[2 * k + 1] = (grid >> 4) & 0x0F0F0F0F;
+        }
+        const float d1q = h2f(W.d[blk]) * (float)(((qh >> 11) & 0x0E) + 1);
+        const float delta = -1.f + T4Q_IQ1S_DELTA - (float)(qh & 0x8000) * (2.f * T4Q_IQ1S_DELTA / 0x8000);
+#pragma unroll
+        for (int r = 0; r < 8; r++) {
+            if (!((mask >> r) & 1)) continue;
+            const int8_t* xr = tab->xq2[r] + g * 32;
+            int8_t xv[32];
+            *(int4*)xv = __ldg((const int4*)xr);
+            *(int4*)(xv + 16) = __ldg((const int4*)(xr + 16));
+            const int* xw = (const int*)xv;
+            int sumi = 0;
+#pragma unroll
+            for (int k = 0; k < 4; ++k) {
+                sumi = __dp4a(q8[2 * k], xw[2 * k], sumi);
+                sumi = __dp4a(q8[2 * k + 1], xw[2 * k + 1], sumi);
+            }
+            acc[r] += d1q * tab->xd2[r][g] * ((float)sumi + delta * (float)tab->xs2[r][g]);
+        }
+    }
+#pragma unroll
+    for (int r = 0; r < 8; r++) {
+        if (!((mask >> r) & 1)) continue;
+        float a = acc[r];
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) a += __shfl_xor_sync(0xffffffffu, a, o);
+        if (lane == 0) tab->y2[r][(int64_t)rowmap[u * 8 + r] * W.rows + row] = a;
+    }
+}
+
+void launch_gemv_iq1s_vfy(const PackedW* wt, const int* rowmap, const VfyMoeTab* tab, int rows, int nu,
+                          cudaStream_t s) {
+    const unsigned G = (unsigned)((rows + 7) / 8);
+    k_gemv_iq1s_vfy<<<dim3(G, nu), 256, 0, s>>>(wt, rowmap, tab);
+}
+
+void launch_gemv_iq1sh_vfy(const PackedW* wt, const int* rowmap, const VfyMoeTab* tab, int rows, int nu,
+                           cudaStream_t s) {
+    const unsigned G = (unsigned)((rows + 7) / 8);
+    k_gemv_iq1sh_vfy<<<dim3(G, nu), 256, 0, s>>>(wt, rowmap, tab);
+}

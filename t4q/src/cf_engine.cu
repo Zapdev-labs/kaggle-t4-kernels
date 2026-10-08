@@ -657,31 +657,47 @@ void vfy_window(CfCtx* c, CfLayer& L, int nr) {
     for (int r = 0; r < nr; r++)
         host_top10_row(v->h_router + (size_t)r * NE, v->eid + (size_t)r * TOPK, v->we_h + (size_t)r * TOPK);
     // cf-m6 r4: an iq1_s-covered layer's picks ALL hit the FMT_IQ1S/FMT_IQ1SH residents -
-    // NO union staging (nu stays 0, the dedup skipped, nothing staged), the views point at
-    // the resident planes (the tiering's hit-branch math verbatim, e = the resident index),
-    // and vfy_moe_em takes the r4 batched dots. The verify MUST read the SAME weights the
-    // greedy path reads or the MTP acceptance compares two different models (the
-    // byte-identity gate's class - the originals-staged verify would diverge from the
-    // resident-reading greedy at the covered layers).
+    // NO union staging (nothing staged), the views point at the resident planes (the
+    // tiering's hit-branch math verbatim, e = the resident index), and vfy_moe_em takes
+    // the r5 AMORTIZED dots. The verify MUST read the SAME weights the greedy path reads
+    // or the MTP acceptance compares two different models (the byte-identity gate's class
+    // - the originals-staged verify would diverge from the resident-reading greedy at the
+    // covered layers).
+    // cf-m6 r5: the resident path feeds the AMORTIZED dots - the picks' UNION (the dedup
+    // the uncovered path stages by) + the row map (row r's pick index of slot u) + the
+    // union's resident views. Each union pick's W decode is shared across every row that
+    // picked it (the spec's frozen M=nr form); the per-(row, pick) numerics stay
+    // bit-identical to the _b form's (the same walk, the same per-lane group order).
     if (c->tiered && L.res_gu.fmt == FMT_IQ1S) {
+        v->nu = 0;
         for (int r = 0; r < nr; r++)
             for (int k = 0; k < TOPK; k++) {
                 const int e = v->eid[(size_t)r * TOPK + k];
-                PackedW& vg = v->h_wt_gu[r][k];
-                vg = L.res_gu;  // fmt FMT_IQ1S rides the copy
-                vg.rows = 2 * EE;
-                vg.codes = L.res_gu.codes + (size_t)e * 2 * EE * (size_t)(D / 256) * 32;
-                vg.hi = L.res_gu.hi + (size_t)e * 2 * EE * (size_t)(D / 256) * 16;
-                vg.d = L.res_gu.d + (size_t)e * 2 * EE * (size_t)(D / 256);
-                PackedW& wd = v->h_wt_dn[r][k];
-                wd = L.res_dn;  // fmt FMT_IQ1SH rides the copy
-                wd.rows = D;
-                wd.codes = L.res_dn.codes + (size_t)e * D * (size_t)(EE / 128) * 16;
-                wd.hi = L.res_dn.hi + (size_t)e * D * (size_t)(EE / 128) * 8;
-                wd.d = L.res_dn.d + (size_t)e * D * (size_t)(EE / 128);
+                if (v->uidx[e] < 0) { v->uidx[e] = v->nu; v->uids[v->nu++] = e; }
             }
-        CK(cudaMemcpyAsync(v->wt_gu, v->h_wt_gu, (size_t)nr * TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
-        CK(cudaMemcpyAsync(v->wt_dn, v->h_wt_dn, (size_t)nr * TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+        for (int u = 0; u < v->nu; u++) {
+            const int e = v->uids[u];
+            PackedW& vg = v->h_uv_gu[u];
+            vg = L.res_gu;  // fmt FMT_IQ1S rides the copy
+            vg.rows = 2 * EE;
+            vg.codes = L.res_gu.codes + (size_t)e * 2 * EE * (size_t)(D / 256) * 32;
+            vg.hi = L.res_gu.hi + (size_t)e * 2 * EE * (size_t)(D / 256) * 16;
+            vg.d = L.res_gu.d + (size_t)e * 2 * EE * (size_t)(D / 256);
+            PackedW& wd = v->h_uv_dn[u];
+            wd = L.res_dn;  // fmt FMT_IQ1SH rides the copy
+            wd.rows = D;
+            wd.codes = L.res_dn.codes + (size_t)e * D * (size_t)(EE / 128) * 16;
+            wd.hi = L.res_dn.hi + (size_t)e * D * (size_t)(EE / 128) * 8;
+            wd.d = L.res_dn.d + (size_t)e * D * (size_t)(EE / 128);
+        }
+        memset(v->h_rowmap, -1, sizeof(v->h_rowmap));
+        for (int r = 0; r < nr; r++)
+            for (int k = 0; k < TOPK; k++)
+                v->h_rowmap[v->uidx[v->eid[(size_t)r * TOPK + k]]][r] = k;
+        for (int i = 0; i < v->nu; i++) v->uidx[v->uids[i]] = -1;  // the map sweep (the next layer's dedup reset)
+        CK(cudaMemcpyAsync(v->uv_gu, v->h_uv_gu, (size_t)v->nu * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(v->uv_dn, v->h_uv_dn, (size_t)v->nu * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(v->rowmap_dev, v->h_rowmap, (size_t)v->nu * T4Q_VFY_MAXR * 4, cudaMemcpyHostToDevice, st));
         return;
     }
     for (int r = 0; r < nr; r++)
@@ -756,9 +772,40 @@ void vfy_moe_em(CfCtx* c, CfLayer& L, int nr) {
     cudaStream_t st = c->st;
     CK(cudaMemcpyAsync(v->we_dev, v->we_h, (size_t)nr * TOPK * 4, cudaMemcpyHostToDevice, st));
     // cf-m6 r4: an iq1_s-covered layer's rows read the FMT_IQ1S/FMT_IQ1SH residents (the
-    // vfy_window resident views) - the SAME quantizes with the r4 batched dots, so the
-    // verify's numerics are the greedy path's own (the MTP agreement bar).
+    // vfy_window resident views) - the SAME quantizes with the r5 AMORTIZED dots, so the
+    // verify's numerics are the greedy path's own (the MTP agreement bar). cf-m6 r5: the
+    // phases split so ONE launch covers the whole (union pick x row) set per side - the
+    // nr quantizes, the gu dot (the W decode shared across the rows that picked the
+    // expert), the per-row silu + q8_0 quantizes, the dn dot, then the per-row tail
+    // verbatim (the shared expert, the moe_out on the row's we slice, the combine).
     const bool iqs = c->tiered && L.res_gu.fmt == FMT_IQ1S;
+    if (iqs) {
+        for (int r = 0; r < nr; r++) {
+            CfScratch& s = v->sc[r];
+            launch_quantize_q8_K(s.mixed, D, s.xqk, s.xqk_b, s.xqk_d, st);
+        }
+        launch_gemv_iq1s_vfy(v->uv_gu, v->rowmap_dev, v->vtab_dev, 2 * EE, v->nu, st);
+        for (int r = 0; r < nr; r++) {
+            CfScratch& s = v->sc[r];
+            launch_cf_silu_mul_b(s.logits, s.ffa, EE, TOPK, st);  // [gate n | up n] per expert, stride 2n
+            launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, s.xs0, st);
+        }
+        launch_gemv_iq1sh_vfy(v->uv_dn, v->rowmap_dev, v->vtab_dev, D, v->nu, st);
+        for (int r = 0; r < nr; r++) {
+            CfScratch& s = v->sc[r];
+            float* ye_r = v->ye + (size_t)r * TOPK * D;
+            gemv(s, L.sh_gate, s.mixed, s.ffg, st);
+            gemv(s, L.sh_up, s.mixed, s.ffu, st);
+            launch_silu_mul(s.ffg, s.ffu, s.ffa, EE, st);
+            gemv(s, L.sh_down, s.ffa, v->ysh + (size_t)r * D, st);
+            gemv(s, L.sh_ginp, s.mixed, v->sh_gate_raw + r, st);
+            launch_cf_moe_out(ye_r, v->we_dev + (size_t)r * TOPK, v->ysh + (size_t)r * D, v->sh_gate_raw + r,
+                              s.block, st);
+            check_launch("verify moe");
+            hc_combine(c, s.h, s.block, s.inj);
+        }
+        return;
+    }
     for (int r = 0; r < nr; r++) {
         CfScratch& s = v->sc[r];
         float* ye_r = v->ye + (size_t)r * TOPK * D;

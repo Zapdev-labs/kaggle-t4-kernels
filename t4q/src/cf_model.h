@@ -32,6 +32,7 @@ constexpr int LORA = 320;       // hc low-rank
 constexpr int NE = 512;         // experts
 constexpr int TOPK = 10;
 constexpr int MAXR = 8;        // cf-m4: the verify's row bound (T4Q_CF_K <= 7 -> nr = k+1 rows)
+static_assert(MAXR == T4Q_VFY_MAXR, "the r5 vfy tab's fixed row slots must match cf::MAXR");
 constexpr int EE = 640;        // expert FFN
 constexpr int HQ = 24, HKV = 2, HD = 256, NROT = 64;
 constexpr int HK = 16, HV = 48, DK = 128, VDIM = 6144, CONV = 10240;
@@ -170,6 +171,18 @@ struct CfVerify {
     int uidx[cf::NE];                 // the union slot map (expert -> slot, -1 = absent; host, recomposed per layer)
     int uids[cf::MAXR * cf::TOPK];    // the union's expert ids in slot order (the staging order)
     int nu = 0;                        // this layer's union count
+    // cf-m6 r5 (the spec's frozen amortized M=nr verify): the iq1_s-covered layer's verify
+    // dots decode each UNION pick's W once and dot it against every draft row that picked
+    // it (the drop-in _b re-decodes per (row, pick)). The union views + the row map replace
+    // the per-row W tables on the RESIDENT path (the uncovered path keeps the _b form);
+    // the per-row plane table (vtab) is FIXED at alloc - the scratch pointers never move -
+    // and uploads once. rowmap[u][r] = row r's pick index of slot u, -1 = not picked.
+    PackedW* uv_gu = nullptr;         // device [MAXR*TOPK] the union's resident gu views (slot order)
+    PackedW* uv_dn = nullptr;         // device [MAXR*TOPK] the union's resident dn views
+    PackedW h_uv_gu[cf::MAXR * cf::TOPK] = {}, h_uv_dn[cf::MAXR * cf::TOPK] = {};
+    int* rowmap_dev = nullptr;        // device [MAXR*TOPK][T4Q_VFY_MAXR]
+    int h_rowmap[cf::MAXR * cf::TOPK][T4Q_VFY_MAXR] = {};
+    VfyMoeTab* vtab_dev = nullptr;    // the fixed per-row plane table (uploaded once at alloc)
     float* ye = nullptr;              // device [MAXR][TOPK*D] the per-row batched down outputs
     float* ysh = nullptr;             // device [MAXR][D] the per-row shared-expert outputs
     float* sh_gate_raw = nullptr;     // device [MAXR] the per-row shared-expert sigmoid gates

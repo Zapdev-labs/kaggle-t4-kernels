@@ -770,6 +770,26 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                     s.xq0 = dalloc<int8_t>(HCD, false); s.xd0 = dalloc<float>(HCD / 32, false);
                     s.xs0 = dalloc<int>(HCD / 32, false);
                 }
+                // cf-m6 r5: the amortized verify's tables - the per-row plane table is
+                // FIXED (the scratch pointers never move; ONE upload at alloc), the union
+                // views + the row map are the per-layer varying part (vfy_window's
+                // resident path uploads them). The tab's gu side reads the same xqk/bsums/d
+                // planes and writes the same s.logits slice the per-row _b launches did;
+                // the dn side the same xq0/xd0/xs0 + the ye row slice.
+                CK(cudaMalloc(&v->uv_gu, (size_t)MAXR * TOPK * sizeof(PackedW)));
+                CK(cudaMalloc(&v->uv_dn, (size_t)MAXR * TOPK * sizeof(PackedW)));
+                CK(cudaMalloc(&v->rowmap_dev, (size_t)MAXR * TOPK * T4Q_VFY_MAXR * 4));
+                {
+                    VfyMoeTab t;
+                    for (int r = 0; r < MAXR; r++) {
+                        CfScratch& s = v->sc[r];
+                        t.xq[r] = s.xqk; t.bs[r] = s.xqk_b; t.yd[r] = s.xqk_d; t.y[r] = s.logits;
+                        t.xq2[r] = s.xq0; t.xd2[r] = s.xd0; t.xs2[r] = s.xs0;
+                        t.y2[r] = v->ye + (size_t)r * TOPK * D;
+                    }
+                    CK(cudaMalloc(&v->vtab_dev, sizeof(VfyMoeTab)));
+                    CK(cudaMemcpy(v->vtab_dev, &t, sizeof(VfyMoeTab), cudaMemcpyHostToDevice));
+                }
                 // cf-m4 (r19y): the speculative driver's snapshot planes (the 27B's tp_spec.cu
                 // rollback adapted to the CF rolling states - the GDN S/conv and the PLE ring
                 // are SHIFT REGISTERS, not position-indexed, so a partial accept restores the

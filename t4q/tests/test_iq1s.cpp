@@ -395,5 +395,242 @@ int main() {
     }
     printf("iq1s resident-view (h=1 of 2, 640) dot twin: sumi-int %s (%d)  dot %s (%d rows over)\n",
            view_sumi ? "MISMATCH" : "EXACT", view_sumi, view_bad ? "FAIL" : "OK", view_bad);
-    return (bad || sumi_bad || dot_bad || bad2 || sumi_bad2 || dot_bad2 || view_bad || view_sumi) != 0;
+
+    // ---- r5 gates: the AMORTIZED verify dots (the union decode shared across the rows) ----
+    // A 3-expert gu plane (FMT_IQ1S) + a 3-expert dn plane (FMT_IQ1SH), 3 draft rows with
+    // OVERLAPPING picks ({0,1}, {1,2}, {0,1,2}), the union + rowmap built with vfy_window's
+    // math verbatim (the dedup order, the -1 sweep), and the AMORTIZED sim - the kernel's
+    // OWN structure: the 8 grid quads decoded ONCE per (union pick, 32-group), then the
+    // per-row dp4a + tail against the shared quads - checked THREE ways: (a) BIT-IDENTICAL
+    // to the per-(row, pick) _b form (dot_iq1s_sim / dot_iq1sh_sim over the same view +
+    // activation; the same group terms in the same g-order - the claim the kernel's walk
+    // makes by construction, pinned deterministically here); (b) the per-(row, pick) sumi
+    // INT-exactness vs the independent u16 walk; (c) the rel bound vs the deq32 decode dot.
+    // Plus the COVERAGE check: every (row, pick) lands at exactly one (union slot, k), and
+    // the uidx sweep leaves no residue for the next layer's dedup.
+    int am_bit = 0, am_sumi = 0, am_rel = 0, am_cov = 0;
+    {
+        const int NRW = 3;                    // the draft rows
+        const int NEX = 3, NRG = 4, DG = 512; // gu: 3 experts x 4 rows (2*EEg) of 512 (2 super-blocks)
+        const int NRD = 4, EED = 128;         // dn: 3 experts x 4 rows of 128 (1 half-block)
+        const int npk[NRW] = {2, 2, 3};       // the rows' pick counts (TOPK=10 at the engine; 3 here)
+        const int pks[NRW][3] = {{0, 1, -1}, {1, 2, -1}, {0, 1, 2}};
+        // the planes (expert-major, the pack's own layout)
+        PackedW G;
+        G.fmt = FMT_IQ1S; G.rows = NEX * NRG; G.cols = DG;
+        std::vector<uint8_t> gc((size_t)G.rows * (DG / 256) * 32), gh((size_t)G.rows * (DG / 256) * 16);
+        std::vector<uint16_t> gd((size_t)G.rows * (DG / 256));
+        G.codes = gc.data(); G.hi = gh.data(); G.d = gd.data();
+        PackedW DN;
+        DN.fmt = FMT_IQ1SH; DN.rows = NEX * NRD; DN.cols = EED;
+        std::vector<uint8_t> dc((size_t)DN.rows * (EED / 128) * 16), dh((size_t)DN.rows * (EED / 128) * 8);
+        std::vector<uint16_t> dd((size_t)DN.rows * (EED / 128));
+        DN.codes = dc.data(); DN.hi = dh.data(); DN.d = dd.data();
+        std::vector<float> xs(DG > EED ? DG : EED);
+        std::vector<t4q_iq1s::BlockT<8>> gb((size_t)G.rows * (DG / 256));
+        std::vector<t4q_iq1s::BlockT<4>> db((size_t)DN.rows * (EED / 128));
+        for (int r = 0; r < (int)G.rows; r++) {
+            for (int i = 0; i < DG; i++) {
+                float u = (float)((int)(lcg() >> 8) - 32768) / 32768.f;
+                xs[i] = u * (0.02f + 0.15f * (r % 97) / 97.f);
+            }
+            t4q_iq1s::quant_row_t<8>(T, xs.data(), DG, gb.data() + (size_t)r * (DG / 256));
+        }
+        for (int r = 0; r < (int)DN.rows; r++) {
+            for (int i = 0; i < EED; i++) {
+                float u = (float)((int)(lcg() >> 8) - 32768) / 32768.f;
+                xs[i] = u * (0.02f + 0.13f * (r % 89) / 89.f);
+            }
+            t4q_iq1s::quant_row_t<4>(T, xs.data(), EED, db.data() + (size_t)r * (EED / 128));
+        }
+        for (int64_t b = 0; b < (int64_t)G.rows * (DG / 256); b++) {
+            memcpy(G.codes + b * 32, gb[b].qs, 32); memcpy(G.hi + b * 16, gb[b].qh, 16); G.d[b] = gb[b].d;
+        }
+        for (int64_t b = 0; b < (int64_t)DN.rows * (EED / 128); b++) {
+            memcpy(DN.codes + b * 16, db[b].qs, 16); memcpy(DN.hi + b * 8, db[b].qh, 8); DN.d[b] = db[b].d;
+        }
+        // the union + rowmap (vfy_window's math verbatim)
+        int uidx[NEX], uids[NRW * 3], nu = 0, rowmap[NRW * 3][NRW];
+        for (int e = 0; e < NEX; e++) uidx[e] = -1;
+        memset(rowmap, -1, sizeof(rowmap));
+        for (int r = 0; r < NRW; r++)
+            for (int k = 0; k < npk[r]; k++) {
+                const int e = pks[r][k];
+                if (uidx[e] < 0) { uidx[e] = nu; uids[nu++] = e; }
+            }
+        for (int r = 0; r < NRW; r++)
+            for (int k = 0; k < npk[r]; k++) rowmap[uidx[pks[r][k]]][r] = k;
+        for (int r = 0; r < NRW; r++)  // the coverage check: every pick at exactly one (slot, k)
+            for (int k = 0; k < npk[r]; k++)
+                if (rowmap[uidx[pks[r][k]]][r] != k) am_cov++;
+        for (int i = 0; i < nu; i++) uidx[uids[i]] = -1;  // the sweep (the next layer's dedup reset)
+        for (int e = 0; e < NEX; e++)
+            if (uidx[e] != -1) am_cov++;  // the sweep residue (all -1 after)
+        // the rows' activations: gu q8_K over DG, dn q8_0 over EED (SEPARATE originals -
+        // the deq32 reference dots read each side's own pre-quantize floats)
+        std::vector<float> a0g((size_t)NRW * DG), a0d((size_t)NRW * EED);
+        std::vector<int8_t> gq((size_t)NRW * DG);
+        std::vector<int16_t> gbs((size_t)NRW * DG / 16);
+        std::vector<float> gyd((size_t)NRW * DG / 256);
+        std::vector<int8_t> dq((size_t)NRW * EED);
+        std::vector<float> dxd((size_t)NRW * EED / 32);
+        std::vector<int> dxs((size_t)NRW * EED / 32);
+        for (int r = 0; r < NRW; r++) {
+            for (int i = 0; i < DG; i++) {
+                float u = (float)((int)(lcg() >> 8) - 32768) / 32768.f;
+                a0g[(size_t)r * DG + i] = u * (0.03f + 0.11f * (r % 5) / 5.f);
+            }
+            quant_q8_K_row(a0g.data() + (size_t)r * DG, DG, gq.data() + (size_t)r * DG,
+                           gbs.data() + (size_t)r * (DG / 16), gyd.data() + (size_t)r * (DG / 256));
+            for (int i = 0; i < EED; i++) {
+                float u = (float)((int)(lcg() >> 8) - 32768) / 32768.f;
+                a0d[(size_t)r * EED + i] = u * (0.05f + 0.09f * (r % 7) / 7.f);
+            }
+            quant_q8_0_row(a0d.data() + (size_t)r * EED, EED, dq.data() + (size_t)r * EED,
+                           dxd.data() + (size_t)r * (EED / 32), dxs.data() + (size_t)r * (EED / 32));
+        }
+        // (a) the BIT-IDENTITY + (b) the int sumi: the amortized walk vs the _b walk
+        double am_err = 0, am_l1 = 0;
+        std::vector<float> dec(DG);
+        for (int u = 0; u < nu; u++) {
+            const int e = uids[u];
+            PackedW Vg = G;  // the union view (vfy_window's offsets verbatim)
+            Vg.rows = NRG;
+            Vg.codes = G.codes + (size_t)e * NRG * (DG / 256) * 32;
+            Vg.hi = G.hi + (size_t)e * NRG * (DG / 256) * 16;
+            Vg.d = G.d + (size_t)e * NRG * (DG / 256);
+            PackedW Vd = DN;
+            Vd.rows = NRD;
+            Vd.codes = DN.codes + (size_t)e * NRD * (EED / 128) * 16;
+            Vd.hi = DN.hi + (size_t)e * NRD * (EED / 128) * 8;
+            Vd.d = DN.d + (size_t)e * NRD * (EED / 128);
+            for (int i = 0; i < NRG; i++) {
+                double am[NRW] = {0, 0, 0}, bsm[NRW][3] = {{0}, {0}, {0}};
+                for (int g = 0; g < DG / 32; g++) {
+                    // the decode ONCE (the kernel's structure: the quads held, not consumed)
+                    const int64_t blk = (int64_t)i * (DG / 256) + (g >> 3);
+                    const int ib = g & 7;
+                    const uint8_t* qs = Vg.codes + blk * 32 + 4 * ib;
+                    const int qh = ((const uint16_t*)Vg.hi + blk * 8)[ib];
+                    int q8[8];
+                    for (int k = 0; k < 4; k++) {
+                        const int idx = qs[k] | (((qh >> (3 * k)) & 7) << 8);
+                        const int grid = t4q_iq1s_grid_gpu[idx];
+                        q8[2 * k] = (grid >> 0) & 0x0F0F0F0F;
+                        q8[2 * k + 1] = (grid >> 4) & 0x0F0F0F0F;
+                    }
+                    const float d1q = t4q_fp16_to_fp32(Vg.d[blk]) * (float)(((qh >> 11) & 0x0E) + 1);
+                    const float delta =
+                        -1.f + T4Q_IQ1S_DELTA - (float)(qh & 0x8000) * (2.f * T4Q_IQ1S_DELTA / 0x8000);
+                    // the per-row dots against the shared quads (the masked row loop)
+                    for (int r = 0; r < NRW; r++) {
+                        if (rowmap[u][r] < 0) continue;
+                        const int8_t* xv = gq.data() + (size_t)r * DG + g * 32;
+                        int sumi = 0, ref = 0;
+                        for (int k = 0; k < 4; k++) {
+                            sumi = dp4a(q8[2 * k], *(const int*)(xv + 8 * k), sumi);
+                            sumi = dp4a(q8[2 * k + 1], *(const int*)(xv + 8 * k + 4), sumi);
+                            const uint16_t u16e = t4q_kgrid_1bit_2048[qs[k] | (((qh >> (3 * k)) & 7) << 8)];
+                            for (int j = 0; j < 8; j++) ref += ((u16e >> (2 * j)) & 3) * (int)xv[8 * k + j];
+                        }
+                        if (sumi != ref) am_sumi++;
+                        const int sb = g >> 3, sub = 2 * (g & 7);
+                        am[r] += d1q * gyd[(size_t)r * (DG / 256) + sb] *
+                                 ((float)sumi +
+                                  delta * (float)((int)gbs[(size_t)r * (DG / 16) + sb * 16 + sub] +
+                                                  (int)gbs[(size_t)r * (DG / 16) + sb * 16 + sub + 1]));
+                    }
+                }
+                // the _b side: the SAME view + activation through the per-(row, pick) twin
+                for (int r = 0; r < NRW; r++) {
+                    const int k = rowmap[u][r];
+                    if (k < 0) continue;
+                    for (int g = 0; g < DG / 32; g++) {
+                        const int sb = g >> 3, sub = 2 * (g & 7);
+                        bsm[r][k] += dot_iq1s_sim(Vg, i, g, gq.data() + (size_t)r * DG + g * 32,
+                                                  gbs[(size_t)r * (DG / 16) + sb * 16 + sub],
+                                                  gbs[(size_t)r * (DG / 16) + sb * 16 + sub + 1],
+                                                  gyd[(size_t)r * (DG / 256) + sb], am_sumi);
+                    }
+                }
+                // (a) the bit check + (c) the deq32 reference
+                for (int g = 0; g < DG / 32; g++) deq32<FMT_IQ1S>(Vg, i, g, dec.data() + g * 32);
+                for (int r = 0; r < NRW; r++) {
+                    const int k = rowmap[u][r];
+                    if (k < 0) continue;
+                    if (am[r] != bsm[r][k]) am_bit++;
+                    double dref = 0, l1 = 0;
+                    for (int ii = 0; ii < DG; ii++) {
+                        dref += (double)dec[ii] * a0g[(size_t)r * DG + ii];
+                        l1 += fabs((double)dec[ii] * a0g[(size_t)r * DG + ii]);
+                    }
+                    am_err += fabs(am[r] - dref);
+                    am_l1 += l1;
+                    if (l1 > 0 && fabs(am[r] - dref) > 0.02 * l1) am_rel++;
+                }
+            }
+            // the dn twin at the q8_0 pairing (the s32 correction)
+            for (int i = 0; i < NRD; i++) {
+                double am[NRW] = {0, 0, 0}, bsm[NRW][3] = {{0}, {0}, {0}};
+                for (int g = 0; g < EED / 32; g++) {
+                    const int64_t blk = (int64_t)i * (EED / 128) + (g >> 2);
+                    const int ib = g & 3;
+                    const uint8_t* qs = Vd.codes + blk * 16 + 4 * ib;
+                    const int qh = ((const uint16_t*)Vd.hi + blk * 4)[ib];
+                    int q8[8];
+                    for (int k = 0; k < 4; k++) {
+                        const int idx = qs[k] | (((qh >> (3 * k)) & 7) << 8);
+                        const int grid = t4q_iq1s_grid_gpu[idx];
+                        q8[2 * k] = (grid >> 0) & 0x0F0F0F0F;
+                        q8[2 * k + 1] = (grid >> 4) & 0x0F0F0F0F;
+                    }
+                    const float d1q = t4q_fp16_to_fp32(Vd.d[blk]) * (float)(((qh >> 11) & 0x0E) + 1);
+                    const float delta =
+                        -1.f + T4Q_IQ1S_DELTA - (float)(qh & 0x8000) * (2.f * T4Q_IQ1S_DELTA / 0x8000);
+                    for (int r = 0; r < NRW; r++) {
+                        if (rowmap[u][r] < 0) continue;
+                        const int8_t* xv = dq.data() + (size_t)r * EED + g * 32;
+                        int sumi = 0, ref = 0;
+                        for (int k = 0; k < 4; k++) {
+                            sumi = dp4a(q8[2 * k], *(const int*)(xv + 8 * k), sumi);
+                            sumi = dp4a(q8[2 * k + 1], *(const int*)(xv + 8 * k + 4), sumi);
+                            const uint16_t u16e = t4q_kgrid_1bit_2048[qs[k] | (((qh >> (3 * k)) & 7) << 8)];
+                            for (int j = 0; j < 8; j++) ref += ((u16e >> (2 * j)) & 3) * (int)xv[8 * k + j];
+                        }
+                        if (sumi != ref) am_sumi++;
+                        am[r] += d1q * dxd[(size_t)r * (EED / 32) + g] *
+                                 ((float)sumi + delta * (float)dxs[(size_t)r * (EED / 32) + g]);
+                    }
+                }
+                for (int r = 0; r < NRW; r++) {
+                    const int k = rowmap[u][r];
+                    if (k < 0) continue;
+                    for (int g = 0; g < EED / 32; g++)
+                        bsm[r][k] += dot_iq1sh_sim(Vd, i, g, dq.data() + (size_t)r * EED + g * 32,
+                                                   dxd[(size_t)r * (EED / 32) + g], dxs[(size_t)r * (EED / 32) + g],
+                                                   am_sumi);
+                }
+                for (int g = 0; g < EED / 32; g++) deq32<FMT_IQ1SH>(Vd, i, g, dec.data() + g * 32);
+                for (int r = 0; r < NRW; r++) {
+                    const int k = rowmap[u][r];
+                    if (k < 0) continue;
+                    if (am[r] != bsm[r][k]) am_bit++;
+                    double dref = 0, l1 = 0;
+                    for (int ii = 0; ii < EED; ii++) {
+                        dref += (double)dec[ii] * a0d[(size_t)r * EED + ii];
+                        l1 += fabs((double)dec[ii] * a0d[(size_t)r * EED + ii]);
+                    }
+                    am_err += fabs(am[r] - dref);
+                    am_l1 += l1;
+                    if (l1 > 0 && fabs(am[r] - dref) > 0.02 * l1) am_rel++;
+                }
+            }
+        }
+        printf("iq1s amortized vfy twin (gu+dn, 3 rows, union %d): bit-vs-_b %s (%d)  sumi-int %s (%d)  "
+               "dot %s (%d over, rel=%.2e)  coverage %s (%d)\n",
+               nu, am_bit ? "MISMATCH" : "IDENTICAL", am_bit, am_sumi ? "MISMATCH" : "EXACT", am_sumi,
+               am_rel ? "FAIL" : "OK", am_rel, am_l1 > 0 ? am_err / am_l1 : 0.0, am_cov ? "FAIL" : "OK", am_cov);
+    }
+    return (bad || sumi_bad || dot_bad || bad2 || sumi_bad2 || dot_bad2 || view_bad || view_sumi || am_bit ||
+            am_sumi || am_rel || am_cov) != 0;
 }

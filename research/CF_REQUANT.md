@@ -343,7 +343,42 @@ union staging for uncovered layers and the draft block still vary; the re-enable
 L4-measured later round, not assumed. THE VALUE GATES (L4, Saturday): the smoke, the
 perplexity A/B on the mix, the greedy agreement, the resident-expert rate vs the r18
 K-quant family, the VRAM inventory.
-r5: the M=8 amortized verify kernel + its L4 measure.
+r5 [LANDED, host- and build-gated locally; the rate is L4]: the AMORTIZED M=nr verify
+kernel, the spec's frozen form. LANDED AS: k_gemv_iq1s_vfy + k_gemv_iq1sh_vfy (gemv_ref.cu)
+- the walk is the _b family's own (warp = the W row, lane strides the 32-groups, the xor
+tree, lane 0 writes) with the row loop UNROLLED over the fixed 8 slots and GUARDED by the
+pick mask (block-uniform, so no intra-warp divergence): per (union pick, 32-group) the
+decode happens ONCE - the 8 grid quads held in registers, d1q/delta computed once - then
+every row that picked the expert dots against the SHARED quads (2 dp4a per 8 elems per
+row + the per-row tail: the bsums pair at the q8_K pairing, the s32 at the q8_0 pairing),
+the outputs at the SAME per-row planes the _b form wrote (s.logits + k*2n / ye + r*TOPK*D
++ k*D). The interface: the picks' UNION views (uv_gu/uv_dn, vfy_window's dedup + the
+resident-slab offsets verbatim) + the row map (rowmap[u*8+r] = row r's pick index of slot
+u, -1 = not picked) + the FIXED per-row plane table (VfyMoeTab in packed.h - the scratch
+pointers never move, ONE upload at the verify alloc). vfy_moe_em's resident branch
+restructured to the phased form: the nr quantizes, ONE gu launch over the union, the
+per-row silu + q8_0 quantizes, ONE dn launch, then the per-row tail verbatim. THE
+BIT-IDENTITY CLAIM, pinned: the per-(row, pick) accumulation over g is EXACTLY the _b
+form's (the same g-sequence per lane, the same tree, the same tail expression) - the new
+gate's amortized sim (the kernel's own decode-then-rowloop structure) vs the per-(row,
+pick) dot_iq1s_sim/dot_iq1sh_sim over the same views + activations is BIT-IDENTICAL, plus
+the sumi INT-exactness vs the independent u16 walk, the rel bound vs the deq32 decode dot
+(2.18e-04), and the union/rowmap COVERAGE check (every pick at exactly one (slot, k), the
+uidx sweep leaves no residue). THE GRAPH NOTE: the amortized launch's grid rides nu (the
+union count, varying per layer AND per step) - not capture-constant, exactly the class
+the r19z comment names; the verify's V1 graphs are already dead under the tier (the
+loader's gmode&&tiered kill at load), so no capture ever sees the varying grid. THE
+REGISTERS: k_gemv_iq1s_vfy = 64 / k_gemv_iq1sh_vfy = 60, both 0 stack / 0 local / 0 smem
+(no spills - the masked unroll keeps the 8 accs + the 8 quads live without blowing the
+family budget). THE HONEST NOTES: (1) the win is the pick overlap across the nr rows (the
+drafts are near-duplicates - their top-10s overlap heavily); at ZERO overlap (nu =
+nr*TOPK) the cost is the _b form's own + the rowmap overhead, so the form is win-neutral
+at worst - the L4 measures the real overlap; (2) the UNCOVERED layers (past the iq1_s
+prefix at stage 1) keep the _b form - their verify re-decode stays; the amortization
+extends there only if the L4 shows the uncovered verify cost matters (at stage 2's full
+pool every layer is resident and the amortized path covers everything). THE VALUE GATE
+(L4): the verify-round wall before/after at the covered layers (the spec's ~28 ms ->
+~4 ms class at full overlap, measured not assumed).
 r6: the stage-2 TP split (the by-ID residency, the replicated core, the per-layer
 combine) + the full L4 battery.
 The L4-blocked r19w-r19aa battery (the MTP graphs/prefetch A/Bs) rides the same sessions.

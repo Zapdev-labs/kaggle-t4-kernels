@@ -62,3 +62,23 @@ struct SlabHdr {
 };
 static_assert(sizeof(SlabHdr) == 96, "slab header v2 (10 u32 + 7 u64, no padding)");
 constexpr uint32_t SLAB_MAGIC = 0x45513454u;
+
+// cf-m6 r5 (the spec's frozen AMORTIZED M=nr verify form): the per-row activation/output
+// plane table the verify's iq1_s dots read. The pointers are FIXED at the verify alloc
+// (the per-row scratch planes never move), so the table uploads ONCE; the per-layer
+// varying part is the union W views + the row map (cf_model.h's CfVerify). The gu side
+// (xq/bs/yd/y) is the q8_K pairing, the dn side (xq2/xd2/xs2/y2) the q8_0 pairing - the
+// SAME planes the per-row _b launches read, so the amortized kernel's per-(row, pick)
+// numerics are identical by construction.
+constexpr int T4Q_VFY_MAXR = 8;  // the verify's row cap (cf::MAXR; static_assert'd where both are visible)
+struct VfyMoeTab {
+    const int8_t* xq[8];   // row r's q8_K quads (gu)
+    const int16_t* bs[8];  // row r's q8_K per-16 bsums
+    const float* yd[8];    // row r's q8_K super-block d
+    float* y[8];           // row r's gate|up output ([TOPK, 2n] at s.logits)
+    const int8_t* xq2[8];  // row r's q8_0 quads (dn)
+    const float* xd2[8];   // row r's q8_0 per-32 d
+    const int* xs2[8];     // row r's q8_0 per-32 signed sums
+    float* y2[8];          // row r's per-pick down output ([TOPK, D] at ye + r*TOPK*D)
+};
+static_assert(sizeof(VfyMoeTab) == 512, "the vfy tab: 8 fields x 8 row slots, no padding");

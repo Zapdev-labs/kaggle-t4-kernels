@@ -57,6 +57,15 @@ void launch_gemv_q8k_b(const PackedW* wt, int fmt, int rows, const int8_t* xq, c
 // no fmt dispatch (whole-layer residency, no within-layer mix).
 void launch_gemv_iq1sh_b(const PackedW* wt, int rows, const int8_t* xq, const float* xd, const int* xs, float* y,
                          int64_t x_stride, int64_t y_stride, int64_t xd_stride, int batch, cudaStream_t s);
+// cf-m6 r5 (the spec's frozen AMORTIZED M=nr verify form): the union pick's W decoded
+// ONCE per 32-group, dotted against every draft row that picked it (rowmap[u*8+r] = row
+// r's pick index, -1 = not picked; the per-row planes ride the fixed VfyMoeTab). The
+// per-(row, pick) numerics are bit-identical to the _b launches over the same views.
+// rows is the host-side W row count the grid covers (2*EE gu / D dn); nu the union count.
+void launch_gemv_iq1s_vfy(const PackedW* wt, const int* rowmap, const VfyMoeTab* tab, int rows, int nu,
+                          cudaStream_t s);
+void launch_gemv_iq1sh_vfy(const PackedW* wt, const int* rowmap, const VfyMoeTab* tab, int rows, int nu,
+                           cudaStream_t s);
 
 // misc.cu
 void launch_rmsnorm(const float* x, const float* w, float* y, int n, float eps, cudaStream_t s);
