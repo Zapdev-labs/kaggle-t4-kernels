@@ -594,6 +594,7 @@ int tp_batch_init(t4q_ctx* c, int n_slots, int slot_ctx, int sf16) {
         }
     }
     b->bytes = need;
+    try {
     for (int g = 0; g < 2; g++) {
         CK(cudaSetDevice(g));
         BdGpu& G = b->G[g];
@@ -613,6 +614,10 @@ int tp_batch_init(t4q_ctx* c, int n_slots, int slot_ctx, int sf16) {
         CK(cudaMallocHost(&G.h_am, BD_MAXB * sizeof(float2)));
         CK(cudaMallocHost(&G.h_meta, 3 * BD_MAXB * sizeof(int)));
         CK(cudaDeviceSynchronize());
+    }
+    } catch (...) {
+        bd_free(b);  // nullptr-init fields make partial-init teardown safe
+        throw;
     }
     S.bd = b;
     return 0;
@@ -669,7 +674,6 @@ int tp_batch_clone(t4q_ctx* c, int src, int dst) {
     Bd* b = bd_of(c);
     if (src < 0 || src >= b->n_slots || dst < 0 || dst >= b->n_slots || b->tok[src] < 0) throw std::runtime_error("bad clone slots");
     if (src == dst) return 0;
-    const int n = b->pos[src];
     for (int g = 0; g < 2; g++) {
         CK(cudaSetDevice(g));
         tp::Gpu& G = S.G[g];
@@ -684,7 +688,6 @@ int tp_batch_clone(t4q_ctx* c, int src, int dst) {
             }
         }
     }
-    (void)n;
     for (int g = 0; g < 2; g++) { CK(cudaSetDevice(g)); CK(cudaStreamSynchronize(S.G[g].s)); }
     b->pos[dst] = b->pos[src];
     b->tok[dst] = b->tok[src];

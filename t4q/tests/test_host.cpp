@@ -15,6 +15,7 @@ int main(int argc, char** argv) {
     const GgufTensor* t = f.find(argv[2]);
     if (!t) { fprintf(stderr, "no tensor\n"); return 1; }
     int nr = atoi(argv[3]);
+    if (nr > t->nrows()) nr = (int)t->nrows();  // don't read past the tensor
     std::vector<float> out((size_t)nr * t->ne[0]);
     for (int r = 0; r < nr; r++)
         if (!dequant_row_cpu(t->type, t->data + (size_t)r * t->row_bytes, out.data() + (size_t)r * t->ne[0], t->ne[0])) {

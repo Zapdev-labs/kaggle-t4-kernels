@@ -276,6 +276,14 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
             L.t_down_exps = c->f.find(p + "ffn_down_exps.weight");
             if (!L.t_gate_exps || !L.t_up_exps || !L.t_down_exps)
                 throw std::runtime_error("missing expert tensors for layer " + std::to_string(il));
+            // the staging/repack math is hardwired for Q2_K gate|up (840 B rows of D) + Q4_0
+            // down (360 B rows of EE): fail loudly instead of silently repacking the wrong type
+            if (L.t_gate_exps->type != GT_Q2_K || L.t_up_exps->type != GT_Q2_K ||
+                L.t_down_exps->type != GT_Q4_0 || L.t_gate_exps->ne[0] != D ||
+                L.t_gate_exps->ne[1] != EE || L.t_gate_exps->ne[2] != NE ||
+                L.t_up_exps->ne[0] != D || L.t_up_exps->ne[1] != EE || L.t_up_exps->ne[2] != NE ||
+                L.t_down_exps->ne[0] != EE || L.t_down_exps->ne[1] != D || L.t_down_exps->ne[2] != NE)
+                throw std::runtime_error("bad expert tensor shape/type for layer " + std::to_string(il));
             if (il == PLE_LAYER) {
                 upload_matrix(c, pin, dev, &rs, p + "ple_key.weight", 0, c->ple.key);
                 upload_matrix(c, pin, dev, &rs, p + "ple_value.weight", 0, c->ple.value);
@@ -312,7 +320,7 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
         s.braw = dalloc<float>(HV, false); s.araw = dalloc<float>(HV, false);
         s.beta = dalloc<float>(HV, false); s.g = dalloc<float>(HV, false);
         s.conv = dalloc<float>(CONV, false); s.qn = dalloc<float>(HK * DK, false); s.kn = dalloc<float>(HK * DK, false);
-        s.o = dalloc<float>(VDIM, false); s.on = dalloc<float>(VDIM, false); s.a = dalloc<float>(D, false);
+        s.o = dalloc<float>(VDIM, false); s.on = dalloc<float>(VDIM, false);  // s.a: dead field (27B relic), not allocated
         s.ffg = dalloc<float>((size_t)TOPK * EE, false); s.ffu = dalloc<float>((size_t)TOPK * EE, false);
         s.ffa = dalloc<float>((size_t)TOPK * EE, false);
         s.logits = dalloc<float>(V, false);
@@ -518,6 +526,13 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
             L.t_down_exps = c->f.find(p + "ffn_down_exps.weight");
             if (!L.t_gate_exps || !L.t_up_exps || !L.t_down_exps)
                 throw std::runtime_error("missing draft expert tensors (blk.48)");
+            // blk.48 is all-Q8_0 (2720 B rows of D, 680 B rows of EE) per the spec
+            if (L.t_gate_exps->type != GT_Q8_0 || L.t_up_exps->type != GT_Q8_0 ||
+                L.t_down_exps->type != GT_Q8_0 || L.t_gate_exps->ne[0] != D ||
+                L.t_gate_exps->ne[1] != EE || L.t_gate_exps->ne[2] != NE ||
+                L.t_up_exps->ne[0] != D || L.t_up_exps->ne[1] != EE || L.t_up_exps->ne[2] != NE ||
+                L.t_down_exps->ne[0] != EE || L.t_down_exps->ne[1] != D || L.t_down_exps->ne[2] != NE)
+                throw std::runtime_error("bad draft expert tensor shape/type (blk.48)");
             d->enorm = upload_vec(c, p + "nextn.enorm.weight", D);
             d->hnorm = upload_vec(c, p + "nextn.hnorm.weight", HCD);
             upload_matrix(c, pin, dev, &rs, p + "nextn.eh_proj.weight", 0, d->eh_proj);
@@ -654,7 +669,7 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
                     s.beta = dalloc<float>(HV, false); s.g = dalloc<float>(HV, false);
                     s.conv = dalloc<float>(CONV, false); s.qn = dalloc<float>(HK * DK, false);
                     s.kn = dalloc<float>(HK * DK, false);
-                    s.o = dalloc<float>(VDIM, false); s.on = dalloc<float>(VDIM, false); s.a = dalloc<float>(D, false);
+                    s.o = dalloc<float>(VDIM, false); s.on = dalloc<float>(VDIM, false);  // s.a: dead field (27B relic), not allocated
                     s.ffg = dalloc<float>((size_t)TOPK * EE, false); s.ffu = dalloc<float>((size_t)TOPK * EE, false);
                     s.ffa = dalloc<float>((size_t)TOPK * EE, false);
                     s.logits = dalloc<float>(V, false);

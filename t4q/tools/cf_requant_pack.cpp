@@ -80,13 +80,13 @@ static inline uint16_t f32_to_bf16_trunc(float f) {
 }
 
 // the one-time tables (the init is ~5-15 s; the quantizer threads read them read-only)
+// the magic static makes the once-init thread-safe; the old flag check raced
 static const t4q_iq1s::Tables& the_tables() {
-    static t4q_iq1s::Tables T;
-    static bool init = false;
-    if (!init) {
-        t4q_iq1s::init(T);
-        init = true;
-    }
+    static const t4q_iq1s::Tables T = [] {
+        t4q_iq1s::Tables t;
+        t4q_iq1s::init(t);
+        return t;
+    }();
     return T;
 }
 
@@ -115,17 +115,25 @@ static void quantize_tensor(const uint16_t* src, uint64_t rows, uint64_t cols, u
                             uint16_t* d, int nthreads) {
     const t4q_iq1s::Tables& T = the_tables();
     const uint64_t bpr = cols / (32 * NG);
-    std::vector<t4q_iq1s::BlockT<NG>> blocks(rows * bpr);
-#pragma omp parallel for num_threads(nthreads) schedule(dynamic, 64)
-    for (int64_t r = 0; r < (int64_t)rows; ++r) {
+    // Per-thread row scratch: the old form allocated a rows*bpr BlockT vector
+    // (500 MB zero-init'd, written, then re-read cold for the plane split) and a
+    // fresh x per row (~2M heap allocs). Scattering per row keeps the block data
+    // cache-hot and drops the intermediate array entirely. Same bytes out.
+#pragma omp parallel num_threads(nthreads)
+    {
         std::vector<float> x(cols);
-        for (uint64_t i = 0; i < cols; i++) x[i] = bf16_to_f32(src[r * cols + i]);
-        t4q_iq1s::quant_row_t<NG>(T, x.data(), (int)cols, blocks.data() + r * bpr);
-    }
-    for (uint64_t b = 0; b < rows * bpr; b++) {  // the plane split
-        memcpy(codes + b * (4 * NG), blocks[b].qs, 4 * NG);
-        memcpy(hi + b * (2 * NG), blocks[b].qh, 2 * NG);
-        d[b] = blocks[b].d;
+        std::vector<t4q_iq1s::BlockT<NG>> rb(bpr);
+#pragma omp for schedule(dynamic, 64)
+        for (int64_t r = 0; r < (int64_t)rows; ++r) {
+            for (uint64_t i = 0; i < cols; i++) x[i] = bf16_to_f32(src[r * cols + i]);
+            t4q_iq1s::quant_row_t<NG>(T, x.data(), (int)cols, rb.data());
+            const uint64_t base = (uint64_t)r * bpr;  // the plane split
+            for (uint64_t b = 0; b < bpr; b++) {
+                memcpy(codes + (base + b) * (4 * NG), rb[b].qs, 4 * NG);
+                memcpy(hi + (base + b) * (2 * NG), rb[b].qh, 2 * NG);
+                d[base + b] = rb[b].d;
+            }
+        }
     }
 }
 
@@ -174,6 +182,7 @@ static int verify_slab(const std::string& path, int sample_rows, const std::stri
         src_map[p] = mmap(nullptr, src_len[p], PROT_READ, MAP_PRIVATE, fd, 0);
         close(fd);
         if (src_map[p] == MAP_FAILED) { fprintf(stderr, "source mmap failed\n"); return 1; }
+        madvise(src_map[p], src_len[p], MADV_SEQUENTIAL);  // one sequential pass over the map
         src[p] = (const uint16_t*)src_map[p];
     }
     int bad = 0;
@@ -183,6 +192,7 @@ static int verify_slab(const std::string& path, int sample_rows, const std::stri
     for (int p = 0; p < 2; p++) {
         const Plane& P = pl[p];
         const int nsample = (sample_rows <= 0 || (uint64_t)sample_rows >= P.rows) ? (int)P.rows : sample_rows;
+        const bool full = (uint64_t)nsample == P.rows;
         const int NG = P.ng;  // gu: the 256-elem block (FMT_IQ1S); dn: the 128-elem half (FMT_IQ1SH)
         const int EFMT = (NG == 8) ? FMT_IQ1S : FMT_IQ1SH;  // the runtime W.fmt value
         const uint64_t stride_c = 4 * NG, stride_h = 2 * NG;
@@ -207,7 +217,9 @@ static int verify_slab(const std::string& path, int sample_rows, const std::stri
         std::vector<t4q_iq1s::BlockT<4>> blocks4(nblocks);
         std::vector<t4q_iq1s::BlockT<8>> blocks8(nblocks);
         for (int s = 0; s < nsample; s++) {
-            const uint64_t r = (uint64_t)lcg() % P.rows;
+            // full check: walk rows in order - lcg()%rows samples with replacement, so
+            // "every row" by count covered only ~63% of rows and checked some twice
+            const uint64_t r = full ? (uint64_t)s : (uint64_t)lcg() % P.rows;
             if (NG == 8) {
                 for (uint64_t bl = 0; bl < nblocks; bl++) {
                     memcpy(blocks8[bl].qs, &codes[(r * nblocks + bl) * stride_c], stride_c);
@@ -277,6 +289,8 @@ int main(int argc, char** argv) {
                  "                    --verify F [--rows N --verify-gu F --verify-dn F]");
     }
     if (out.empty()) die("--out (or --verify) required");
+    if (ne <= 0) die("--ne must be > 0");
+    if (threads < 1) die("--threads must be >= 1");  // omp num_threads(<1) is invalid
 
     if (synthetic) {  // generate the bf16 sources deterministically
         lcg_state = seed;
@@ -291,14 +305,14 @@ int main(int argc, char** argv) {
         for (uint64_t r = 0; r < gr; r++) {
             synth_row(x.data(), 2560, r);
             for (int i = 0; i < 2560; i++) bf[i] = f32_to_bf16_trunc(x[i]);
-            fwrite(bf.data(), 2, 2560, fg);
+            if (fwrite(bf.data(), 2, 2560, fg) != 2560) die("synthetic gu write failed");
         }
         x.resize(640);
         bf.resize(640);
         for (uint64_t r = 0; r < dr; r++) {
             synth_row(x.data(), 640, r);
             for (int i = 0; i < 640; i++) bf[i] = f32_to_bf16_trunc(x[i]);
-            fwrite(bf.data(), 2, 640, fd);
+            if (fwrite(bf.data(), 2, 640, fd) != 640) die("synthetic dn write failed");
         }
         fclose(fg);
         fclose(fd);
@@ -317,6 +331,8 @@ int main(int argc, char** argv) {
         void* gm = mmap(nullptr, glen, PROT_READ, MAP_PRIVATE, fgu, 0);
         void* dm = mmap(nullptr, dlen, PROT_READ, MAP_PRIVATE, fdn, 0);
         if (gm == MAP_FAILED || dm == MAP_FAILED) die("source mmap failed");
+        madvise(gm, glen, MADV_SEQUENTIAL);  // each source is read once, roughly row-major
+        madvise(dm, dlen, MADV_SEQUENTIAL);
 
         const uint64_t gc = plane_codes(gr, 2560), gh = plane_hi(gr, 2560), gd = plane_d(gr, 2560);
         const uint64_t dc = plane_codes_h(dr, 640), dh = plane_hi_h(dr, 640), dd = plane_d_h(dr, 640);
@@ -340,18 +356,17 @@ int main(int argc, char** argv) {
 
         FILE* fo = fopen(out.c_str(), "wb");
         if (!fo) die("slab open failed");
-        fwrite(&h, sizeof(h), 1, fo);
+        if (fwrite(&h, sizeof(h), 1, fo) != 1) die("slab write failed");
         std::vector<uint8_t> vgc(gc), vgh(gh), vdc(dc), vdh(dh);
         std::vector<uint16_t> vgd(gd / 2), vdd(dd / 2);
         quantize_tensor<8>((const uint16_t*)gm, gr, 2560, vgc.data(), vgh.data(), vgd.data(), threads);
         quantize_tensor<4>((const uint16_t*)dm, dr, 640, vdc.data(), vdh.data(), vdd.data(), threads);
-        fwrite(vgc.data(), 1, gc, fo);
-        fwrite(vgh.data(), 1, gh, fo);
-        fwrite(vgd.data(), 2, vgd.size(), fo);
-        fwrite(vdc.data(), 1, dc, fo);
-        fwrite(vdh.data(), 1, dh, fo);
-        fwrite(vdd.data(), 2, vdd.size(), fo);
-        fclose(fo);
+        // a short write (ENOSPC, ...) previously exited 0 with a truncated slab
+        if (fwrite(vgc.data(), 1, gc, fo) != gc || fwrite(vgh.data(), 1, gh, fo) != gh ||
+            fwrite(vgd.data(), 2, vgd.size(), fo) != vgd.size() ||
+            fwrite(vdc.data(), 1, dc, fo) != dc || fwrite(vdh.data(), 1, dh, fo) != dh ||
+            fwrite(vdd.data(), 2, vdd.size(), fo) != vdd.size() || fclose(fo))
+            die("slab write failed");
         munmap(gm, glen);
         munmap(dm, dlen);
         close(fgu);

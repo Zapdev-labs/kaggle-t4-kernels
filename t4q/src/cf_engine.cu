@@ -306,6 +306,7 @@ void host_top10_row(float* router, int* eid, float* we_h) {
             if (router[i] < 0.f) continue;  // already picked
             if (best < 0 || router[i] > router[best]) best = i;
         }
+        if (best < 0) best = 0;  // degenerate input (all-NaN router output): keep eid in [0, NE)
         eid[k] = best;
         we_h[k] = router[best];
         router[best] = -1.f;
@@ -332,8 +333,10 @@ void host_router(CfCtx* c, CfLayer& L) {
                 c->h_router[1], c->h_router[2], c->h_router[3]);
     host_top10(c);
     if (c->census_f) {  // cf-m2: the router concentration census, same round as the gate
-        fwrite(c->eid, 4, TOPK, c->census_f);
-        fwrite(c->we_h, 4, TOPK, c->census_f);
+        for (int k = 0; k < TOPK; k++) {  // CFC1 record = interleaved (u32 eid, f32 renormed weight) per pick
+            fwrite(c->eid + k, 4, 1, c->census_f);
+            fwrite(c->we_h + k, 4, 1, c->census_f);
+        }
     }
     const size_t gu_row = L.t_gate_exps->row_bytes;   // 840
     const size_t dn_row = L.t_down_exps->row_bytes;  // 360
@@ -767,7 +770,7 @@ bool cf_step(CfCtx* c, int token) {
         // must precede the enqueue; and it must never ride the emission itself, which the
         // graph driver calls only at capture time)
         c->h_params[0] = c->pos;
-        emit_head(c);
+        if (!c->gmode) emit_head(c);  // graph mode: the head ops ride seg 0's captured graph (idempotent)
         if (cfdump_active()) {  // model.input_embed: the raw [D] host embedding, matching the oracle's cb name
             uint32_t nl = 17;
             fwrite(&nl, 4, 1, cfdump); fwrite("model.input_embed", 1, 17, cfdump);

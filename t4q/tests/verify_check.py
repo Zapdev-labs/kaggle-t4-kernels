@@ -122,7 +122,8 @@ def sec_single(eng, a):
             S["oracle"][p] = {"error": "no oracle gen"}
             continue
         og = rd(gp)
-        gaps = np.array([float(l.split()[3]) for l in open(os.path.join(a.oracle, f"gen_{p}.gen.txt"))])
+        gaps = np.array([float(l.split()[3]) for l in open(os.path.join(a.oracle, f"gen_{p}.gen.txt"))
+                         if l.split()])
         mine = plain_ref[p]
         m = min(len(og), len(mine))
         neq = np.nonzero(og[:m] != mine[:m])[0]

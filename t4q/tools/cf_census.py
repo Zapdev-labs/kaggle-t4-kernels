@@ -19,8 +19,6 @@ from pathlib import Path
 # measured platform rates (cf-m0, kaggle/cf0): expert slab bytes per expert-layer
 EE = 640          # expert FFN dim
 D = 2560
-GU_BYTES = 2 * EE * (D // 256) * 84   # gate+up Q2_K per expert-layer: 640 rows x 840 B x 2 = 1075200... computed
-DN_BYTES = D * (EE // 32) * 18       # down Q4_0 per expert-layer: 2560 rows x 360 B
 SLAB = 2 * 640 * 840 + 2560 * 360    # 1.08 MB + 0.92 MB = ~2.0 MB per expert-layer
 
 
@@ -48,20 +46,15 @@ def main():
     print(f"census: {n_steps} steps, {nl} layers, top-{topk}", file=sys.stderr)
 
     layers = [Counter() for _ in range(nl)]
-    hits = [Counter() for _ in range(nl)]  # per (layer, step) presence
     uniques = defaultdict(set)
-    ids_at = []
     off = 12
     for t in range(n_steps):
-        step_ids = []
         for l in range(nl):
             for k in range(topk):
                 eid, w = struct.unpack_from("<If", data, off)
                 off += 8
                 layers[l][eid] += w
                 uniques[l].add(eid)
-                step_ids.append(eid)
-        ids_at.append(step_ids)
 
     out = {"n_steps": n_steps, "nl": nl, "topk": topk}
     # the concentration curve: cumulative mass of the H hottest experts per layer
