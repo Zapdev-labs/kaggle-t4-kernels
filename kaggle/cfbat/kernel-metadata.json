@@ -12,8 +12,8 @@
   "dataset_sources": [],
   "kernel_sources": [
     "otdoges/t4-qwen38-baseline",
-    "otdoges/otdoges-t4q-cfreqa",
-    "otdoges/otdoges-t4q-cfreqb"
+    "otdoges/cfreqa",
+    "otdoges/cfreqb"
   ],
   "competition_sources": [],
   "model_sources": [],

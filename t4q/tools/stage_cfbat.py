@@ -17,7 +17,13 @@ the manifest validation + the real-RMSE stats) -> the tokenizer (oracle chatw on
   (5) the MTP battery (T4Q_CF_MTP=1, k=__K__): the draft alpha1 smoke (IQN=0), the verify
       BYTE-MATCH at the covered layers (THE r4 MTP-consistency bar), and the spec round
       timers at IQN=0 vs IQN=__IQN_AB__ - THE r5 MEASURE: verify_ms before/after the
-      amortized dots, plus mean_union (the real pick overlap the amortization rides).
+      amortized dots, plus mean_union (the real pick overlap the amortization rides);
+  (6) the r6 TP arc's probes (T4Q_CF_IQTP=1, the by-ID split across the 2 T4s - the
+      greedy + draft + verify split forms, the r6a/r6b/r6c rounds): the split SMOKE +
+      the greedy rate at IQN=__IQN_AB__ (the TP tax vs the same-IQN single-GPU run in
+      the sweep), the full-48 SPLIT-CEILING probe (the loader's per-side throw carries
+      the free-GiB number; a success = the whole 24.41 GB pool fits the split), and the
+      IQTP verify round (the r6c wall: verify_ms + mean_union at the split).
 -> RESULTS.
 """
 import base64
@@ -229,7 +235,7 @@ def merge_slabs():
     return ok
 
 
-def cfrun(mode, args, logname, iqn=None, mtp=False, timeout=5400):
+def cfrun(mode, args, logname, iqn=None, mtp=False, iqtp=False, timeout=5400):
     env = dict(os.environ)
     if iqn is not None:
         env["T4Q_CF_IQSLAB"] = str(SLABS)
@@ -237,6 +243,8 @@ def cfrun(mode, args, logname, iqn=None, mtp=False, timeout=5400):
     if mtp:
         env["T4Q_CF_MTP"] = "1"
         env["T4Q_CF_K"] = str(K_DRAFT)
+    if iqtp:  # cf-m6 r6c: the by-ID TP split (the greedy + draft + verify split forms)
+        env["T4Q_CF_IQTP"] = "1"
     cf = W / "src" / "t4q" / "build" / "cf_run"
     model = DL.get("path")
     rc, o = stream([str(cf), mode, model] + [str(a) for a in args], logname, timeout, env=env)
@@ -249,6 +257,16 @@ def ceiling_from(o):
     mo = re.search(r"only ([0-9.]+) GiB free", o)
     if mo:
         return int(float(mo.group(1)) / PER_GIB)
+    return None
+
+
+def ceiling_split(o):
+    """the SPLIT form's ceiling (the r6 TP arc): the loader's per-side throw carries the
+    same free number but the per-side need is the HALF (per_gib*iqn/2), so the max IQN
+    for the split is floor(Y/(PER_GIB/2)) - twice the single-GPU ceiling"""
+    mo = re.search(r"only ([0-9.]+) GiB free", o)
+    if mo:
+        return int(float(mo.group(1)) / (PER_GIB / 2))
     return None
 
 
@@ -400,8 +418,31 @@ def main():
                 wall[tag] = {k: d.get(k) for k in ("verify_ms", "draft_ms", "catch_ms", "spec_ms_per_tok",
                                                    "seq_ms", "mean_union", "tok_per_round")}
         result("r5_wall", wall)
+        # ---- phase 6: the r6 TP arc's probes (the by-ID split across the 2 T4s) ----
+        # the split SMOKE + the greedy rate at IQN_AB (the TP tax vs the same-IQN
+        # single-GPU run in the sweep); then the full-48 SPLIT-CEILING probe (the
+        # loader's per-side throw carries the free-GiB number, a SUCCESS = the whole
+        # 24.41 GB pool fits the split); then the IQTP verify round (the r6c wall:
+        # the verify_ms + mean_union at the split vs the spec_ab run above)
+        rc, o, cf = cfrun("time", [ids, N_TIME], f"smoke_iqtp_iqn{IQN_AB}.log", iqn=IQN_AB, iqtp=True)
+        result("iqtp_smoke", {"iqn": IQN_AB, "rc": rc, "cf": cf})
+        rc, o, c48 = cfrun("time", [ids, 4], "smoke_iqtp_iqn48.log", iqn=48, iqtp=True)
+        ceil48 = ceiling_split(o)
+        result("iqtp_ceiling48", {"iqn": 48, "rc": rc, "cf": c48,
+                                 "ceiling_split": ceil48 if ceil48 is not None else ("fits" if rc == 0 else None)})
+        rc, o, cf = cfrun("spec", [ids, 24], f"spec_iqtp_iqn{IQN_AB}.log", iqn=IQN_AB, mtp=True, iqtp=True)
+        result("spec_iqtp", {"iqn": IQN_AB, "rc": rc, "cf": cf})  # the r6c wall at the split
+        tp = {}
+        d = RESULTS.get("iqtp_smoke", {}).get("cf") or {}
+        if d:
+            tp["greedy"] = {k: d.get(k) for k in ("gen_ms_per_tok",)}
+        d = RESULTS.get("spec_iqtp", {}).get("cf") or {}
+        if d:
+            tp["spec"] = {k: d.get(k) for k in ("verify_ms", "draft_ms", "catch_ms", "spec_ms_per_tok", "seq_ms",
+                                               "mean_union", "tok_per_round")}
+        result("tp_wall", tp)
         result("summary", {"sweep": {k: (v or {}).get("gen_ms_per_tok") for k, v in curve.items()},
-                           "agreement": RESULTS.get("agreement"), "r5_wall": wall})
+                           "agreement": RESULTS.get("agreement"), "r5_wall": wall, "tp_wall": tp})
     except Exception:  # noqa: BLE001
         import traceback
         result("fatal", traceback.format_exc()[-3000:])

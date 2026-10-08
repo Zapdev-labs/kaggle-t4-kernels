@@ -517,7 +517,21 @@ vs the moe_out's own single-loop form over the same values: OK (sub-unions 15+15
 build clean (the 77 #128-D + the one HEAD-identical host-gcc truncation both
 unchanged, zero ptxas warnings). THE REMAINING r6c: the battery's IQTP phases (the
 cfbat extension - the smoke + the sweep + the A/B + the spec wall at T4Q_CF_IQTP=1).
-THE
+r6c part 3 [LANDED, gated; the r6 TP arc is COMPLETE]: THE BATTERY'S IQTP PHASES -
+the cfbat template's phase 6 (the driver regenerated, 708 kB): the cfrun --iqtp flag
+(T4Q_CF_IQTP=1 in the env), the split SMOKE + the greedy rate at IQN=IQN_AB (the TP tax
+vs the same-IQN single-GPU run in the sweep), the full-48 SPLIT-CEILING probe (the
+per-side throw carries the free-GiB number; the SPLIT's own ceiling arithmetic -
+floor(free/(PER_GIB/2)), twice the single-GPU form - the honest note: a SUCCESS = the
+whole 24.41 GB pool fits the split, the informative inventory for the Saturday
+decision), and the IQTP verify round (the r6c wall: verify_ms + mean_union at the
+split vs the spec_ab run) - all in the priority order AFTER the r5 phases (a deadline
+cut loses the newest first). THE GATES: the regenerated driver ast-parses with the
+defines verified; the split-ceiling arithmetic functionally gated on the loader's
+REAL per-side throw form (floor(11.62/0.232) = 50 vs the single-GPU 25, the
+no-match None); the phase order gated (the IQTP phases after the r5 phases). THE
+SATURDAY SEQUENCE unchanged: cfreqa + cfreqb first, their outputs, then cfbat (the
+sources resolve), the battery, the r19w-r19aa kernels. THE
 OWNER MAP: owner(e) = e >> 8 (NE = 512, the halves 256: GPU0 [0,256), GPU1 [256,512)),
 the local index le = e & 255. THE SPLIT PLANES: the slab planes are EXPERT-MAJOR, so the
 owner's half is ONE CONTIGUOUS BYTE RANGE per plane (the codes/hi/d of the experts
