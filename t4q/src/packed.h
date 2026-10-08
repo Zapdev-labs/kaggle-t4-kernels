@@ -38,3 +38,27 @@ struct PackedW {
 };
 
 const char* pack_fmt_name(int fmt);
+
+// cf-m6 r3/r4: the requant SLAB header (the cfreq pack's per-layer file form; all offsets
+// from the file start). v2: the dn planes carry their own format (the tiling find - the
+// dn's 640-wide rows cannot tile the 256-elem iq1_s block, so the dn is the FMT_IQ1SH
+// 128-elem half block, same lattice/arithmetic, 26 B/128). SHARED between the packer
+// (t4q/tools/cf_requant_pack.cpp, the writer) and the loader (cf_loader.cu, the reader) -
+// ONE definition, the static_assert pins the 96-B no-padding layout.
+struct SlabHdr {
+    uint32_t magic;      // 0x45513454 'T4QE'
+    uint32_t version;    // 2
+    uint32_t fmt;        // the gu planes' format: FMT_IQ1S (256-elem blocks)
+    uint32_t dn_fmt;     // the dn planes' format: FMT_IQ1SH (128-elem half blocks)
+    uint32_t ne;         // the expert count (512 on the real pack)
+    uint32_t gu_rows;    // ne * 1280 (the plane row counts)
+    uint32_t gu_cols;    // 2560
+    uint32_t dn_rows;    // ne * 2560
+    uint32_t dn_cols;    // 640
+    uint32_t pad0;       // reserved (keeps the u64 fields 8-aligned)
+    uint64_t gu_codes, gu_hi, gu_d;  // the plane byte offsets
+    uint64_t dn_codes, dn_hi, dn_d;
+    uint64_t file_bytes;
+};
+static_assert(sizeof(SlabHdr) == 96, "slab header v2 (10 u32 + 7 u64, no padding)");
+constexpr uint32_t SLAB_MAGIC = 0x45513454u;

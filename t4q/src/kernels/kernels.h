@@ -51,6 +51,12 @@ void launch_gemv_q8_0_b(const PackedW* wt, int rows, const int8_t* xq, const flo
 void launch_gemv_q8k_b(const PackedW* wt, int fmt, int rows, const int8_t* xq, const int16_t* bsums, const float* yd,
                        float* y, int64_t x_stride, int64_t bs_stride, int64_t d_stride, int64_t y_stride,
                        int batch, cudaStream_t s);
+// cf-m6 r4 (the iq1_s resident tier): the batched FMT_IQ1SH down-expert dot - the same
+// per-pick W-table walk and q8_0 activation planes as launch_gemv_q8_0_b, the dot body the
+// half-block nibble grid + the s32 correction. All picks of a resident layer are IQ1SH, so
+// no fmt dispatch (whole-layer residency, no within-layer mix).
+void launch_gemv_iq1sh_b(const PackedW* wt, int rows, const int8_t* xq, const float* xd, const int* xs, float* y,
+                         int64_t x_stride, int64_t y_stride, int64_t xd_stride, int batch, cudaStream_t s);
 
 // misc.cu
 void launch_rmsnorm(const float* x, const float* w, float* y, int n, float eps, cudaStream_t s);

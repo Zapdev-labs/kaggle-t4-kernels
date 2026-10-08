@@ -437,6 +437,15 @@ void launch_gemv_q8k_b(const PackedW* wt, int fmt, int rows, const int8_t* xq, c
         case FMT_K4:
             k_gemv_q8k_b<FMT_K4><<<grid, 256, 0, s>>>(wt, xq, bsums, yd, y, x_stride, bs_stride, d_stride, y_stride);
             break;
+        // cf-m6 r4 (CF_REQUANT.md section 6, stage 1): the RESIDENT layer's gu picks - all
+        // 10 views are FMT_IQ1S (whole-layer residency, no within-layer format mix), so the
+        // batched form extends exactly like the M=1 r2 case. The dot is dot_q8k<FMT_IQ1S>
+        // (the nibble-grid dp4a + the bsums correction) at the SAME activation reads the
+        // walk already does (bsb[sb*16+sub] / [..+1] = the group's two 16-sums, db[sb] the
+        // super-block d) - the q8_K pairing the K2/K4 branch rides.
+        case FMT_IQ1S:
+            k_gemv_q8k_b<FMT_IQ1S><<<grid, 256, 0, s>>>(wt, xq, bsums, yd, y, x_stride, bs_stride, d_stride, y_stride);
+            break;
         default: break;
     }
 }
@@ -610,4 +619,40 @@ void launch_gemv_q8_0_b(const PackedW* wt, int rows, const int8_t* xq, const flo
     // rows is the HOST-side row count (the grid covers it; wt[] is device memory)
     const unsigned G = (unsigned)((rows + 7) / 8);
     k_gemv_q80_b<<<dim3(G, batch), 256, 0, s>>>(wt, xq, xd, xs, y, x_stride, y_stride, xd_stride);
+}
+
+// the batched SH twin (cf-m6 r4, the RESIDENT layer's dn picks): the same per-pick W-table
+// walk as k_gemv_q80_b (grid.y = the pick, the view from wt[by], the SAME q8_0 activation
+// planes and strides the P4 _b reads - the pairing is identical, only the dot body is the
+// half-block nibble grid + the s32 correction). All 10 views are FMT_IQ1SH at a resident
+// layer (whole-layer residency - no within-layer format mix), so no fmt dispatch is needed.
+__global__ void __launch_bounds__(256) k_gemv_iq1sh_b(const PackedW* __restrict__ wt, const int8_t* __restrict__ xq,
+                                                      const float* __restrict__ xd, const int* __restrict__ xs,
+                                                      float* __restrict__ y, int64_t x_stride, int64_t y_stride,
+                                                      int64_t xd_stride) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const PackedW W = wt[blockIdx.y];
+    const int64_t row = (int64_t)blockIdx.x * 8 + warp;
+    if (row >= W.rows) return;
+    const int8_t* __restrict__ xb = xq + (int64_t)blockIdx.y * x_stride;
+    const float* __restrict__ db = xd + (int64_t)blockIdx.y * xd_stride;
+    const int* __restrict__ sb = xs + (int64_t)blockIdx.y * xd_stride;
+    float* __restrict__ yb = y + (int64_t)blockIdx.y * y_stride;
+    const int64_t ng = W.cols / 32;
+    float acc = 0.f;
+    for (int64_t g = lane; g < ng; g += 32) {
+        int8_t xv[32];
+        *(int4*)xv = __ldg((const int4*)(xb + g * 32));
+        *(int4*)(xv + 16) = __ldg((const int4*)(xb + g * 32 + 16));
+        acc += dot_q8_0_iq1sh(W, row, g, xv, db[g], sb[g]);
+    }
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, o);
+    if (lane == 0) yb[row] = acc;
+}
+
+void launch_gemv_iq1sh_b(const PackedW* wt, int rows, const int8_t* xq, const float* xd, const int* xs, float* y,
+                         int64_t x_stride, int64_t y_stride, int64_t xd_stride, int batch, cudaStream_t s) {
+    const unsigned G = (unsigned)((rows + 7) / 8);
+    k_gemv_iq1sh_b<<<dim3(G, batch), 256, 0, s>>>(wt, xq, xd, xs, y, x_stride, y_stride, xd_stride);
 }

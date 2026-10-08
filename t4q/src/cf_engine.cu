@@ -338,7 +338,7 @@ void host_router(CfCtx* c, CfLayer& L) {
     const size_t gu_row = L.t_gate_exps->row_bytes;   // 840
     const size_t dn_row = L.t_down_exps->row_bytes;  // 360
     const size_t up_bytes = (size_t)TOPK * 2 * EE * gu_row;
-    if (c->uva && L.il < c->uva_n) {
+    if (c->uva && L.il >= c->uva_lo && L.il < c->uva_n) {  // cf-m6 r4: [uva_lo, uva_n) - the iq1_s prefix excluded
         // the UVA path stages NOTHING on the host (the picks' raw slabs stay in the
         // registered pages; the next segment's captured eid H2D node carries the fresh ids)
     } else if (c->tiered) {
@@ -355,14 +355,33 @@ void host_router(CfCtx* c, CfLayer& L) {
             PackedW& v = c->h_wt_gu[k];
             PackedW& w = c->h_wt_dn[k];
             if (h >= 0) {  // hit: the resident slab view, the same offsets a staged slab would have
-                v = L.res_gu;
-                v.rows = 2 * EE;
-                v.codes = L.res_gu.codes + (size_t)h * 2 * EE * (D / 4);
-                v.meta = L.res_gu.meta + (size_t)h * 2 * EE * (size_t)(D / 256) * 20;
-                w = L.res_dn;
-                w.rows = D;
-                w.codes = L.res_dn.codes + (size_t)h * D * (EE / 2);
-                w.d = L.res_dn.d + (size_t)h * D * (EE / 32);
+                if (L.res_gu.fmt == FMT_IQ1S) {
+                    // cf-m6 r4 (the iq1_s tier): the FMT_IQ1S/FMT_IQ1SH plane strides - the
+                    // expert h's rows at h*(2*EE) into the resident planes, per row (D/256)
+                    // blocks of 32/16 B + (D/256) d ELEMENTS (gu; d is uint16_t* - the
+                    // element count, no byte factor, the K2 form's own convention) and
+                    // (EE/128) blocks of 16/8 B + (EE/128) d elements (dn); the fmt rides
+                    // the PackedW copy so the emission's launch picks the r4 dots.
+                    v = L.res_gu;
+                    v.rows = 2 * EE;
+                    v.codes = L.res_gu.codes + (size_t)h * 2 * EE * (size_t)(D / 256) * 32;
+                    v.hi = L.res_gu.hi + (size_t)h * 2 * EE * (size_t)(D / 256) * 16;
+                    v.d = L.res_gu.d + (size_t)h * 2 * EE * (size_t)(D / 256);
+                    w = L.res_dn;
+                    w.rows = D;
+                    w.codes = L.res_dn.codes + (size_t)h * D * (size_t)(EE / 128) * 16;
+                    w.hi = L.res_dn.hi + (size_t)h * D * (size_t)(EE / 128) * 8;
+                    w.d = L.res_dn.d + (size_t)h * D * (size_t)(EE / 128);
+                } else {
+                    v = L.res_gu;
+                    v.rows = 2 * EE;
+                    v.codes = L.res_gu.codes + (size_t)h * 2 * EE * (D / 4);
+                    v.meta = L.res_gu.meta + (size_t)h * 2 * EE * (size_t)(D / 256) * 20;
+                    w = L.res_dn;
+                    w.rows = D;
+                    w.codes = L.res_dn.codes + (size_t)h * D * (EE / 2);
+                    w.d = L.res_dn.d + (size_t)h * D * (EE / 32);
+                }
             } else {  // miss: stage this expert's own rows at the compact slot m
                 const int m = nmiss++;
                 uint8_t* dst = c->raw_stage + (size_t)m * 2 * EE * gu_row;
@@ -403,7 +422,7 @@ void emit_moe_rest(CfCtx* c, CfLayer& L) {
     const size_t gu_row = L.t_gate_exps->row_bytes;   // 840
     const size_t dn_row = L.t_down_exps->row_bytes;   // 360
     const size_t up_bytes = (size_t)TOPK * 2 * EE * gu_row;
-    if (c->uva && L.il < c->uva_n) {
+    if (c->uva && L.il >= c->uva_lo && L.il < c->uva_n) {  // cf-m6 r4: [uva_lo, uva_n) - the iq1_s prefix excluded
         // cf-m3 (r19u) the UVA pointer-swap path: the picks' raw slabs are read from the
         // REGISTERED mmap'd expert pages through the device aliases - NO host memcpys,
         // NO H2D, NO raw staging; the scatter repack's address math is exactly the OFF
@@ -441,15 +460,27 @@ void emit_moe_rest(CfCtx* c, CfLayer& L) {
     // the per-pick W table (the identity views of the staged slabs, bit-identical to the old
     // single launch's stride math; the tiering later swaps in resident views with zero kernel
     // change); the xn quantizes ONCE and is shared by all 10 picks (strides 0).
+    // cf-m6 r4: an iq1_s-covered layer's picks are ALL hits on the FMT_IQ1S/FMT_IQ1SH
+    // resident planes - the SAME quantizes (the pairings coincide: the gu rides q8_K, the
+    // dn rides q8_0) with the r4 batched IQ1S/IQ1SH dots; no within-layer format mix
+    // exists (whole-layer residency), so ONE branch per layer, not per pick.
+    const bool iqs = c->tiered && L.res_gu.fmt == FMT_IQ1S;
     launch_quantize_q8_K(s.mixed, D, s.xqk, s.xqk_b, s.xqk_d, st);
-    launch_gemv_q8k_b(c->wt_gu, FMT_K2, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0, (int64_t)2 * EE, TOPK,
-                      st);
+    if (iqs)
+        launch_gemv_q8k_b(c->wt_gu, FMT_IQ1S, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0, (int64_t)2 * EE,
+                          TOPK, st);
+    else
+        launch_gemv_q8k_b(c->wt_gu, FMT_K2, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0, (int64_t)2 * EE,
+                          TOPK, st);
     launch_cf_silu_mul_b(s.logits, s.ffa, EE, TOPK, st);  // [gate n | up n] per expert, stride 2n
     {  // the down gemv as one batched launch over the 10-expert SoA staging, on the Q8_0
         // pairing (the oracle's own arithmetic for the Q4_0 down experts); the ffa [TOPK][EE]
         // is flat and the expert boundaries are the 32-group boundaries, so one flat quantize
         launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, s.xs0, st);
-        launch_gemv_q8_0_b(c->wt_dn, D, s.xq0, s.xd0, s.xs0, c->ye, EE, D, EE / 32, TOPK, st);
+        if (iqs)
+            launch_gemv_iq1sh_b(c->wt_dn, D, s.xq0, s.xd0, s.xs0, c->ye, EE, D, EE / 32, TOPK, st);
+        else
+            launch_gemv_q8_0_b(c->wt_dn, D, s.xq0, s.xd0, s.xs0, c->ye, EE, D, EE / 32, TOPK, st);
     }
     // shared expert + its sigmoid gate, then the weighted combine
     gemv(s, L.sh_gate, s.mixed, s.ffg, st);
@@ -625,6 +656,34 @@ void vfy_window(CfCtx* c, CfLayer& L, int nr) {
     v->nu = 0;
     for (int r = 0; r < nr; r++)
         host_top10_row(v->h_router + (size_t)r * NE, v->eid + (size_t)r * TOPK, v->we_h + (size_t)r * TOPK);
+    // cf-m6 r4: an iq1_s-covered layer's picks ALL hit the FMT_IQ1S/FMT_IQ1SH residents -
+    // NO union staging (nu stays 0, the dedup skipped, nothing staged), the views point at
+    // the resident planes (the tiering's hit-branch math verbatim, e = the resident index),
+    // and vfy_moe_em takes the r4 batched dots. The verify MUST read the SAME weights the
+    // greedy path reads or the MTP acceptance compares two different models (the
+    // byte-identity gate's class - the originals-staged verify would diverge from the
+    // resident-reading greedy at the covered layers).
+    if (c->tiered && L.res_gu.fmt == FMT_IQ1S) {
+        for (int r = 0; r < nr; r++)
+            for (int k = 0; k < TOPK; k++) {
+                const int e = v->eid[(size_t)r * TOPK + k];
+                PackedW& vg = v->h_wt_gu[r][k];
+                vg = L.res_gu;  // fmt FMT_IQ1S rides the copy
+                vg.rows = 2 * EE;
+                vg.codes = L.res_gu.codes + (size_t)e * 2 * EE * (size_t)(D / 256) * 32;
+                vg.hi = L.res_gu.hi + (size_t)e * 2 * EE * (size_t)(D / 256) * 16;
+                vg.d = L.res_gu.d + (size_t)e * 2 * EE * (size_t)(D / 256);
+                PackedW& wd = v->h_wt_dn[r][k];
+                wd = L.res_dn;  // fmt FMT_IQ1SH rides the copy
+                wd.rows = D;
+                wd.codes = L.res_dn.codes + (size_t)e * D * (size_t)(EE / 128) * 16;
+                wd.hi = L.res_dn.hi + (size_t)e * D * (size_t)(EE / 128) * 8;
+                wd.d = L.res_dn.d + (size_t)e * D * (size_t)(EE / 128);
+            }
+        CK(cudaMemcpyAsync(v->wt_gu, v->h_wt_gu, (size_t)nr * TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(v->wt_dn, v->h_wt_dn, (size_t)nr * TOPK * sizeof(PackedW), cudaMemcpyHostToDevice, st));
+        return;
+    }
     for (int r = 0; r < nr; r++)
         for (int k = 0; k < TOPK; k++) {
             const int e = v->eid[(size_t)r * TOPK + k];
@@ -633,7 +692,7 @@ void vfy_window(CfCtx* c, CfLayer& L, int nr) {
     const size_t gu_row = L.t_gate_exps->row_bytes;   // 840
     const size_t dn_row = L.t_down_exps->row_bytes;   // 360
     const size_t up_bytes = (size_t)TOPK * 2 * EE * gu_row;  // the raw_stage layout
-    if (c->uva && L.il < c->uva_n) {
+    if (c->uva && L.il >= c->uva_lo && L.il < c->uva_n) {  // cf-m6 r4: [uva_lo, uva_n) - the iq1_s prefix excluded
         // the UVA union scatters (cf-m3): each union expert's OWN slab read once through
         // the registered aliases (the dedup preserved), the same address math as the OFF
         // passes' memcpy sources, the same repack block decode into the union slabs -
@@ -696,15 +755,26 @@ void vfy_moe_em(CfCtx* c, CfLayer& L, int nr) {
     CfVerify* v = c->verify;
     cudaStream_t st = c->st;
     CK(cudaMemcpyAsync(v->we_dev, v->we_h, (size_t)nr * TOPK * 4, cudaMemcpyHostToDevice, st));
+    // cf-m6 r4: an iq1_s-covered layer's rows read the FMT_IQ1S/FMT_IQ1SH residents (the
+    // vfy_window resident views) - the SAME quantizes with the r4 batched dots, so the
+    // verify's numerics are the greedy path's own (the MTP agreement bar).
+    const bool iqs = c->tiered && L.res_gu.fmt == FMT_IQ1S;
     for (int r = 0; r < nr; r++) {
         CfScratch& s = v->sc[r];
         float* ye_r = v->ye + (size_t)r * TOPK * D;
         launch_quantize_q8_K(s.mixed, D, s.xqk, s.xqk_b, s.xqk_d, st);
-        launch_gemv_q8k_b(v->wt_gu + (size_t)r * TOPK, FMT_K2, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0,
-                          (int64_t)2 * EE, TOPK, st);
+        if (iqs)
+            launch_gemv_q8k_b(v->wt_gu + (size_t)r * TOPK, FMT_IQ1S, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0,
+                              0, (int64_t)2 * EE, TOPK, st);
+        else
+            launch_gemv_q8k_b(v->wt_gu + (size_t)r * TOPK, FMT_K2, 2 * EE, s.xqk, s.xqk_b, s.xqk_d, s.logits, 0, 0, 0,
+                              (int64_t)2 * EE, TOPK, st);
         launch_cf_silu_mul_b(s.logits, s.ffa, EE, TOPK, st);  // [gate n | up n] per expert, stride 2n
         launch_quantize_q8_0(s.ffa, TOPK * EE, s.xq0, s.xd0, s.xs0, st);
-        launch_gemv_q8_0_b(v->wt_dn + (size_t)r * TOPK, D, s.xq0, s.xd0, s.xs0, ye_r, EE, D, EE / 32, TOPK, st);
+        if (iqs)
+            launch_gemv_iq1sh_b(v->wt_dn + (size_t)r * TOPK, D, s.xq0, s.xd0, s.xs0, ye_r, EE, D, EE / 32, TOPK, st);
+        else
+            launch_gemv_q8_0_b(v->wt_dn + (size_t)r * TOPK, D, s.xq0, s.xd0, s.xs0, ye_r, EE, D, EE / 32, TOPK, st);
         gemv(s, L.sh_gate, s.mixed, s.ffg, st);
         gemv(s, L.sh_up, s.mixed, s.ffu, st);
         launch_silu_mul(s.ffg, s.ffu, s.ffa, EE, st);

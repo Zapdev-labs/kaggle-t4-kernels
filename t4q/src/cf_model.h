@@ -262,8 +262,17 @@ struct CfCtx {
     PackedW h_step_gu[cf::TOPK] = {};  // the per-step composed gate|up table (host)
     PackedW h_step_dn[cf::TOPK] = {};  // the per-step composed down table (host)
     bool tiered = false;              // a hot-set file was loaded (the resident tier is ON)
+    // cf-m6 r4 (CF_REQUANT.md section 6, stage 1): the iq1_s requant resident tier.
+    // T4Q_CF_IQSLAB=<dir> loads the cfreq pack's per-layer slabs for the FIRST iqs_n
+    // layers (T4Q_CF_IQN, 0/absent = the free-VRAM auto-fit at ~498.07 MB/layer): the
+    // WHOLE expert pool of each covered layer is resident (res_gu FMT_IQ1S + res_dn
+    // FMT_IQ1SH, the identity hot map), every pick a HIT with zero staging, the emission
+    // taking the r4 batched IQ1S/IQ1SH dots. The covered prefix is excluded from the UVA
+    // registration (uva_lo): the resident tier wins the branch order.
+    int iqs_n = 0;                    // the covered layer count (0 = off)
     bool uva = false;                 // cf-m3 (r19u): T4Q_CF_UVA_LAYERS registered (the alias path is ON for il < uva_n)
     int uva_n = 0;                    // the first uva_n layers read their experts through the aliases
+    int uva_lo = 0;                   // cf-m6 r4: the alias path is ON for [uva_lo, uva_n) - the resident prefix excluded
     void* uva_reg = nullptr;          // the coalesced page-span host base (one registration, unregistered at free)
     size_t uva_reg_len = 0;
     int* eid_dev = nullptr;          // device: [TOPK] the per-step expert ids for the scatter repack

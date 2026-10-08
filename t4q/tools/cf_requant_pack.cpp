@@ -5,14 +5,15 @@
 // [512, 1280, 2560], offsets [0, 3355443200], the 160-byte safetensors header),
 // quantizes every row with the t4q_iq1s packer core (the exact ggml
 // quantize_row_iq1_s_impl port, self-scaled weights), and writes ONE slab file per
-// layer in THIS REPO'S OWN layout (not GGUF): a fixed 72-byte header + the 6 PackedW
-// planes, expert-major rows preserved so a GPU's expert half is one contiguous byte
-// range (the stage-2 TP requirement).
+// layer in THIS REPO'S OWN layout (not GGUF): the 96-byte SlabHdr v2 (src/packed.h,
+// shared with the loader) + the 6 PackedW planes, expert-major rows preserved so a
+// GPU's expert half is one contiguous byte range (the stage-2 TP requirement).
 //   cf_requant_pack --gu F --dn F --out SLAB [--ne N] [--threads T]     the pack
 //   cf_requant_pack --synthetic --out SLAB [--ne N] [--seed S]          the local gate
 //   cf_requant_pack --verify SLAB [--rows N] [--verify-gu F --verify-dn F]
-// Plane math (FMT_IQ1S, 50 B / 256 elems): at ne=512, gu -> codes 209.7 MB + hi
-// 104.9 MB + d 13.1 MB; dn -> 104.9 + 52.4 + 6.6 MB; ~491.6 MB per layer, 23.6 GB total.
+// Plane math: gu at FMT_IQ1S 50 B/256 -> at ne=512 codes 209.7 MB + hi 104.9 + d 13.1;
+// dn at FMT_IQ1SH 26 B/128 -> 104.9 + 52.4 + 13.1; 498.07 MB per layer, 49 layers
+// (48 main + the MTP, ne=512 each) = 24.41 GB total.
 // Compile: g++ -O3 -fopenmp -std=c++17 -ffp-contract=off.
 #define T4Q_HOST_SIM 1
 #include <cmath>
@@ -34,30 +35,10 @@
 
 float fp16_to_fp32(uint16_t h) { return t4q_fp16_to_fp32(h); }  // the deq.cuh host-sim shim
 
-// ---- the slab header (frozen v2; all offsets from the file start). v1 pre-dated the
-// dn tiling find (the r3 gate): the dn's 640-wide rows cannot tile the 256-elem iq1_s
-// block, so the dn planes use the FMT_IQ1SH 128-elem half block - same lattice, same
-// per-group arithmetic - and carry their own format field. ----
-struct SlabHdr {
-    uint32_t magic;      // 0x45513454 'T4QE'
-    uint32_t version;    // 2
-    uint32_t fmt;        // the gu planes' format: FMT_IQ1S (256-elem blocks)
-    uint32_t dn_fmt;     // the dn planes' format: FMT_IQ1SH (128-elem half blocks)
-    uint32_t ne;         // the expert count (512 on the real pack; small in the gate)
-    uint32_t gu_rows;    // ne * 1280 (the plane row counts)
-    uint32_t gu_cols;    // 2560
-    uint32_t dn_rows;    // ne * 2560
-    uint32_t dn_cols;    // 640
-    uint32_t pad0;       // reserved (keeps the u64 fields 8-aligned)
-    uint64_t gu_codes, gu_hi, gu_d;  // the plane byte offsets
-    uint64_t dn_codes, dn_hi, dn_d;
-    uint64_t file_bytes;
-};
-static_assert(sizeof(SlabHdr) == 96, "slab header v2 (10 u32 + 7 u64, no padding)");
-#define SLAB_MAGIC 0x45513454u
-
-// the plane byte sizes: gu at the 256-elem iq1_s block (50 B/256), dn at the 128-elem
-// half block (26 B/128) - the tiling the 640-wide dn rows demand
+// ---- the slab header lives in src/packed.h (SlabHdr v2, shared with cf_loader.cu - ONE
+// definition, the 96-B static_assert pins the layout). The plane byte sizes: gu at the
+// 256-elem iq1_s block (50 B/256), dn at the 128-elem half block (26 B/128) - the tiling
+// the 640-wide dn rows demand. ----
 static uint64_t plane_codes(uint64_t rows, uint64_t cols) { return rows * (cols / 256) * 32; }
 static uint64_t plane_hi(uint64_t rows, uint64_t cols) { return rows * (cols / 256) * 16; }
 static uint64_t plane_d(uint64_t rows, uint64_t cols) { return rows * (cols / 256) * 2; }

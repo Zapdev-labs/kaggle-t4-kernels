@@ -297,8 +297,52 @@ slabs, the per-layer verify + the byte-count check, and the manifest for the r4 
 LIVE-SMOKED against the real endpoint: the index, the shard headers, the 206 range
 reads, layer 0's gu 3,355,443,200 B EXACT, the MTP ne=512. The kernel PUSHES ride the
 Saturday window with the L4 battery.
-r4: the stage-1 tiered residency (the loader reads the slabs, the HIT branch dispatches
-FMT_IQ1S) + the L4 smoke + the A/B + the rate measure.
+r4 [LANDED, build- and host-gated locally; the value gates are L4]: the stage-1 tiered
+residency. LANDED AS: (1) The kernels - the launch_gemv_q8k_b FMT_IQ1S case (the batched
+resident gu: dot_q8k<9> in the _b walk, the SAME activation reads the walk already does -
+bsb[sb*16+sub]/[..+1] the group's two 16-sums, db[sb] the super-block d) and
+k_gemv_iq1sh_b + launch_gemv_iq1sh_b (the batched SH dn on the k_gemv_q80_b walk form,
+the same q8_0 planes/strides). (2) The loader - SlabHdr moved to packed.h (ONE shared
+definition, the writer and the reader pinned by the same 96-B static_assert); the
+T4Q_CF_IQSLAB=<dir> + T4Q_CF_IQN=<1..48> block: the count EXPLICIT (no auto-fit
+guesswork - the L4 VRAM inventory decides, the spec's gate 5), the free-VRAM check, the
+per-slab header + plane-offset validation to the byte, the pageable one-time uploads,
+the identity hot map (hn = NE, every pick a HIT), the MTP slab deferred to stage 2; the
+hot-set skip (the covered layers' ids consumed + discarded - the file is per-layer
+sequential); the uncovered-layer all-miss safety pass (the tiered host_router derefs
+hot_idx - a layer covered by NEITHER tier would crash); the UVA prefix exclusion
+(uva_lo: the span + alias loops over [uva_lo, uva_n), the fully-covered case logged +
+off). (3) The engine - host_router's IQ1S hit-view branch; emit_moe_rest's per-layer
+iqs branch (the SAME quantizes - the pairings COINCIDE: the gu rides q8_K for both K2
+and IQ1S, the dn rides q8_0 for both P4 and IQ1SH - with the r4 batched dots;
+whole-layer residency means NO within-layer format mix, one branch per layer not per
+pick); vfy_window's resident early path + vfy_moe_em's branch. THE MTP CONSISTENCY
+FINDING: the verify MUST read the SAME weights the greedy path reads or the acceptance
+compares two different models (the originals-staged verify would diverge from the
+resident-reading greedy at the covered layers - the byte-identity gate's class), so the
+covered layers skip the union staging entirely (nu = 0, the dedup skipped) and the
+per-row views point at the resident planes. THE GATE'S TWO CATCHES: (1) alloc_packed
+had NO FMT_IQ1S/FMT_IQ1SH cases - the silent switch fall-through left 0-B/NULL planes
+and the tier's uploads would land nowhere (a runtime crash NO local gate could see; the
+fix is the two cases PLUS the loader's alloc-vs-slab cross-check that catches the class
+AT LOAD, not at first use); (2) the d-offset UNITS bug in the view math - d is
+uint16_t*, the offset is in ELEMENTS with no byte factor (the existing K2 form's own
+convention, (EE/32) with no *2) - the first draft had *2 on both d lines, caught in
+review against the K2 form, and the new view gate pins the correct class. THE GATES:
+test_iq1s + the NEW resident-view gate (a 2-expert expert-major plane, the expert-1
+view at the loader's EXACT offsets, the SH dot twin vs the deq32 decode of expert 1's
+own rows: sumi INTEGER-EXACT, the dot inside the 2e-2 bound) - the r1/r2/r3 gates
+unchanged; pack_gate green through the SlabHdr move; the nvcc build clean with ZERO
+ptxas warnings in the rebuilt TUs (HEAD's 77 all in the untouched tp_*); the registers:
+k_gemv_q8k_b<9> = 47 (LIGHTER than the K2 twin's 63 - the nibble-grid dot is
+register-cheap), k_gemv_iq1sh_b = 64 (the q80_b family budget), both 0 spills / 0 stack
+/ 0 smem. THE GRAPH NOTE, honestly: the gmode&&tiered check turns the graphs OFF under
+the IQSLAB (the conservative form) - a FULL-coverage run is capture-constant in
+principle (the W-table H2D per layer is fixed-size, nmiss = 0 always) but the verify's
+union staging for uncovered layers and the draft block still vary; the re-enable is an
+L4-measured later round, not assumed. THE VALUE GATES (L4, Saturday): the smoke, the
+perplexity A/B on the mix, the greedy agreement, the resident-expert rate vs the r18
+K-quant family, the VRAM inventory.
 r5: the M=8 amortized verify kernel + its L4 measure.
 r6: the stage-2 TP split (the by-ID residency, the replicated core, the per-layer
 combine) + the full L4 battery.

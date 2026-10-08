@@ -364,6 +364,85 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
         CK(cudaMalloc(&c->wt_dn, (size_t)TOPK * sizeof(PackedW)));
         CK(cudaMemcpy(c->wt_gu, c->h_wt_gu, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice));
         CK(cudaMemcpy(c->wt_dn, c->h_wt_dn, (size_t)TOPK * sizeof(PackedW), cudaMemcpyHostToDevice));
+        // cf-m6 r4 (CF_REQUANT.md section 6, stage 1): T4Q_CF_IQSLAB=<dir> - the iq1_s
+        // requant resident tier, the cfreq pack's output (layer_%03d.bin per layer: the
+        // 96-B SlabHdr v2 + the FMT_IQ1S gu planes 50 B/256 + the FMT_IQ1SH dn planes
+        // 26 B/128, expert-major, 498.07 MB/layer at ne=512 - the cfreqa/cfreqb kernel
+        // outputs attached as sources). For the FIRST T4Q_CF_IQN layers the WHOLE layer's
+        // expert pool loads resident: the identity hot map (hn = NE), every pick a HIT
+        // with ZERO staging, the emission's batched launches taking the r4 IQ1S/IQ1SH
+        // dots. The count is EXPLICIT (no auto-fit guesswork - the L4 VRAM inventory
+        // decides it, the spec's gate 5); the free-VRAM check throws if it cannot fit.
+        // The MTP slab (layer_mtp.bin) is NOT read at stage 1 (the draft block owns
+        // blk.48; it stays for stage 2). The covered prefix is excluded from the hot-set
+        // and UVA paths below - the resident tier wins the branch order.
+        if (const char* iqs_dir = getenv("T4Q_CF_IQSLAB")) {
+            const char* qn = getenv("T4Q_CF_IQN");
+            if (!qn) throw std::runtime_error("T4Q_CF_IQSLAB needs T4Q_CF_IQN=<1..48> (the L4 VRAM inventory decides)");
+            const int n = atoi(qn);
+            if (n <= 0 || n > NL) throw std::runtime_error("T4Q_CF_IQN must be in 1..48");
+            const double per_gib =
+                ((double)NE * 2 * EE * D * 50.0 / 256 + (double)NE * D * EE * 26.0 / 128) / (1ull << 30);
+            {
+                size_t free_b = 0, total_b = 0;
+                CK(cudaMemGetInfo(&free_b, &total_b));
+                if ((double)free_b < per_gib * n * (1ull << 30) * 1.02)
+                    throw std::runtime_error("the iq1_s tier needs " + std::to_string(per_gib * n) +
+                                             " GiB resident, only " + std::to_string((double)free_b / (1ull << 30)) +
+                                             " GiB free");
+            }
+            std::vector<uint8_t> buf;
+            for (int il = 0; il < n; il++) {
+                CfLayer& L = c->layers[il];
+                char sn[16];
+                snprintf(sn, sizeof(sn), "layer_%03d.bin", il);
+                const std::string sp = std::string(iqs_dir) + "/" + sn;
+                FILE* sf = fopen(sp.c_str(), "rb");
+                if (!sf) throw std::runtime_error("slab open failed: " + sp);
+                SlabHdr h;
+                if (fread(&h, sizeof(h), 1, sf) != 1 || h.magic != SLAB_MAGIC || h.version != 2 ||
+                    h.fmt != (uint32_t)FMT_IQ1S || h.dn_fmt != (uint32_t)FMT_IQ1SH || h.ne != (uint32_t)NE ||
+                    h.gu_rows != (uint64_t)NE * 2 * EE || h.gu_cols != (uint32_t)D ||
+                    h.dn_rows != (uint64_t)NE * D || h.dn_cols != (uint32_t)EE)
+                    throw std::runtime_error("bad slab header: " + sp);
+                const uint64_t gc = (uint64_t)NE * 2 * EE * (D / 256) * 32, gh = (uint64_t)NE * 2 * EE * (D / 256) * 16,
+                                gd = (uint64_t)NE * 2 * EE * (D / 256) * 2, dc = (uint64_t)NE * D * (EE / 128) * 16,
+                                dh = (uint64_t)NE * D * (EE / 128) * 8, dd = (uint64_t)NE * D * (EE / 128) * 2;
+                if (h.gu_codes != sizeof(SlabHdr) || h.gu_hi != h.gu_codes + gc || h.gu_d != h.gu_hi + gh ||
+                    h.dn_codes != h.gu_d + gd || h.dn_hi != h.dn_codes + dc || h.dn_d != h.dn_hi + dh ||
+                    h.file_bytes != h.dn_d + dd)
+                    throw std::runtime_error("bad slab plane offsets: " + sp);
+                alloc_packed(L.res_gu, 0, FMT_IQ1S, (int64_t)NE * 2 * EE, D);
+                alloc_packed(L.res_dn, 0, FMT_IQ1SH, (int64_t)NE * D, EE);
+                // the alloc-vs-slab cross-check (the missing-alloc_packed-case trap: a
+                // silent 0-B plane would take the uploads nowhere; this catches it AT LOAD)
+                if (L.res_gu.bytes < gc + gh + gd || L.res_dn.bytes < dc + dh + dd ||
+                    !L.res_gu.codes || !L.res_gu.hi || !L.res_gu.d || !L.res_dn.codes || !L.res_dn.hi ||
+                    !L.res_dn.d)
+                    throw std::runtime_error("resident plane alloc short for " + sp);
+                struct PlaneRd { uint64_t off, bytes; void* dst; const char* nm; };
+                const PlaneRd pl[6] = {{h.gu_codes, gc, L.res_gu.codes, "gu.codes"},
+                                       {h.gu_hi, gh, L.res_gu.hi, "gu.hi"},
+                                       {h.gu_d, gd, L.res_gu.d, "gu.d"},
+                                       {h.dn_codes, dc, L.res_dn.codes, "dn.codes"},
+                                       {h.dn_hi, dh, L.res_dn.hi, "dn.hi"},
+                                       {h.dn_d, dd, L.res_dn.d, "dn.d"}};
+                for (const PlaneRd& p : pl) {  // the one-time pageable upload (~0.5 GB/layer)
+                    buf.resize((size_t)p.bytes);
+                    if (fseeko(sf, (off_t)p.off, SEEK_SET) || fread(buf.data(), 1, (size_t)p.bytes, sf) != (size_t)p.bytes)
+                        throw std::runtime_error(std::string("slab plane read failed: ") + sp + " " + p.nm);
+                    CK(cudaMemcpy(p.dst, buf.data(), (size_t)p.bytes, cudaMemcpyHostToDevice));
+                }
+                fclose(sf);
+                L.hn = NE;  // the identity hot map: every expert a resident hit
+                L.hot_ids = new int[NE];
+                L.hot_idx = new int[NE];
+                for (int e = 0; e < NE; e++) L.hot_ids[e] = L.hot_idx[e] = e;
+            }
+            c->iqs_n = n;
+            c->tiered = true;
+            fprintf(stderr, "[cf] iq1_s resident tier: %d/%d layers, %.2f GiB\n", n, NL, per_gib * n);
+        }
         // the resident tier (cf-m3): T4Q_CF_HOTSET=<path>, produced by cf_census.py --hotset
         // from the round's census.bin. ABSENT = OFF = the verbatim full-staging path (the
         // identity W table above stands). Present = ON: the per-layer top-H experts (by
@@ -392,8 +471,15 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
             const size_t gu_row = c->layers[0].t_gate_exps->row_bytes;  // 840
             const size_t dn_row = c->layers[0].t_down_exps->row_bytes;  // 360
             const size_t up_bytes = (size_t)TOPK * 2 * EE * gu_row;    // the fixed raw_stage layout
+            std::vector<int> iqs_skip;  // cf-m6 r4: consume the iq1_s-covered layers' ids
             for (int il = 0; il < NL; il++) {
                 CfLayer& L = c->layers[il];
+                if (L.hn) {  // the iq1_s tier already owns this layer - consume + skip
+                    iqs_skip.resize(h);
+                    if (fread(iqs_skip.data(), 4, h, hf) != h)
+                        throw std::runtime_error("hot-set truncated at layer " + std::to_string(il));
+                    continue;
+                }
                 L.hn = (int)h;
                 L.hot_ids = new int[h];
                 L.hot_idx = new int[NE];
@@ -432,6 +518,19 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
             CK(cudaStreamSynchronize(st));
             c->tiered = true;
         }
+        // cf-m6 r4: with the tier ON but a layer left uncovered by BOTH tiers (the iq1_s
+        // prefix short of NL + no hot-set), the tiered host_router still derefs hot_idx -
+        // the all-miss map (hn = 0) keeps those layers on the pure staging path.
+        if (c->tiered) {
+            for (int il = 0; il < NL; il++) {
+                CfLayer& L = c->layers[il];
+                if (!L.hot_idx) {
+                    L.hn = 0;
+                    L.hot_idx = new int[NE];
+                    memset(L.hot_idx, -1, (size_t)NE * sizeof(int));
+                }
+            }
+        }
         // cf-m3 (r19u) the UVA third path: T4Q_CF_UVA_LAYERS=<n> registers the first n
         // layers' expert tensors as cudaHostRegisterMapped (ONE coalesced page-aligned
         // span - the per-tensor page-spans of the file-adjacent tensors overlap on the
@@ -446,35 +545,41 @@ CfCtx* cf_load(const char* path, int max_ctx, std::string* err_out) {
             c->uva_n = atoi(un);
             if (c->uva_n <= 0 || c->uva_n > NL)
                 throw std::runtime_error("T4Q_CF_UVA_LAYERS must be in 1..48");
-            const uintptr_t PG = 4095;
-            uintptr_t lo = ~(uintptr_t)0, hi = 0;
-            for (int il = 0; il < c->uva_n; il++) {
-                CfLayer& L = c->layers[il];
-                for (const GgufTensor* t : {L.t_gate_exps, L.t_up_exps, L.t_down_exps}) {
-                    const uintptr_t b = (uintptr_t)t->data;
-                    const uintptr_t e = b + (uintptr_t)t->nrows() * t->row_bytes;
-                    lo = std::min(lo, b & ~PG);
-                    hi = std::max(hi, (e + PG) & ~PG);
+            c->uva_lo = c->iqs_n;  // cf-m6 r4: the iq1_s resident prefix wins the branch order
+            if (c->uva_n <= c->uva_lo) {
+                fprintf(stderr, "[cf] UVA: [0,%d) fully covered by the iq1_s tier [0,%d) - off\n", c->uva_n,
+                        c->uva_lo);
+            } else {
+                const uintptr_t PG = 4095;
+                uintptr_t lo = ~(uintptr_t)0, hi = 0;
+                for (int il = c->uva_lo; il < c->uva_n; il++) {
+                    CfLayer& L = c->layers[il];
+                    for (const GgufTensor* t : {L.t_gate_exps, L.t_up_exps, L.t_down_exps}) {
+                        const uintptr_t b = (uintptr_t)t->data;
+                        const uintptr_t e = b + (uintptr_t)t->nrows() * t->row_bytes;
+                        lo = std::min(lo, b & ~PG);
+                        hi = std::max(hi, (e + PG) & ~PG);
+                    }
                 }
+                auto tr0 = std::chrono::steady_clock::now();
+                CK(cudaHostRegister((void*)lo, (size_t)(hi - lo), cudaHostRegisterMapped));
+                void* alias = nullptr;
+                CK(cudaHostGetDevicePointer(&alias, (void*)lo, 0));
+                auto tr1 = std::chrono::steady_clock::now();
+                for (int il = c->uva_lo; il < c->uva_n; il++) {
+                    CfLayer& L = c->layers[il];
+                    L.uva_gate = (const uint8_t*)alias + ((uintptr_t)L.t_gate_exps->data - lo);
+                    L.uva_up = (const uint8_t*)alias + ((uintptr_t)L.t_up_exps->data - lo);
+                    L.uva_dn = (const uint8_t*)alias + ((uintptr_t)L.t_down_exps->data - lo);
+                }
+                c->uva_reg = (void*)lo;
+                c->uva_reg_len = (size_t)(hi - lo);
+                c->uva = true;
+                CK(cudaMalloc(&c->eid_dev, (size_t)TOPK * 4));
+                fprintf(stderr, "[cf] UVA: [%d,%d) of %d layers, %.2f GiB registered in %.2f s (the alias path ON)\n",
+                        c->uva_lo, c->uva_n, NL, (double)(hi - lo) / (1ull << 30),
+                        std::chrono::duration<double>(tr1 - tr0).count());
             }
-            auto tr0 = std::chrono::steady_clock::now();
-            CK(cudaHostRegister((void*)lo, (size_t)(hi - lo), cudaHostRegisterMapped));
-            void* alias = nullptr;
-            CK(cudaHostGetDevicePointer(&alias, (void*)lo, 0));
-            auto tr1 = std::chrono::steady_clock::now();
-            for (int il = 0; il < c->uva_n; il++) {
-                CfLayer& L = c->layers[il];
-                L.uva_gate = (const uint8_t*)alias + ((uintptr_t)L.t_gate_exps->data - lo);
-                L.uva_up = (const uint8_t*)alias + ((uintptr_t)L.t_up_exps->data - lo);
-                L.uva_dn = (const uint8_t*)alias + ((uintptr_t)L.t_down_exps->data - lo);
-            }
-            c->uva_reg = (void*)lo;
-            c->uva_reg_len = (size_t)(hi - lo);
-            c->uva = true;
-            CK(cudaMalloc(&c->eid_dev, (size_t)TOPK * 4));
-            fprintf(stderr, "[cf] UVA: %d/%d layers, %.2f GiB registered in %.2f s (the alias path ON)\n",
-                    c->uva_n, NL, (double)(hi - lo) / (1ull << 30),
-                    std::chrono::duration<double>(tr1 - tr0).count());
         }
         // cf-m4 (r19w): the MTP draft block (blk.48, ALL Q8_0, resident - the frozen
         // CF_MTP.md design). T4Q_CF_MTP=1 loads it (absent = not loaded, the ~2.5 GiB

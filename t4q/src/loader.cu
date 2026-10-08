@@ -49,6 +49,12 @@ void alloc_packed(PackedW& W, int gpu, int fmt, int64_t rows, int64_t cols) {
         case FMT_K2: sz[0] = n / 4; sz[4] = n / 256 * 20; break;   // r17 CF: qs 64 B + meta 20 B per 256
         case FMT_K4: sz[0] = n / 2; sz[4] = n / 256 * 16; break;   // r17 CF: qs 128 B + meta 16 B per 256
         case FMT_Q51: sz[0] = n / 2; sz[1] = n / 8; sz[2] = n / 32 * 2; sz[3] = n / 32 * 2; break;  // per 32
+        // cf-m6 requant (the iq1_s class, CF_REQUANT.md section 2): codes/hi/d, NO meta;
+        // the loader's slab tier uploads the planes (cf_loader's T4Q_CF_IQSLAB block).
+        // The MISSING-case trap this closes: the switch's silent fall-through left the
+        // planes at 0 B / NULL and the tier's uploads would land nowhere.
+        case FMT_IQ1S: sz[0] = n / 8; sz[1] = n / 16; sz[2] = n / 256 * 2; break;   // 32/16/2 B per 256
+        case FMT_IQ1SH: sz[0] = n / 8; sz[1] = n / 16; sz[2] = n / 128 * 2; break;  // 16/8/2 B per 128
     }
     size_t tot = 0;
     for (size_t s : sz) tot += al256(s);

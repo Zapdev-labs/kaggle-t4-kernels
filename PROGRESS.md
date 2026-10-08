@@ -2983,3 +2983,54 @@ decoding (|w| ~ 1.2 class), the MTP dn [512,2560,640] on its own shard, and the 
 for the quantizer, but the REAL RMSE lands only in the per-layer verify at the pack - the
 manifest carries it. NEXT: r4 (the stage-1 tiered residency - the loader reads the slabs +
 the HIT-branch mixed-format dispatch), then the Saturday pushes + the L4 battery.
+
+r19ae cf-m6 r4 the stage-1 tiered residency LANDED (the resident tier + the batched dots,
+ALL LOCAL GATES GREEN, the value gates L4-blocked): THE MECHANISM - T4Q_CF_IQSLAB=<dir> +
+T4Q_CF_IQN=<1..48> (the count EXPLICIT, the L4 VRAM inventory decides it) pins the first
+N main layers' experts to FULL-RESIDENT IQ1S/IQ1SH slabs (gu [NE*2*EE, D] FMT_IQ1S + dn
+[NE*D, EE] FMT_IQ1SH, the identity hot map: hn = NE, every pick a HIT); the layers past
+the resident prefix keep the existing miss path (K2/UVA/ON). THE PAIRING COINCIDENCE that
+kept it one-branch-per-layer: the resident gu rides the SAME q8_K activation the K2 miss
+path rides, and the resident dn the SAME q8_0 the P4 miss path rides - emit_moe_rest
+branches on `iqs = tiered && L.res_gu.fmt == FMT_IQ1S` and swaps ONLY the dot launches
+(launch_gemv_q8k_b's new FMT_IQ1S case + the new k_gemv_iq1sh_b), NO within-layer format
+mix, the quantize code paths IDENTICAL to the miss case. THE MTP CONSISTENCY FINDING: the
+verify MUST read the same weights the greedy path reads (the originals-staged verify at a
+covered layer would compare the greedy's resident-read logits against original-weight
+verify logits - the acceptance would compare two different models); the covered layers
+skip the union staging entirely (nu = 0) and the per-row views point at the resident
+planes. THE CODE: gemv_ref.cu (the batched IQ1S gu case + k_gemv_iq1sh_b/launch on the
+k_gemv_q80_b walk), packed.h (SlabHdr moved here - ONE shared definition, the same
+static_assert pins the writer and the reader), cf_model.h (iqs_n + uva_lo), cf_loader.cu
+(the IQSLAB block: the free-VRAM check at ~498.07 MB/layer x1.02, the header + plane
+validation to the byte, the pageable one-time uploads, the MTP slab deferred to stage 2 -
+the draft block owns blk.48; the hot-set skip consumes + discards the covered ids; the
+all-miss safety pass for layers covered by NEITHER tier - the tiered host_router derefs
+hot_idx; the UVA prefix exclusion: the span + alias loops over [uva_lo, uva_n), the
+fully-covered case logged + off), cf_engine.cu (host_router's IQ1S view branch, the
+emit_moe_rest/vfy_moe_em iqs launches, the vfy_window resident early path, the three
+uva_lo conditions). THE GATE'S TWO CATCHES, both fixed pre-landing: (1) alloc_packed had
+NO FMT_IQ1S/FMT_IQ1SH cases - the silent fall-through left 0-B/NULL planes, the tier's
+uploads would land nowhere (a RUNTIME crash no compile/build gate can see; fixed with the
+two cases + the loader's new alloc-vs-slab cross-check that catches the class AT LOAD);
+(2) the d-offset UNITS bug - d is uint16_t*, the offset is in ELEMENTS, no byte factor
+(the existing K2 form's own convention); the first draft had *2 at both view sites,
+caught in review against the K2 form, and the new resident-view gate pins the class. THE
+GATES (all local): test_iq1s + the NEW resident-view gate (the 2-expert expert-major
+plane, the expert-1 view at the loader's EXACT offsets, the SH dot twin vs the deq32
+decode of expert 1's own rows: sumi INTEGER-EXACT, dot inside the 2e-2 class) - the
+r1/r2/r3 gates UNCHANGED (fp16 0; round-trip rel 0.4022; M=1 6.90e-05; SH rel 0.4021 /
+sumi EXACT / dot 1.23e-04); pack_gate GREEN through the SlabHdr move (the ne=4 slab
+3,891,296 B exact, all rows bit-identical); the nvcc podman build clean x2 (through the
+alloc fix) with ZERO ptxas warnings in the rebuilt TUs (HEAD's 77 all in the untouched
+tp_prefill 41 + tp_spec 36); the registers: k_gemv_q8k_b<9> = 47 (LIGHTER than the K2
+twin's 63 - the nibble-grid dot is register-cheap), k_gemv_iq1sh_b = 64 (the q80_b family
+budget), both 0 spills / 0 stack / 0 smem. THE GRAPH NOTE, honestly: the gmode&&tiered
+check turns the graphs OFF under the IQSLAB (the conservative form); a full-coverage run
+is capture-constant in principle but the uncovered-verify staging and the draft still
+vary - the re-enable is an L4-measured later round. STILL L4-BLOCKED (the Saturday
+window): the cfreqa/cfreqb pushes + the real slabs, the smoke (an add-function greedy run
+at T4Q_CF_IQSLAB), the perplexity A/B vs the Q2_K_S trunk, the greedy agreement, the
+resident-expert gemv GB/s vs the r18 K-quant ~179-200, and the VRAM inventory that sets
+iqs_n. NEXT: r5 (the amortized M=8 verify kernel) while the L4 window holds, then the
+battery, then r6 (the stage-2 TP split).

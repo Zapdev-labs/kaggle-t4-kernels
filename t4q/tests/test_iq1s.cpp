@@ -335,5 +335,65 @@ int main() {
     printf("iq1s half-block M=1 dot twin: sumi-int %s (%d)  dot %s (%d rows over, rel=%.2e)\n",
            sumi_bad2 ? "MISMATCH" : "EXACT", sumi_bad2, dot_bad2 ? "FAIL" : "OK", dot_bad2,
            dot_l12 > 0 ? dot_err2 / dot_l12 : 0.0);
-    return (bad || sumi_bad || dot_bad || bad2 || sumi_bad2 || dot_bad2) != 0;
+
+    // ---- r4 gates: the RESIDENT VIEW strides (host_router's hit-branch math, gated) ----
+    // A 2-expert expert-major plane, the expert-1 view built with EXACTLY the loader's
+    // offsets (h * rows_per_expert * blocks_per_row * plane units - the d offsets in
+    // ELEMENTS, the uint16_t* convention; a byte-vs-element slip here reads expert 2's
+    // scales and lands far outside the dot bound), the SH dot twin run on the view vs the
+    // deq32 decode of expert 1's own rows.
+    int view_bad = 0, view_sumi = 0;
+    {
+        const int HEX = 2, HROWS = 2, K3 = 640;  // 2 experts x 2 rows of 640 (5 blocks/row)
+        PackedW W3;
+        W3.fmt = FMT_IQ1SH;
+        W3.rows = HEX * HROWS;
+        W3.cols = K3;
+        std::vector<uint8_t> c3((size_t)W3.rows * (K3 / 128) * 16), h3((size_t)W3.rows * (K3 / 128) * 8);
+        std::vector<uint16_t> d3((size_t)W3.rows * (K3 / 128));
+        W3.codes = c3.data();
+        W3.hi = h3.data();
+        W3.d = d3.data();
+        std::vector<t4q_iq1s::BlockT<4>> blocks3(W3.rows * (K3 / 128));
+        for (int r = 0; r < W3.rows; r++) {
+            for (int i = 0; i < K3; i++) {
+                float u = (float)((int)(lcg() >> 8) - 32768) / 32768.f;
+                x2[i] = u * (0.02f + 0.15f * (r % 97) / 97.f);
+            }
+            t4q_iq1s::quant_row_t<4>(T, x2.data(), K3, blocks3.data() + (size_t)r * (K3 / 128));
+        }
+        for (int64_t b = 0; b < (int64_t)W3.rows * (K3 / 128); b++) {
+            memcpy(W3.codes + b * 16, blocks3[b].qs, 16);
+            memcpy(W3.hi + b * 8, blocks3[b].qh, 8);
+            W3.d[b] = blocks3[b].d;
+        }
+        PackedW V = W3;  // the expert-1 view: host_router's math verbatim
+        V.rows = HROWS;
+        V.codes = W3.codes + (size_t)1 * HROWS * (K3 / 128) * 16;
+        V.hi = W3.hi + (size_t)1 * HROWS * (K3 / 128) * 8;
+        V.d = W3.d + (size_t)1 * HROWS * (K3 / 128);
+        std::vector<float> xv(K3), av(K3);
+        std::vector<int8_t> xqv(K3);
+        std::vector<float> xdv(K3 / 32);
+        std::vector<int> xsv(K3 / 32);
+        for (int rr = 0; rr < HROWS; rr++) {
+            for (int i = 0; i < K3; i++) {
+                float u = (float)((int)(lcg() >> 8) - 32768) / 32768.f;
+                xv[i] = u * (0.05f + 0.1f * (rr % 7) / 7.f);
+            }
+            quant_q8_0_row(xv.data(), K3, xqv.data(), xdv.data(), xsv.data());
+            for (int g = 0; g < K3 / 32; g++) deq32<FMT_IQ1SH>(V, rr, g, av.data() + g * 32);
+            double dkin = 0, dref = 0, l1 = 0;
+            for (int g = 0; g < K3 / 32; g++)
+                dkin += dot_iq1sh_sim(V, rr, g, xqv.data() + g * 32, xdv[g], xsv[g], view_sumi);
+            for (int i = 0; i < K3; i++) {
+                dref += (double)av[i] * xv[i];
+                l1 += fabs((double)av[i] * xv[i]);
+            }
+            if (l1 <= 0 || fabs(dkin - dref) > 0.02 * l1) view_bad++;
+        }
+    }
+    printf("iq1s resident-view (h=1 of 2, 640) dot twin: sumi-int %s (%d)  dot %s (%d rows over)\n",
+           view_sumi ? "MISMATCH" : "EXACT", view_sumi, view_bad ? "FAIL" : "OK", view_bad);
+    return (bad || sumi_bad || dot_bad || bad2 || sumi_bad2 || dot_bad2 || view_bad || view_sumi) != 0;
 }
