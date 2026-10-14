@@ -126,6 +126,7 @@ bool begin(std::string& err) {
 }
 
 std::vector<Rec> end() {
+    if (!g_lib) return {};  // trace_begin() failed or was never called: the fn ptrs are null
     p_flush(1);
     p_disable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
     p_flush(1);

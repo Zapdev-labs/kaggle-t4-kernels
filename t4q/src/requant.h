@@ -4,9 +4,10 @@
 // the first pack: qw = 1, w = sqrt(sigma2 + x*x)) so the format's tuned quality carries;
 // the fudge d = (max_scale/15)*1.125 is part of the tuned format, replicated exactly.
 // The neighbour fallback has NO scale fudge on this path (the 1.05 is the IQ2 path's).
-// Compile with -ffp-contract=off. The qsort comparators match the ggml forms exactly
-// (the SSD sort compares values only - equal-value ties keep libc qsort's order, the
-// ggml-inherited reproducibility property; the dist2 sort is a total order on (d2, k)).
+// Compile with -ffp-contract=off. The sorts match the ggml forms' observable order
+// exactly (the SSD sort compares values only - equal-value ties keep their input
+// order, the ggml-inherited reproducibility property, now via a stable insertion
+// sort instead of libc qsort; the dist2 sort is a total order on (d2, k)).
 #pragma once
 #include <cfloat>
 #include <cmath>
@@ -101,11 +102,6 @@ static int cmp_d2(const void* l, const void* r) {  // iq2_compare_func: (d2, k)
     const int* b = (const int*)r;
     return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0;
 }
-static int cmp_val(const void* l, const void* r) {  // iq1_sort_helper: the float value only
-    const float* a = (const float*)l;
-    const float* b = (const float*)r;
-    return *a < *b ? -1 : *a > *b ? 1 : 0;
-}
 static inline int nearest_int(float fval) {  // the ggml trick
     float val = fval + 12582912.f;
     int i;
@@ -126,7 +122,8 @@ static void init(Tables& T) {
     // kept until 3 distinct distances (nwant = 3 for IQ1_S; ties at the 3rd included)
     std::vector<int> n_per_i(KMAP_SIZE, 0);
     long num_neigh = 0, num_not = 0;
-    int* dist2 = (int*)malloc(2 * NG * sizeof(int));
+    std::vector<int> dist2v(2 * NG);  // RAII: the malloc'd buffer could leak / be null on OOM
+    int* dist2 = dist2v.data();
     for (int i = 0; i < KMAP_SIZE; ++i) {
         if (T.kmap[i] >= 0) continue;
         ++num_not;
@@ -195,7 +192,6 @@ static void init(Tables& T) {
         }
         *start = (uint16_t)n;
     }
-    free(dist2);
 }
 
 // iq1_find_best_neighbour2 (the exact form: the weighted-distance best over the list,
@@ -280,7 +276,21 @@ static void quant_row_t(const Tables& T, const float* x, int n, BlockT<NG>* y, c
                 pairs[2 * j] = xg[j];
                 idx[2 * j] = j;
             }
-            qsort(pairs, BS, 2 * sizeof(float), cmp_val);
+            // stable insertion sort by value (the qsort contract: equal values keep
+            // their input order - the ggml reproducibility property - and the
+            // comparator inlines; qsort pays an indirect call per compare)
+            for (int a = 1; a < BS; ++a) {
+                const float v = pairs[2 * a];
+                const int vi = idx[2 * a];
+                int b = a;
+                while (b > 0 && pairs[2 * (b - 1)] > v) {
+                    pairs[2 * b] = pairs[2 * (b - 1)];
+                    idx[2 * b] = idx[2 * (b - 1)];
+                    --b;
+                }
+                pairs[2 * b] = v;
+                idx[2 * b] = vi;
+            }
             sumx[0] = sumw[0] = 0;
             for (int j = 0; j < BS; ++j) {
                 int i = idx[2 * j];

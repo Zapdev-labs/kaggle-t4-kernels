@@ -106,6 +106,7 @@ int t4q_layer_forward(t4q_ctx* c, int il, int pos, const float* h_in, float* h_o
 }
 
 int t4q_set_option(t4q_ctx* c, const char* key, int value) {
+    if (!key) { g_err = "null option key"; return -1; }  // std::string(nullptr) would throw across the C ABI
     const std::string k(key);
     if (k == "act_q8") { c->act_q8 = value != 0; return 0; }
     if (c->tps) {
@@ -124,6 +125,7 @@ int t4q_set_option(t4q_ctx* c, const char* key, int value) {
 void t4q_set_dump(t4q_ctx* c, int on) { c->dump_on = on != 0; if (!on) c->dumps.clear(); }
 
 int t4q_dump(t4q_ctx* c, const char* name, int layer, float* out, size_t cap) {
+    if (!name) return -1;  // std::string(nullptr) would throw across the C ABI
     std::string key = layer >= 0 ? std::string(name) + "-" + std::to_string(layer) : std::string(name);
     auto it = c->dumps.find(key);
     if (it == c->dumps.end()) return -1;

@@ -178,9 +178,21 @@ class T4Q:
         return out
 
     def close(self):
-        if self.ctx:
+        if getattr(self, "ctx", None):
             self.lib.t4q_free(self.ctx)
             self.ctx = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class Tokenizer:

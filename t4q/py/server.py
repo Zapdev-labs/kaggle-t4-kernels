@@ -98,6 +98,7 @@ def make_handler(sched, tok):
             detok = Detok(tok)
             text_out = ""
             stopped_by_str = False
+            mstop = max((len(s) for s in stops), default=0)
 
             def chunk(delta_text, finish=None):
                 if chat:
@@ -126,10 +127,14 @@ def make_handler(sched, tok):
                 piece = detok.push(t)
                 if not piece:
                     continue
-                cand = text_out + piece
-                cut = min((cand.find(s) for s in stops if s and s in cand), default=-1)
-                if cut >= 0:
-                    piece = cand[len(text_out):cut] if cut > len(text_out) else ""
+                # a new stop match must end inside `piece`, so it can only start within the last
+                # mstop - 1 chars of text_out: scan just that tail, not the whole accumulated text
+                tail = text_out[-(mstop - 1):] if mstop > 1 else ""
+                cand = tail + piece
+                pos = min((cand.find(s) for s in stops if s and s in cand), default=-1)
+                if pos >= 0:
+                    cut = pos + len(text_out) - len(tail)  # index into text_out + piece
+                    piece = piece[:cut - len(text_out)] if cut > len(text_out) else ""
                     if cut < len(text_out):
                         text_out = text_out[:cut]
                     stopped_by_str = True

@@ -49,14 +49,21 @@ class Scheduler:
         self.stats = {"prefills": 0, "prefill_s": 0.0, "prefill_tokens": 0, "steps": 0, "step_s": 0.0,
                       "decode_tokens": 0, "max_batch": 0}
         self._stop = False
+        self._fatal = None
+
+    def _fail(self, req, msg):
+        req.error = msg
+        req.finish_reason = "error"
+        req.done.set()
+        if req.on_done:
+            req.on_done(req)
 
     def submit(self, req):
+        if self._fatal is not None:
+            self._fail(req, f"engine dead: {self._fatal}")
+            return req
         if len(req.ids) + 2 > self.slot_ctx:
-            req.error = f"prompt of {len(req.ids)} tokens does not fit the slot context ({self.slot_ctx})"
-            req.finish_reason = "error"
-            req.done.set()
-            if req.on_done:
-                req.on_done(req)
+            self._fail(req, f"prompt of {len(req.ids)} tokens does not fit the slot context ({self.slot_ctx})")
             return req
         self.waiting.put(req)
         self.wake.set()
@@ -103,12 +110,8 @@ class Scheduler:
             try:
                 first = self.eng.batch_prefill(slot, req.ids)
             except Exception as e:  # noqa: BLE001
-                req.error = str(e)
-                req.finish_reason = "error"
                 self.free.append(slot)
-                req.done.set()
-                if req.on_done:
-                    req.on_done(req)
+                self._fail(req, str(e))
                 continue
             self.stats["prefills"] += 1
             self.stats["prefill_s"] += time.time() - t
@@ -144,7 +147,21 @@ class Scheduler:
                 self.wake.wait(0.05)
                 self.wake.clear()
                 continue
-            self.step()
+            try:
+                self.step()
+            except Exception as e:  # noqa: BLE001
+                # a failed engine call must not strand clients: report the error to every active
+                # and waiting request (on_done releases their HTTP handlers), then stop the loop
+                self._fatal = f"{type(e).__name__}: {e}"
+                for req in list(self.active.values()):
+                    self._fail(req, self._fatal)
+                while True:
+                    try:
+                        req = self.waiting.get_nowait()
+                    except queue.Empty:
+                        break
+                    self._fail(req, self._fatal)
+                return
 
     def shutdown(self):
         self._stop = True

@@ -243,15 +243,21 @@ def sec_bench(eng, tok, a):
         t = time.time()
         src = ns - 1  # pristine source slot; every run starts from clones of it at the same depth
         eng.batch_prefill(src, ids)
+        src_dirty = False  # a run at B == n_slots steps the source slot itself: restore it before reuse
         rk = {"prefill_s": round(time.time() - t, 2), "depth": depth, "n_slots": ns, "slot_ctx": sc, "runs": {}}
         for B in Bs:
             if B > ns:
                 continue
             for opts in osets:
                 apply(eng, opts)
+                if src_dirty:
+                    eng.batch_prefill(src, ids)
+                    src_dirty = False
                 for s in range(B):
-                    eng.batch_clone(src, s)
+                    if s != src:
+                        eng.batch_clone(src, s)
                 slots = list(range(B))
+                src_dirty = src_dirty or src in slots
                 eng.batch_step(slots)  # warm-up (each step advances every slot by one position)
                 eng.batch_step(slots)
                 n = a.steps
@@ -276,8 +282,6 @@ def sec_bench(eng, tok, a):
                     f"{1e3 * enq / n:.1f} ms; profile {prof}")
                 res[key] = rk
                 save()
-        if src >= max(Bs):
-            pass
     eng.batch_free()
 
 
@@ -325,7 +329,9 @@ def sec_e2e(eng, tok, a):
                 "prefill_s": round(st["prefill_s"], 2), "decode_s": round(st["step_s"], 2),
                 "decode_steps": st["steps"], "decode_agg_tok_s": round(st["decode_tokens"] / max(st["step_s"], 1e-9), 1),
                 "prefill_tok_s": round(st["prefill_tokens"] / max(st["prefill_s"], 1e-9), 1),
-                "max_batch": st["max_batch"], "ttft_mean_s": round(float(np.mean([r.t_first - r.t_submit for r in reqs])), 2),
+                "max_batch": st["max_batch"], "errors": sum(1 for r in reqs if r.error),
+                "ttft_mean_s": round(float(np.mean([r.t_first - r.t_submit for r in reqs if r.t_first is not None])), 2)
+                if any(r.t_first is not None for r in reqs) else None,
                 "slot_ctx": ctx, "state_f16": a.e2e_sf16, "opts": a.e2e_opts, "t0": t0, "t1": t1,
                 "sample": tok.decode(reqs[0].out[:120])[:500]}
     save()

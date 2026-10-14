@@ -40,16 +40,22 @@ const char* ggml_type_name(uint32_t t) {
 
 namespace {
 struct Rd {
-    const uint8_t* p; const uint8_t* end; bool ok = true;
+    const uint8_t* p; const uint8_t* end; bool ok = true;  // invariant: p <= end
     template <class T> T get() {
         T v{};
-        if (p + sizeof(T) > end) { ok = false; return v; }
+        if ((uint64_t)(end - p) < sizeof(T)) { ok = false; return v; }
         memcpy(&v, p, sizeof(T)); p += sizeof(T); return v;
     }
+    // bounds-checked skip of n file bytes (n is file-controlled: no p + n wraparound)
+    bool skip(uint64_t n) {
+        if (!ok || n > (uint64_t)(end - p)) { ok = false; return false; }
+        p += n; return true;
+    }
+    bool skip_str() { return skip(get<uint64_t>()); }
     std::string str() {
         uint64_t n = get<uint64_t>();
-        if (!ok || p + n > end) { ok = false; return {}; }
-        std::string s((const char*)p, n); p += n; return s;
+        if (!skip(n)) return {};
+        return std::string((const char*)p - n, (size_t)n);
     }
 };
 size_t scalar_size(uint32_t t) {
@@ -76,11 +82,13 @@ double read_num(Rd& r, uint32_t t) {
 
 bool GgufFile::open(const std::string& p, std::string& err) {
     path = p;
+    close();  // tolerate a second open() on the same object without leaking the first map
+    kv.clear(); tensors.clear(); index.clear();
     fd = ::open(p.c_str(), O_RDONLY);
     if (fd < 0) { err = "open failed: " + p; return false; }
     struct stat st;
-    fstat(fd, &st);
-    size = st.st_size;
+    if (fstat(fd, &st) < 0 || st.st_size <= 0) { err = "stat failed/empty: " + p; return false; }
+    size = (size_t)st.st_size;
     map = (uint8_t*)mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
     if (map == MAP_FAILED) { map = nullptr; err = "mmap failed"; return false; }
     Rd r{map, map + size};
@@ -97,7 +105,7 @@ bool GgufFile::open(const std::string& p, std::string& err) {
             uint32_t et = r.get<uint32_t>();
             uint64_t n = r.get<uint64_t>();
             v.arr_n = n;
-            if (et == 8) { for (uint64_t j = 0; j < n && r.ok; j++) r.str(); }
+            if (et == 8) { for (uint64_t j = 0; j < n && r.ok; j++) r.skip_str(); }
             else {
                 size_t es = scalar_size(et);
                 if (!es) { err = "nested array unsupported"; return false; }
@@ -106,17 +114,22 @@ bool GgufFile::open(const std::string& p, std::string& err) {
                         if (et == 10) v.u64.push_back(r.get<uint64_t>());  // exact, cf PLE hash needs u64
                         else v.arr.push_back(read_num(r, et));
                     }
-                } else { if (r.p + es * n > r.end) { r.ok = false; break; } r.p += es * n; }
+                // skip: division form - es * n itself can overflow u64
+                } else if (n > (uint64_t)(r.end - r.p) / es) { r.ok = false; break;
+                } else r.p += es * n;
             }
         } else v.num = read_num(r, v.type);
         kv[key] = v;
     }
-    size_t align = (size_t)num("general.alignment", 32);
+    const double av = num("general.alignment", 32);  // 0 would SIGFPE below; clamp bad values
+    if (!(av >= 1.0) || av > (double)size) { err = "bad general.alignment"; return false; }
+    const size_t align = (size_t)av;
     for (uint64_t i = 0; i < n_t && r.ok; i++) {
         GgufTensor t;
         t.name = r.str();
         t.n_dims = (int)r.get<uint32_t>();
-        for (int d = 0; d < t.n_dims && d < 4; d++) t.ne[d] = (int64_t)r.get<uint64_t>();
+        if (t.n_dims < 0 || t.n_dims > 4) { err = "bad n_dims: " + t.name; return false; }
+        for (int d = 0; d < t.n_dims && r.ok; d++) t.ne[d] = (int64_t)r.get<uint64_t>();
         t.type = r.get<uint32_t>();
         t.offset = r.get<uint64_t>();
         tensors.push_back(t);
@@ -128,10 +141,29 @@ bool GgufFile::open(const std::string& p, std::string& err) {
         GgufTensor& t = tensors[i];
         int be, bb;
         if (!ggml_block_info(t.type, be, bb)) { err = "unknown type for " + t.name; return false; }
-        t.row_bytes = (size_t)(t.ne[0] / be) * bb;
-        t.nbytes = t.row_bytes * (size_t)t.nrows();
+        for (int d = 0; d < 4; d++)
+            if (t.ne[d] < 0) { err = "negative dim in " + t.name; return false; }
+        // checked multiply: file-controlled dims must not wrap the byte counts
+        uint64_t rb = (uint64_t)t.ne[0] / (uint64_t)be;
+        if (rb > UINT64_MAX / (uint64_t)bb) { err = "tensor size overflow: " + t.name; return false; }
+        rb *= (uint64_t)bb;
+        uint64_t nr = 1;
+        for (int d = 1; d < 4; d++) {
+            if ((uint64_t)t.ne[d] > UINT64_MAX / nr) { err = "tensor size overflow: " + t.name; return false; }
+            nr *= (uint64_t)t.ne[d];
+        }
+        uint64_t nb = 0;
+        if (nr) {
+            if (rb > UINT64_MAX / nr) { err = "tensor size overflow: " + t.name; return false; }
+            nb = rb * nr;
+        }
+        t.row_bytes = (size_t)rb;
+        t.nbytes = (size_t)nb;
+        // offset-sum overflow can mask an out-of-bounds tensor: check each addend
+        if (data_start > size || t.offset > size - data_start || nb > size - data_start - t.offset) {
+            err = "tensor past EOF: " + t.name; return false;
+        }
         t.data = map + data_start + t.offset;
-        if (data_start + t.offset + t.nbytes > size) { err = "tensor past EOF: " + t.name; return false; }
         index[t.name] = i;
     }
     return true;
